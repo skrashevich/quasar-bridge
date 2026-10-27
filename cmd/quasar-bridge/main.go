@@ -25,6 +25,7 @@ import (
 	"quasarbridge/internal/home"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/speech"
 	"quasarbridge/internal/wire"
 )
 
@@ -145,6 +146,14 @@ func main() {
 		ChatParameters: cfg.LLMChatParameters,
 	}
 	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
+	var geminiTTS *speech.Gemini
+	if cfg.GeminiTTS.Enabled {
+		geminiTTS = &speech.Gemini{APIKey: os.Getenv("QUASAR_LLM_API_KEY"), Model: cfg.GeminiTTS.Model, Voice: cfg.GeminiTTS.Voice, Style: cfg.GeminiTTS.Style}
+		if geminiTTS.APIKey == "" {
+			slog.Error("Gemini TTS enabled but QUASAR_LLM_API_KEY is missing")
+			os.Exit(1)
+		}
+	}
 	var musicQueue *assistant.MusicQueue
 	var hc *home.Controller
 	if endpoint := os.Getenv("QUASAR_HOME_MCP_URL"); endpoint != "" {
@@ -247,6 +256,9 @@ func main() {
 
 		proxy.NewSession = func(ctx context.Context, up, down bridge.Sender) bridge.Session {
 			n := bridge.NewNative(ctx, up, down, engine)
+			if geminiTTS != nil {
+				n.Speech = geminiTTS.Synthesize
+			}
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
 			if cfg.LocalProgress.Enabled {
@@ -272,7 +284,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil})
+		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "gemini_male_voice_enabled": geminiTTS != nil})
 		_, _ = w.Write(data)
 	})
 	mux.Handle("/uni.ws", proxy)

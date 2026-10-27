@@ -40,6 +40,10 @@ type Engine struct {
 	routing      atomic.Pointer[RoutingPolicy]
 }
 
+func responseSystemPrompt() string {
+	return "Отвечай по-русски естественно и по существу. Текст будет произнесён вслух, поэтому не используй Markdown-разметку. Выполняй внешние действия только доступными инструментами по явному запросу. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом."
+}
+
 func (e *Engine) dialogue() *dialogue.Store {
 	e.dialogueOnce.Do(func() {
 		if e.Dialogue == nil {
@@ -144,7 +148,7 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
+	messages := []llm.Message{{Role: "system", Content: responseSystemPrompt()}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	private := snapshot.PrivateHistory

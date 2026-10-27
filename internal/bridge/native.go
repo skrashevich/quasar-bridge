@@ -18,7 +18,9 @@ import (
 	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	continuation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
 	ack "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/input_start_ack"
+	stream "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/stream_control"
 	tts "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_generate"
+	ttsSpeak "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_speak"
 	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/proto"
@@ -93,6 +95,7 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+	Speech           func(context.Context, string) ([]byte, error)
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -655,12 +658,55 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	return n.synthesize(p, text)
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
+	if n.Speech != nil && p.route == "llm" {
+		ogg, err := n.Speech(p.ctx, text)
+		if err == nil {
+			if err = n.speakAudio(p, ogg); err == nil {
+				return nil
+			}
+		}
+		slog.Warn("gemini_tts_failed_using_yandex_voice", "request", requestTag(p.id), "error", err)
+	}
+	return n.synthesizeYandex(p, text)
+}
+
+func (n *Native) synthesizeYandex(p *nativeRequest, text string) error {
 	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err
 	}
 	return n.up(p.ctx, websocket.MessageBinary, b)
+}
+
+// speakAudio injects the Gemini Opus result through the same Station event path
+// as Yandex TTS, so existing stream handling, progress audio, and interruption
+// behavior remain in force.
+func (n *Native) speakAudio(p *nativeRequest, ogg []byte) error {
+	if len(ogg) == 0 || len(ogg) > 16<<20 {
+		return errors.New("invalid synthesized audio size")
+	}
+	streamID := uint32(time.Now().UnixNano())
+	if streamID == 0 {
+		streamID = 1
+	}
+	speak := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.ttsID, StreamId: new(int64(streamID))}, Event: &server.TServerMessage_TEvent_TtsSpeak{TtsSpeak: &ttsSpeak.TTtsSpeak{Format: "audio/opus"}}}}}
+	b, err := (wire.Frame{Server: speak, Prefix: []byte("AAPI")}).Marshal()
+	if err != nil {
+		return err
+	}
+	if err := n.Server(p.ctx, websocket.MessageBinary, b); err != nil {
+		return err
+	}
+	if err := n.Server(p.ctx, websocket.MessageBinary, append(binary.BigEndian.AppendUint32(nil, streamID), ogg...)); err != nil {
+		return err
+	}
+	closeMsg := &server.TServerMessage{Message: &server.TServerMessage_StreamControl{StreamControl: &stream.TStreamControl{MessageId: p.ttsID, StreamId: int64(streamID), Action: &stream.TStreamControl_Close{Close: &stream.TStreamControl_TActionClose{}}}}}
+	b, err = (wire.Frame{Server: closeMsg, Prefix: []byte("AAPI")}).Marshal()
+	if err != nil {
+		return err
+	}
+	return n.Server(p.ctx, websocket.MessageBinary, b)
 }
 func requestTag(id string) string {
 	sum := sha256.Sum256([]byte(id))

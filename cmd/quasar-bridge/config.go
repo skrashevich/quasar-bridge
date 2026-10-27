@@ -23,6 +23,13 @@ type progressConfig struct {
 	IntervalMS int  `json:"interval_ms"`
 }
 
+type geminiTTSConfig struct {
+	Enabled bool   `json:"enabled"`
+	Model   string `json:"model"`
+	Voice   string `json:"voice"`
+	Style   string `json:"style"`
+}
+
 type config struct {
 	DialogueContext    dialogue.Config      `json:"dialogue_context"`
 	LocalProgress      progressConfig       `json:"local_progress"`
@@ -41,6 +48,7 @@ type config struct {
 	LLMMaxOutputTokens int                  `json:"llm_max_output_tokens"`
 	LLMHostedTools     []string             `json:"llm_hosted_tools"`
 	LLMChatParameters  map[string]any       `json:"llm_chat_parameters"`
+	GeminiTTS          geminiTTSConfig      `json:"gemini_tts"`
 	HomeWarmArea       string               `json:"home_warm_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
@@ -104,6 +112,20 @@ func readConfig(path string) (config, error) {
 	}
 	if cfg.LLMMaxOutputTokens <= 0 {
 		return cfg, errors.New("llm_max_output_tokens must be positive")
+	}
+	if cfg.GeminiTTS.Enabled {
+		if cfg.Mode != "hybrid" || cfg.LLMBaseURL == "" {
+			return cfg, errors.New("gemini_tts requires hybrid mode and a Gemini API key")
+		}
+		if cfg.GeminiTTS.Model == "" {
+			cfg.GeminiTTS.Model = "gemini-3.8-flash-lite-tts"
+		}
+		if cfg.GeminiTTS.Voice == "" {
+			cfg.GeminiTTS.Voice = "algenib"
+		}
+		if cfg.GeminiTTS.Style == "" {
+			cfg.GeminiTTS.Style = "Speak Russian naturally and clearly with conversational pacing."
+		}
 	}
 	if cfg.LLMReasoningEffort != "" {
 		if cfg.LLMAPI != "responses" {
