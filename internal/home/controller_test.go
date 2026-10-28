@@ -276,3 +276,18 @@ func TestHomeAnswerNamesDevicesWithoutEntityIDs(t *testing.T) {
 		})
 	}
 }
+
+func TestDegreesScopeWaterHeaterNotSpeakers(t *testing.T) {
+	for text, want := range map[string][]string{
+		"Сделай колонку 40 градусов": {"climate"},
+		"Сделай колонку погромче":    {"climate", "media_player"},
+		"Включи телевизор":           {"media_player"},
+	} {
+		if got := controlDomains(text); !slices.Equal(got, want) {
+			t.Errorf("%q: %v", text, got)
+		}
+	}
+	if _, ok := serviceFields["media_player.turn_on"]; !ok {
+		t.Error("TV cannot be switched on")
+	}
+}
