@@ -44,6 +44,7 @@ type config struct {
 	HomeWarmArea       string               `json:"home_warm_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
+	Prompts            bridge.PromptFiles   `json:"prompts"`
 }
 
 func readConfig(path string) (config, error) {

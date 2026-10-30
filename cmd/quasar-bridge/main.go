@@ -55,6 +55,11 @@ func main() {
 		slog.Error("configuration rejected", "error", err)
 		os.Exit(1)
 	}
+	prompts, err := bridge.LoadPrompts(cfg.Prompts)
+	if err != nil {
+		slog.Error("configuration rejected", "error", err)
+		os.Exit(1)
+	}
 
 	diagnostics := 0
 	if *query != "" {
@@ -144,7 +149,7 @@ func main() {
 		MaxOutputTokens: cfg.LLMMaxOutputTokens, HostedTools: cfg.LLMHostedTools,
 		ChatParameters: cfg.LLMChatParameters,
 	}
-	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
+	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext), Prompts: prompts}
 	var musicQueue *assistant.MusicQueue
 	var hc *home.Controller
 	if endpoint := os.Getenv("QUASAR_HOME_MCP_URL"); endpoint != "" {
