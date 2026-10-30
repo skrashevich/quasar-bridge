@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -52,6 +53,17 @@ type Client struct {
 	HTTP            *http.Client
 }
 
+var serviceMarkup = regexp.MustCompile(`(?i)(?:</?[|｜]|<\s*/?\s*(?:[\w.-]+:)?(?:(?:tool_calls?|function_calls?|tool_responses?|tool_results?|think(?:ing)?|analysis|reasoning(?:_content)?)\b|(?:function|parameter|invoke)(?:\s*=|\s+|\s*>|$)))`)
+
+// ValidateAnswer rejects service markup rather than speaking unexecuted calls
+// or internal reasoning. Structured planning bypasses this speech check.
+func ValidateAnswer(text string) error {
+	if serviceMarkup.MatchString(text) {
+		return errors.New("LLM returned service markup instead of a final answer")
+	}
+	return nil
+}
+
 // ValidateChatParameters protects the request fields controlled by the bridge.
 // Parameter values are validated by the configured API.
 func ValidateChatParameters(parameters map[string]any) error {
@@ -82,17 +94,28 @@ func (c *Client) chat(ctx context.Context, messages []Message, structured bool, 
 	if err := ValidateChatParameters(c.ChatParameters); err != nil {
 		return Message{}, err
 	}
+	var m Message
+	var err error
 	switch c.API {
 	case "", "chat_completions":
-		return c.chatCompletions(ctx, messages, structured, tools)
+		m, err = c.chatCompletions(ctx, messages, structured, tools)
 	case "responses":
 		if len(c.ChatParameters) > 0 {
 			return Message{}, errors.New("LLM chat parameters require chat_completions API")
 		}
-		return c.responses(ctx, messages, structured, tools)
+		m, err = c.responses(ctx, messages, structured, tools)
 	default:
 		return Message{}, errors.New("unsupported LLM API")
 	}
+	if err != nil {
+		return Message{}, err
+	}
+	if !structured && len(m.ToolCalls) == 0 {
+		if err := ValidateAnswer(m.Content); err != nil {
+			return Message{}, err
+		}
+	}
+	return m, nil
 }
 
 func (c *Client) chatCompletions(ctx context.Context, messages []Message, structured bool, tools []Tool) (Message, error) {
