@@ -25,7 +25,7 @@ def build(arch="arm64", output=None, binary=None, tag=None):
         if not binary:
             env = dict(os.environ, CGO_ENABLED="0", GOOS="linux",
                        GOARCH="arm" if arch == "armv7" else "arm64", GOARM="7")
-            subprocess.run(["go", "build", "-trimpath", "-ldflags=-s -w", "-o",
+            subprocess.run(["go", "build", "-trimpath", f"-ldflags=-s -w -X quasarbridge/internal/update.Version={version}", "-o",
                             str(executable), "./cmd/quasar-bridge"], cwd=ROOT, env=env, check=True)
         header = executable.read_bytes()[:20]
         elf_class, machine = {"arm64": (2, b"\xb7\x00"), "armv7": (1, b"\x28\x00")}[arch]

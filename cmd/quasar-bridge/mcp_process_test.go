@@ -125,7 +125,7 @@ func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[strin
 		_, _ = w.Write(body)
 	}))
 	defer api.Close()
-	body, _ := json.Marshal(map[string]any{"mode": "hybrid", "llm_api": apiName, "llm_chat_parameters": chatParameters, "llm_base_url": api.URL + "/v1", "llm_model": "fixture", "assistant_tools": map[string]any{"enabled": true, "web": false, "history": false, "time": false, "mcp_servers": []any{map[string]any{"name": "fixture", "url": mcpAPI.URL}}}})
+	body, _ := json.Marshal(map[string]any{"mode": "hybrid", "llm_api": apiName, "llm_chat_parameters": chatParameters, "llm_base_url": api.URL + "/v1", "llm_model": "fixture", "assistant_tools": map[string]any{"enabled": true, "web": false, "history": false, "time": false, "updates": false, "mcp_servers": []any{map[string]any{"name": "fixture", "url": mcpAPI.URL}}}})
 	path := configFile(t, string(body))
 	for _, action := range []string{"check-mcp", "query"} {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

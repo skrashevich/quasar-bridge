@@ -15,6 +15,7 @@ type Config struct {
 	Web              bool              `json:"web"`
 	History          bool              `json:"history"`
 	Time             bool              `json:"time"`
+	Updates          bool              `json:"updates"`
 	PlaySound        bool              `json:"play_sound"`
 	MusicBaseURL     string            `json:"music_base_url,omitempty"`
 	Timezone         string            `json:"timezone"`
@@ -27,7 +28,7 @@ type Config struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Enabled: false, Web: true, History: true, Time: true, Timezone: "UTC", MaxRounds: 3, MaxCalls: 4, WebTimeoutMS: 8000, WebMaxBytes: 1 << 20, WebMaxChars: 12000, HistoryMaxScanMB: 16}
+	return Config{Enabled: false, Updates: true, Web: true, History: true, Time: true, Timezone: "UTC", MaxRounds: 3, MaxCalls: 4, WebTimeoutMS: 8000, WebMaxBytes: 1 << 20, WebMaxChars: 12000, HistoryMaxScanMB: 16}
 }
 func (c Config) Validate() error {
 	if c.MusicBaseURL != "" {
