@@ -25,6 +25,7 @@ import (
 	"quasarbridge/internal/home"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/update"
 	"quasarbridge/internal/wire"
 )
 
@@ -178,7 +179,7 @@ func main() {
 			musicPlayback = assistant.NewMusicPlayback(musicQueue)
 			engine.Playback = musicPlayback
 		}
-		tools := &assistant.Tools{Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback}
+		tools := &assistant.Tools{Updater: update.New(*path), Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback}
 		engine.Music = tools
 		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 	}

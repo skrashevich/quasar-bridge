@@ -233,6 +233,7 @@
     "history": true,
     "time": true,
     "play_sound": false,
+    "updates": true,
     "timezone": "UTC",
     "max_rounds": 3,
     "max_calls": 4,
