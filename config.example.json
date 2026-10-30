@@ -9,6 +9,13 @@
   "llm_model": "your-model",
   "llm_api": "chat_completions",
   "llm_chat_parameters": {},
+  "llm_strip_prefixes": [
+    "спроси у нейросети",
+    "спроси нейросеть",
+    "спроси у своей модели",
+    "спроси свою модель",
+    "спроси модель"
+  ],
   "llm_reasoning_effort": "",
   "llm_max_output_tokens": 4096,
   "llm_hosted_tools": [],
@@ -155,6 +162,7 @@
         "match": {
           "contains_any": [
             "спроси нейросеть",
+            "спроси у нейросети",
             "спроси свою модель",
             "напиши код",
             "напиши программу",
