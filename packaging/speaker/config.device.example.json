@@ -3,12 +3,23 @@
   "upstream": "wss://uniproxy.alice.yandex.net/uni.ws",
   "mode": "observe",
   "listen_after_reply": true,
+  "spotter_wait_ms": 1500,
   "tls_cert": "",
   "tls_key": "",
   "allowed_ips": [
     "127.0.0.1",
     "::1"
   ],
+  "home_assistant": {
+    "url": "",
+    "agent_id": "",
+    "pipeline_id": "",
+    "device_id": "",
+    "language": "ru",
+    "timeout_ms": 20000,
+    "ttl_seconds": 300,
+    "continue_conversation": false
+  },
   "conversation_log": {
     "enabled": false,
     "path": "conversations.jsonl",

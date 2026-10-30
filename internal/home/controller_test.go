@@ -92,6 +92,10 @@ func TestLightingRequestInventoryIncludesSwitchesWithoutAllSensors(t *testing.T)
 	if !slices.Contains(got, "light") || !slices.Contains(got, "switch") || slices.Contains(got, "sensor") {
 		t.Fatalf("domains=%v", got)
 	}
+	lanterns := controlDomains("Включи фонарики")
+	if !slices.Contains(lanterns, "light") || slices.Contains(lanterns, "sensor") {
+		t.Fatalf("lantern domains=%v", lanterns)
+	}
 }
 
 func TestHomeConfirmsLightBrightnessResult(t *testing.T) {
@@ -177,25 +181,26 @@ type toolFunc func(context.Context, string, map[string]any) (jsontext.Value, err
 func (f toolFunc) Call(ctx context.Context, name string, args map[string]any) (jsontext.Value, error) {
 	return f(ctx, name, args)
 }
-func TestHomeRejectsDuplicateAndGroupMemberActions(t *testing.T) {
+func TestHomeKeepsGroupWhenPlanAlsoListsItsMember(t *testing.T) {
 	for _, second := range []string{"light.office", "light.member"} {
 		t.Run(second, func(t *testing.T) {
+			state := "off"
 			actions := 0
 			tools := toolFunc(func(_ context.Context, name string, args map[string]any) (jsontext.Value, error) {
 				var v any = map[string]any{"success": true}
 				switch name {
 				case "ha_search":
-					v = map[string]any{"entities": []Entity{{ID: "light.office", Name: "Group", State: "off", Members: []string{"light.member"}}, {ID: "light.member", Name: "Lamp", State: "off"}}}
+					v = map[string]any{"entities": []Entity{{ID: "light.office", Name: "Фонарики", State: "off", Members: []string{"light.member"}}, {ID: "light.member", Name: "Lamp", State: "off"}}}
 				case "ha_get_entity_exposure":
 					v = map[string]any{"exposed_to": map[string]any{"conversation": true}}
 				case "ha_get_state":
-					m := []string{}
-					if args["entity_id"] == "light.office" {
-						m = []string{"light.member"}
-					}
-					v = map[string]any{"data": map[string]any{"state": "off", "attributes": map[string]any{"entity_id": m}}}
+					v = map[string]any{"data": map[string]any{"state": state}}
 				case "ha_call_service":
+					if args["entity_id"] != "light.office" {
+						t.Fatalf("member called separately: %v", args["entity_id"])
+					}
 					actions++
+					state = "on"
 				}
 				b, _ := json.Marshal(v)
 				return b, nil
@@ -204,10 +209,38 @@ func TestHomeRejectsDuplicateAndGroupMemberActions(t *testing.T) {
 				b, _ := json.Marshal(Plan{Actions: []Action{{Domain: "light", Service: "turn_on", EntityID: "light.office"}, {Domain: "light", Service: "turn_on", EntityID: second}}})
 				return string(b), nil
 			})}
-			if _, err := c.Handle(t.Context(), "Включи свет"); err == nil || actions != 0 {
-				t.Fatalf("err=%v actions=%d", err, actions)
+			answer, err := c.Handle(t.Context(), "Включи фонарики")
+			if err != nil || actions != 1 || !strings.Contains(answer, "Фонарики") {
+				t.Fatalf("answer=%q err=%v actions=%d", answer, err, actions)
 			}
 		})
+	}
+}
+
+func TestStateConfirmationWaitsForSlowLight(t *testing.T) {
+	reads := 0
+	tools := toolFunc(func(_ context.Context, name string, _ map[string]any) (jsontext.Value, error) {
+		var v any = map[string]any{"success": true, "exposed_to": map[string]any{"conversation": true}}
+		switch name {
+		case "ha_search":
+			v = map[string]any{"entities": []Entity{{ID: "light.lanterns", Name: "Фонарики", State: "off", Area: "Зал"}}}
+		case "ha_get_state":
+			reads++
+			state := "off"
+			if reads >= 3 {
+				state = "on"
+			}
+			v = map[string]any{"data": map[string]any{"state": state}}
+		}
+		b, _ := json.Marshal(v)
+		return b, nil
+	})
+	c := Controller{Tools: tools, Domains: []string{"light"}, Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		return `{"answer":"","actions":[{"domain":"light","service":"turn_on","entity_id":"light.lanterns","data":{}}]}`, nil
+	})}
+	answer, err := c.Handle(t.Context(), "Включи фонарики")
+	if err != nil || answer != "Готово: Фонарики." || reads != 3 {
+		t.Fatalf("answer=%q err=%v reads=%d", answer, err, reads)
 	}
 }
 
@@ -219,6 +252,98 @@ func TestHomeWarmNeverPlansOrActuates(t *testing.T) {
 	})}
 	if err := c.Warm(t.Context(), "Кабинет"); err != nil || f.actions != 0 {
 		t.Fatalf("err=%v actions=%d", err, f.actions)
+	}
+}
+
+func TestUnspecifiedRoomUsesAreaNamedInSystemPrompt(t *testing.T) {
+	note := "Ты находишься в комнате «Зал» в городе «Москва». Если пользователь не указал комнату, считай, что речь идёт о Зале. Не спрашивай комнату, если в Зале есть свет."
+	entities := []Entity{{ID: "light.hall", Name: "Люстра", State: "off", Area: "Зал"}, {ID: "light.kitchen", Name: "Кухня", State: "off", Area: "Кухня"}, {ID: "light.room", Name: "Комната", State: "off", Area: "Комната"}}
+	saw := func(text string) string {
+		t.Helper()
+		var inventory string
+		tools := toolFunc(func(_ context.Context, name string, _ map[string]any) (jsontext.Value, error) {
+			var v any = map[string]any{"success": true, "exposed_to": map[string]any{"conversation": true}}
+			if name == "ha_search" {
+				v = map[string]any{"entities": entities}
+			}
+			b, _ := json.Marshal(v)
+			return b, nil
+		})
+		c := Controller{Tools: tools, Domains: []string{"light"}, SystemPrompt: note, Planner: plannerFunc(func(_ context.Context, m []llm.Message, structured bool) (string, error) {
+			if !structured || len(m) != 2 {
+				t.Fatalf("planner messages=%+v structured=%v", m, structured)
+			}
+			inventory = m[1].Content
+			return `{"answer":"Включаю свет в Зале.","actions":[]}`, nil
+		})}
+		if _, err := c.Handle(t.Context(), text); err != nil {
+			t.Fatal(err)
+		}
+		return inventory
+	}
+	hall := saw("Включи свет")
+	if !strings.Contains(hall, "light.hall") || strings.Contains(hall, "light.kitchen") || strings.Contains(hall, "light.room") {
+		t.Fatalf("default room did not narrow inventory: %s", hall)
+	}
+	kitchen := saw("Включи свет на кухне")
+	if !strings.Contains(kitchen, "light.kitchen") || strings.Contains(kitchen, "light.hall") {
+		t.Fatalf("explicit room lost: %s", kitchen)
+	}
+	generic := "Не спрашивай комнату."
+	tools := toolFunc(func(_ context.Context, name string, _ map[string]any) (jsontext.Value, error) {
+		var v any = map[string]any{"success": true}
+		if name == "ha_search" {
+			v = map[string]any{"entities": entities}
+		}
+		if name == "ha_get_entity_exposure" {
+			v = map[string]any{"exposed_to": map[string]any{"conversation": true}}
+		}
+		b, _ := json.Marshal(v)
+		return b, nil
+	})
+	var open string
+	c := Controller{Tools: tools, Domains: []string{"light"}, SystemPrompt: generic, Planner: plannerFunc(func(_ context.Context, m []llm.Message, _ bool) (string, error) {
+		open = m[1].Content
+		return `{"answer":"Какую комнату?","actions":[]}`, nil
+	})}
+	if _, err := c.Handle(t.Context(), "Включи свет"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(open, "light.hall") || !strings.Contains(open, "light.kitchen") || !strings.Contains(open, "light.room") {
+		t.Fatalf("generic room word narrowed inventory: %s", open)
+	}
+}
+
+func TestHomePlannerReceivesDefaultRoomNote(t *testing.T) {
+	note := "Ты находишься в комнате «Зал». Если пользователь не указал комнату, считай, что речь идёт о Зале."
+	for _, tc := range []struct {
+		name, text string
+		structured bool
+	}{
+		{"command", "Включи свет", true},
+		{"state", "Горит ли свет?", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &homeFixture{state: "off"}
+			c := Controller{Tools: f, Domains: []string{"light"}, SystemPrompt: note, Planner: plannerFunc(func(_ context.Context, m []llm.Message, structured bool) (string, error) {
+				if structured != tc.structured || len(m) != 2 || m[0].Role != "system" {
+					t.Fatalf("messages=%+v structured=%v", m, structured)
+				}
+				if !strings.Contains(m[0].Content, "Дополнительные указания оператора") || !strings.Contains(m[0].Content, "комнате «Зал»") {
+					t.Fatalf("planner missed room note: %q", m[0].Content)
+				}
+				if !strings.Contains(m[1].Content, "light.office") {
+					t.Fatal("inventory missing")
+				}
+				if structured {
+					return `{"answer":"Включаю свет в Зале.","actions":[{"domain":"light","service":"turn_on","entity_id":"light.office","data":{}}]}`, nil
+				}
+				return "Свет выключен.", nil
+			})}
+			if _, err := c.Handle(t.Context(), tc.text); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

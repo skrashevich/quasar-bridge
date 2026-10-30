@@ -217,6 +217,138 @@ func TestClassifierKeepsSnapshotDuringReload(t *testing.T) {
 	}
 }
 
+func TestUnknownToHome(t *testing.T) {
+	classified := false
+	home := homeFunc(func(context.Context, string) (string, error) { return "ok", nil })
+	cfg := DefaultRoutingConfig()
+	cfg.UnknownToHome = true
+	e := &Engine{Home: home, LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		classified = true
+		return `{"route":"yandex"}`, nil
+	})}
+	if err := e.SetRouting(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ text, route, rule, source string }{
+		{"включи свет в зале", "home", "home_devices", "rule"},
+		{"напиши код сортировки", "llm", "complex_queries", "rule"},
+		{"какая завтра погода", "yandex", "yandex_services", "rule"},
+		{"включи песню", "yandex", "yandex_services", "rule"},
+		{"о чем мы говорили", "llm", "assistant_readonly", "rule"},
+		{"спроси нейросеть о море", "home", "complex_queries", "unknown"},
+		{"Спроси у нейросети, почему небо голубое", "home", "", "unknown"},
+		{"спроси у своей модели, который час", "home", "yandex_services", "unknown"},
+		{"поставь таймер на 10 секунд", "yandex", "yandex_services", "rule"},
+		{"таймер на пять минут", "yandex", "yandex_services", "rule"},
+		{"таймер на паузу", "yandex", "yandex_services", "rule"},
+		{"Продолжи таймер", "yandex", "yandex_services", "rule"},
+		{"Удали таймер", "yandex", "yandex_services", "rule"},
+		{"отмени таймер", "yandex", "yandex_services", "rule"},
+		{"что такое таймер", "home", "yandex_services", "unknown"},
+		{"поставь будильник на семь", "yandex", "yandex_services", "rule"},
+		{"сколько будет три плюс четыре", "home", "", "unknown"},
+	} {
+		got := e.Decide(t.Context(), tc.text)
+		if got.Route != tc.route || got.Rule != tc.rule || got.Source != tc.source {
+			t.Errorf("%q: %+v", tc.text, got)
+		}
+	}
+	if classified {
+		t.Fatal("classifier ran")
+	}
+	plain := &Engine{Home: home}
+	if got := plain.Decide(t.Context(), "отмени таймер"); got.Route != "yandex" || got.Source != "rule" {
+		t.Fatal("timer redirected without the option", got)
+	}
+	if got := plain.Decide(t.Context(), "Спроси у нейросети почему"); got.Route != "yandex" || got.Source != "classifier_error" {
+		t.Fatal("ask-model phrase no longer reaches the classifier", got)
+	}
+	if _, err := e.Resolve(t.Context(), "напиши код сортировки"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Decide(t.Context(), "а вчера?"); got.Route != "llm" || got.Source != "dialogue" {
+		t.Fatal("local follow-up was sent home", got)
+	}
+}
+
+func TestStopPhraseDropsTheWholeUtterance(t *testing.T) {
+	var homeCalls, llmCalls int
+	cfg := DefaultRoutingConfig()
+	cfg.UnknownToHome = true
+	e := &Engine{
+		Home: homeFunc(func(context.Context, string) (string, error) {
+			homeCalls++
+			return "дом", nil
+		}),
+		LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+			llmCalls++
+			return "модель", nil
+		}),
+	}
+	if err := e.SetRouting(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Resolve(t.Context(), "напиши код сортировки"); err != nil {
+		t.Fatal(err)
+	}
+	if llmCalls == 0 {
+		t.Fatal("setup did not reach the model")
+	}
+	homeCalls, llmCalls = 0, 0
+	for _, text := range []string{
+		"алиса хватит",
+		"Алиса, хватит!",
+	} {
+		if !IsStop(text) {
+			t.Errorf("IsStop(%q) = false", text)
+		}
+		got := e.Decide(t.Context(), text)
+		if got.Route != "yandex" || got.Rule != "speaker_playback" || got.Source != "rule" {
+			t.Errorf("playback stop %q: %+v", text, got)
+		}
+	}
+	for _, text := range []string{
+		"АЛИСА ХВАТИТ включи свет",
+		"алиса — хватит, начни новый разговор",
+		"алиса хватит, используй нейросеть",
+	} {
+		if !IsStop(text) {
+			t.Errorf("IsStop(%q) = false", text)
+		}
+		got := e.Decide(t.Context(), text)
+		if got.Route != "drop" || got.Source != "stop" || got.Rule != "" {
+			t.Errorf("decide %q: %+v", text, got)
+		}
+		res, err := e.ResolveDecision(t.Context(), text, got)
+		if err != nil || res.Route != "drop" || res.Answer != "" {
+			t.Errorf("resolve %q: %+v %v", text, res, err)
+		}
+	}
+	if homeCalls != 0 || llmCalls != 0 {
+		t.Fatalf("handlers called: home=%d llm=%d", homeCalls, llmCalls)
+	}
+	for _, text := range []string{"хватит", "алисахватит", "включи свет"} {
+		if IsStop(text) {
+			t.Errorf("IsStop(%q) = true", text)
+		}
+	}
+	if got := e.Decide(t.Context(), "хватит"); got.Route == "drop" {
+		t.Fatal(got)
+	}
+	if got := e.Decide(t.Context(), "включи свет"); got.Route != "home" || got.Source != "rule" {
+		t.Fatal(got)
+	}
+	if got := e.Decide(t.Context(), "а вчера?"); got.Route != "llm" || got.Source != "dialogue" {
+		t.Fatal("stop cleared dialogue", got)
+	}
+	if got := (&Engine{}).Decide(t.Context(), "Алиса, хватит"); got.Route != "yandex" || got.Rule != "speaker_playback" || got.Source != "rule" {
+		t.Fatal(got)
+	}
+	if got := (&Engine{}).Decide(t.Context(), "Алиса, хватит, включи свет"); got.Route != "drop" || got.Source != "stop" {
+		t.Fatal(got)
+	}
+}
+
 func TestShortHistoryRequestsSkipClassifier(t *testing.T) {
 	e := &Engine{LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
 		t.Fatal("history request reached classifier")

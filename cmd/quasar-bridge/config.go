@@ -9,10 +9,12 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"quasarbridge/internal/assistant"
 	"quasarbridge/internal/bridge"
 	"quasarbridge/internal/dialogue"
+	"quasarbridge/internal/home"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
 )
@@ -41,13 +43,16 @@ type config struct {
 	LLMMaxOutputTokens int                  `json:"llm_max_output_tokens"`
 	LLMHostedTools     []string             `json:"llm_hosted_tools"`
 	LLMChatParameters  map[string]any       `json:"llm_chat_parameters"`
+	LLMSystemPrompt    string               `json:"llm_system_prompt"`
 	HomeWarmArea       string               `json:"home_warm_area"`
+	HomeAssistant      home.AssistConfig    `json:"home_assistant"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
+	SpotterWaitMS      int                  `json:"spotter_wait_ms"`
 	Routing            bridge.RoutingConfig `json:"routing"`
 }
 
 func readConfig(path string) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true}
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, SpotterWaitMS: 1500}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, errors.New("cannot read configuration file")
@@ -59,8 +64,9 @@ func readConfig(path string) (config, error) {
 		"QUASAR_LISTEN": &cfg.Listen, "QUASAR_UPSTREAM": &cfg.Upstream,
 		"QUASAR_TLS_CERT": &cfg.TLSCert, "QUASAR_TLS_KEY": &cfg.TLSKey,
 		"QUASAR_MODE": &cfg.Mode, "QUASAR_LLM_BASE_URL": &cfg.LLMBaseURL,
-		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
-		"QUASAR_LLM_API": &cfg.LLMAPI, "QUASAR_LLM_REASONING_EFFORT": &cfg.LLMReasoningEffort,
+		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_LLM_SYSTEM_PROMPT": &cfg.LLMSystemPrompt,
+		"QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
+		"QUASAR_LLM_API":        &cfg.LLMAPI, "QUASAR_LLM_REASONING_EFFORT": &cfg.LLMReasoningEffort,
 	} {
 		if value, ok := os.LookupEnv(name); ok {
 			*target = value
@@ -150,6 +156,20 @@ func readConfig(path string) (config, error) {
 	if cfg.LLMBaseURL != "" && !validEndpoint(cfg.LLMBaseURL, "http", "https") {
 		return cfg, errors.New("invalid LLM URL")
 	}
+	if value, ok := os.LookupEnv("QUASAR_HOME_ASSISTANT_URL"); ok {
+		cfg.HomeAssistant.URL = value
+	}
+	if value, ok := os.LookupEnv("QUASAR_HOME_ASSISTANT_AGENT_ID"); ok {
+		cfg.HomeAssistant.AgentID = value
+	}
+	cfg.HomeAssistant.Normalize()
+	if err := cfg.HomeAssistant.Validate(os.Getenv("QUASAR_HOME_ASSISTANT_TOKEN")); err != nil {
+		return cfg, err
+	}
+	cfg.LLMSystemPrompt = strings.TrimSpace(cfg.LLMSystemPrompt)
+	if utf8.RuneCountInString(cfg.LLMSystemPrompt) > 4000 {
+		return cfg, errors.New("llm_system_prompt is too long")
+	}
 	if cfg.Mode == "hybrid" {
 		if cfg.LLMBaseURL == "" || cfg.LLMModel == "" {
 			return cfg, errors.New("hybrid mode requires LLM URL and model")
@@ -160,6 +180,9 @@ func readConfig(path string) (config, error) {
 	}
 	if cfg.LocalProgress.AfterMS < 100 || cfg.LocalProgress.AfterMS > 10000 || cfg.LocalProgress.IntervalMS < 1000 || cfg.LocalProgress.IntervalMS > 10000 {
 		return cfg, errors.New("invalid local_progress timing")
+	}
+	if cfg.SpotterWaitMS < 0 || cfg.SpotterWaitMS > 5000 {
+		return cfg, errors.New("spotter_wait_ms must be from 0 to 5000")
 	}
 	if err := cfg.DialogueContext.Validate(); err != nil {
 		return cfg, err

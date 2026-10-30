@@ -36,6 +36,7 @@ type Engine struct {
 	Playback     PlaybackController
 	Music        MusicStarter
 	Dialogue     *dialogue.Store
+	SystemPrompt string
 	dialogueOnce sync.Once
 	routing      atomic.Pointer[RoutingPolicy]
 }
@@ -72,6 +73,9 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	if ctx.Err() != nil {
 		return Resolution{Route: route}, ctx.Err()
 	}
+	if route == "drop" {
+		return Resolution{Route: "drop"}, nil
+	}
 
 	if !e.dialogue().Current(ctx, ticket) {
 		return Resolution{Route: route}, context.Canceled
@@ -83,6 +87,9 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		e.dialogue().ClearReplay(ctx, ticket)
 		if !e.dialogue().Clear(ctx, ticket) {
 			return Resolution{Route: route}, context.Canceled
+		}
+		if reset, ok := e.Home.(interface{ Reset(context.Context) }); ok {
+			reset.Reset(ctx)
 		}
 		return Resolution{Route: "llm", Answer: "Начинаем новый разговор."}, nil
 	}
@@ -119,6 +126,14 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
+		if turn, ok := e.Home.(interface {
+			Turn(context.Context, string) (string, *bool, error)
+		}); ok {
+			answer, listen, err := turn.Turn(ctx, text)
+			result.Answer = answer
+			result.Listen = listen
+			return result, err
+		}
 		answer, err := e.Home.Handle(ctx, text)
 		result.Answer = answer
 		return result, err
@@ -144,7 +159,8 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
+	system := llm.AppendOperatorNote("Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома.", e.SystemPrompt)
+	messages := []llm.Message{{Role: "system", Content: system}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	private := snapshot.PrivateHistory
@@ -201,7 +217,28 @@ func (e *Engine) RoutingStatus() RoutingStatus {
 	return RoutingStatus{Revision: p.revision, ActiveRules: len(p.rules)}
 }
 func (e *Engine) IsRefusal(text string) bool { return e.policy().isRefusal(text) }
-func IsRefusal(text string) bool             { return builtInRouting.isRefusal(text) }
+
+// directPlayback reports a whole-utterance player command. An active local
+// queue wins; otherwise the built-in speaker_playback rule sends it to Yandex.
+// Matching does not reserve a dialogue turn.
+func (e *Engine) directPlayback(ctx context.Context, text string) (RouteDecision, bool) {
+	if e == nil {
+		return RouteDecision{}, false
+	}
+	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
+		return RouteDecision{Route: "playback", Source: "playback"}, true
+	}
+	if d, ok := e.policy().match(text); ok && d.Rule == "speaker_playback" {
+		return d, true
+	}
+	return RouteDecision{}, false
+}
+
+func homeActive(h HomeHandler, ctx context.Context) bool {
+	active, ok := h.(interface{ Active(context.Context) bool })
+	return ok && active.Active(ctx)
+}
+func IsRefusal(text string) bool { return builtInRouting.isRefusal(text) }
 func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecision) {
 	ctx, snapshot, ticket := e.dialogue().Start(ctx)
 	defer func() {
@@ -214,23 +251,38 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.prepared = true
 	}()
 	p := e.policy()
+	// A whole playback command still stops music. «Алиса, хватит» inside a
+	// longer utterance is not such a command and is dropped below, before
+	// retry, reset, and every other rule.
+	if d, ok := e.directPlayback(ctx, text); ok {
+		return d
+	}
+	if IsStop(text) {
+		return RouteDecision{Route: "drop", Source: "stop"}
+	}
 	if isRetryCommand(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue_retry"}
 	}
 	if dialogue.IsReset(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue_reset"}
 	}
-	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
-		return RouteDecision{Route: "playback", Source: "playback"}
-	}
 	if d, ok := p.match(text); ok {
+		if redirected, yes := p.unknownHome(text, d); yes {
+			return redirected
+		}
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
 			d.Route = "music"
 		}
 		return d
 	}
+	if homeActive(e.Home, ctx) && dialogue.IsFollowup(text) {
+		return RouteDecision{Route: "home", Source: "home_assistant"}
+	}
 	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue"}
+	}
+	if p.unknownToHome {
+		return RouteDecision{Route: "home", Source: "unknown"}
 	}
 	if p.defaultRoute != "classify" {
 		return RouteDecision{Route: p.defaultRoute, Source: "default"}

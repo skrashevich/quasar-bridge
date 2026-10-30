@@ -19,6 +19,30 @@ type homeFunc func(context.Context, string) (string, error)
 
 func (f homeFunc) Handle(ctx context.Context, s string) (string, error) { return f(ctx, s) }
 
+type listenHome struct{ listen *bool }
+
+func (h listenHome) Handle(context.Context, string) (string, error) { return "Включено", nil }
+func (h listenHome) Turn(context.Context, string) (string, *bool, error) {
+	return "Включено", h.listen, nil
+}
+
+func TestHomeTurnSuppliesListenOverride(t *testing.T) {
+	off := false
+	engine := Engine{Home: listenHome{listen: &off}}
+	got, err := engine.Resolve(t.Context(), "Включи свет в кабинете")
+	if err != nil || got.Route != "home" || got.Listen == nil || *got.Listen {
+		t.Fatalf("result=%+v err=%v", got, err)
+	}
+}
+
+func TestFlashlightPhraseRoutesToHome(t *testing.T) {
+	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) { return "", nil })}
+	got := e.Decide(t.Context(), "включи фонарики")
+	if got.Route != "home" || got.Rule != "home_devices" {
+		t.Fatalf("flashlight route=%+v", got)
+	}
+}
+
 func TestEngineRoutesHomeComplexAndYandexWithoutDuplicateBackend(t *testing.T) {
 	for _, tc := range []struct{ text, route string }{{"Включи свет в кабинете", "home"}, {"Напиши код сортировки на Go", "llm"}, {"Какая завтра погода", "yandex"}} {
 		t.Run(tc.route, func(t *testing.T) {
@@ -138,6 +162,87 @@ func TestAssistantToolsAreIsolatedFromRoutingAndHomePlanning(t *testing.T) {
 	got, err := e.Resolve(t.Context(), "прочитай веб-страницу")
 	if err != nil || got.Answer != "tool answer" || plain != 1 || agentCalls != 1 {
 		t.Fatalf("wrong calls: %+v %v %d %d", got, err, plain, agentCalls)
+	}
+}
+
+func TestSystemPromptIsAppendedOnlyToDialogue(t *testing.T) {
+	note := "Ты находишься в комнате «Зал» в городе «Москва». Если пользователь не указал комнату, считай, что речь идёт о Зале."
+	var dialogue, classifier string
+	e := &Engine{SystemPrompt: note, LLM: completionFunc(func(_ context.Context, m []llm.Message, structured bool) (string, error) {
+		if structured {
+			if len(m) == 0 || m[0].Role != "system" {
+				t.Fatal("classifier has no system message")
+			}
+			classifier = m[0].Content
+			return `{"route":"llm"}`, nil
+		}
+		systems := 0
+		for _, message := range m {
+			if message.Role == "system" {
+				systems++
+				dialogue = message.Content
+			}
+		}
+		if systems != 1 {
+			t.Fatalf("system messages=%d", systems)
+		}
+		return "Свет в Зале.", nil
+	})}
+	cfg := DefaultRoutingConfig()
+	cfg.Rules = nil
+	cfg.DefaultRoute = "classify"
+	if err := e.SetRouting(cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.Resolve(t.Context(), "включи свет")
+	if err != nil || got.Route != "llm" {
+		t.Fatalf("result=%+v err=%v", got, err)
+	}
+	if !strings.Contains(dialogue, "голосовой помощник") || !strings.Contains(dialogue, "комнате «Зал»") {
+		t.Fatalf("dialogue prompt=%q", dialogue)
+	}
+	if strings.Contains(classifier, "Зал") || strings.Contains(classifier, "Дополнительные указания") {
+		t.Fatalf("classifier saw operator note: %q", classifier)
+	}
+}
+
+type sessionHome struct {
+	active bool
+	resets int
+	calls  int
+}
+
+func (s *sessionHome) Handle(context.Context, string) (string, error) {
+	s.calls++
+	return "Свет в зале включён.", nil
+}
+func (s *sessionHome) Active(context.Context) bool { return s.active }
+func (s *sessionHome) Reset(context.Context)       { s.resets++; s.active = false }
+
+func TestHomeAssistantFollowupAndReset(t *testing.T) {
+	home := &sessionHome{}
+	e := &Engine{Home: home}
+	if got := e.Decide(t.Context(), "а ярче?"); got.Route == "home" {
+		t.Fatal("inactive assistant captured follow-up", got)
+	}
+	home.active = true
+	got := e.Decide(t.Context(), "а ярче?")
+	if got.Route != "home" || got.Source != "home_assistant" {
+		t.Fatalf("follow-up=%+v", got)
+	}
+	if weather := e.Decide(t.Context(), "какая погода"); weather.Route != "yandex" || weather.Source == "home_assistant" {
+		t.Fatal("rule lost to assistant follow-up", weather)
+	}
+	result, err := e.Resolve(t.Context(), "а ярче?")
+	if err != nil || result.Answer != "Свет в зале включён." || home.calls != 1 {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, home.calls)
+	}
+	reset, err := e.Resolve(t.Context(), "начни новый разговор")
+	if err != nil || reset.Answer != "Начинаем новый разговор." || home.resets != 1 || home.calls != 1 || home.active {
+		t.Fatalf("reset=%+v err=%v home=%+v", reset, err, home)
+	}
+	if again := e.Decide(t.Context(), "а ярче?"); again.Route == "home" {
+		t.Fatal("reset kept the assistant conversation", again)
 	}
 }
 

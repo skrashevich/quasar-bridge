@@ -18,6 +18,7 @@ import (
 	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	continuation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
 	ack "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/input_start_ack"
+	spotter "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/spotter_validation"
 	tts "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_generate"
 	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
@@ -31,6 +32,8 @@ import (
 type Resolution struct {
 	Route  string
 	Answer string
+	// Listen overrides the session listen-after-reply flag when set.
+	Listen *bool
 }
 type Resolver interface {
 	Resolve(context.Context, string) (Resolution, error)
@@ -58,6 +61,7 @@ type nativeRequest struct {
 	request                         *request.TAliceRequestProto
 	text                            string
 	route                           string
+	listen                          *bool
 	ctx                             context.Context
 	cancel                          context.CancelFunc
 	started, canceled, local, cloud bool
@@ -74,6 +78,11 @@ type nativeRequest struct {
 	soundDirective                  *soundDirective
 	soundSealed                     bool
 	expires                         *time.Timer
+	spotterReady                    bool
+	spotterOK                       bool
+	spotterArmed                    bool
+	spotterWait                     chan struct{}
+	spotterFrame                    []byte
 }
 type Native struct {
 	connectionScope  string
@@ -93,6 +102,9 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+	// SpotterWait bounds how long a local voice route waits for Yandex to
+	// name the winning speaker. Zero keeps the historical behavior.
+	SpotterWait time.Duration
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -423,6 +435,19 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		return n.down(ctx, k, out)
 	}
+	if f.Kind() == "SpotterValidation" {
+		n.noteSpotter(p, e.GetSpotterValidation())
+		// The speaker firmware only needs this frame on the cloud route.
+		// A local route consumes the verdict itself; forwarding a rejection
+		// would race with the voiceless completion.
+		if !p.cloud {
+			if !p.local && !p.canceled && p.spotterFrame == nil {
+				p.spotterFrame = append([]byte{}, data...)
+			}
+			n.mu.Unlock()
+			return nil
+		}
+	}
 
 	if f.Kind() == "TtsSpeak" {
 		p.ttsStarted = true
@@ -529,6 +554,15 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		result := Resolution{Route: "yandex"}
 		var err error
+		// Drop before Decide so a cancelled phrase does not reserve a dialogue
+		// turn. A standalone playback command is exempt and continues below.
+		if IsStop(text) {
+			engine, routed := n.resolver.(*Engine)
+			if _, exempt := engine.directPlayback(p.ctx, text); !routed || !exempt {
+				n.drop(p)
+				return
+			}
+		}
 		if n.resolver != nil && strings.TrimSpace(text) != "" {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
 				decision := routed.Decide(p.ctx, text)
@@ -536,12 +570,25 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				p.listenOnStreamStart = decision.Source == "dialogue_retry"
 				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
+				if !p.isText && waitsForSpotter(decision.Route) {
+					switch n.waitSpotter(p) {
+					case spotterLose:
+						n.drop(p)
+						return
+					case spotterAbort:
+						return
+					}
+				}
 				stop := func() {}
 				if decision.Route != "yandex" && n.ProgressAfter > 0 {
 					stop = n.progress(p)
 				}
 				result, err = routed.ResolveDecision(p.ctx, text, decision)
 				stop()
+				if n.lostElection(p) {
+					n.drop(p)
+					return
+				}
 			} else {
 				result, err = n.resolver.Resolve(p.ctx, text)
 			}
@@ -556,6 +603,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		if err != nil {
 			n.discardSound(p)
 			if result.Route == "home" {
+				slog.Warn("home_command_failed", "error", err)
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
 			} else if result.Route == "music" {
 				result.Answer = "Не удалось включить музыку с этой страницы."
@@ -573,8 +621,11 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			n.OnRoute(p.id, result.Route)
 		}
 		p.route = result.Route
+		p.listen = result.Listen
 		if result.Route == "yandex" {
 			p.cloud = true
+			held := p.spotterFrame
+			p.spotterFrame = nil
 			var err error
 			if p.gated {
 				control := p.continuation
@@ -591,10 +642,14 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				}
 			}
 			n.mu.Unlock()
+			if len(held) > 0 {
+				_ = n.down(n.live(p), websocket.MessageBinary, held)
+			}
 			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil)
 			return
 		}
 		p.local = true
+		p.spotterFrame = nil
 		if !p.streaming {
 			p.ttsID = newID()
 			n.tts[p.ttsID] = p
@@ -611,14 +666,189 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 	})
 }
+func (n *Native) drop(p *nativeRequest) {
+	n.mu.Lock()
+	if p.canceled {
+		n.mu.Unlock()
+		return
+	}
+	p.canceled = true
+	p.spotterFrame = nil
+	if n.OnRoute != nil {
+		n.OnRoute(p.id, "drop")
+	}
+	n.mu.Unlock()
+	slog.Info("native_route", "request", requestTag(p.id), "route", "drop")
+	if p.gated {
+		// UserStop ends the cloud request. LocalExecution would mean this
+		// device is about to answer, and an answer that never arrives is
+		// what makes the speaker say its generic error.
+		_ = n.sendUserStop(n.live(p), p.id)
+	}
+	// The speaker still has the original request open. Abandoning it makes
+	// the firmware time out and say «произошла какая-то ошибка». A voiceless
+	// response finishes that dialog without TTS and without another listen.
+	if err := n.finishSilent(p); err != nil {
+		slog.Warn("native_drop_finish_failed", "request", requestTag(p.id))
+	}
+	p.cancel()
+}
 func (n *Native) sendCancel(ctx context.Context, id string) error {
-	m := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}, Event: &client.TClientMessage_TEvent_CancelRequest{CancelRequest: &cancellation.TCancelRequest{RequestMessageId: id, Reason: &cancellation.TCancelRequest_LocalExecution{LocalExecution: &cancellation.TCancelRequest_TReasonLocalExecution{}}}}}}}
+	return n.sendCancelMessage(ctx, &cancellation.TCancelRequest{RequestMessageId: id, Reason: &cancellation.TCancelRequest_LocalExecution{LocalExecution: &cancellation.TCancelRequest_TReasonLocalExecution{}}})
+}
+func (n *Native) sendUserStop(ctx context.Context, id string) error {
+	return n.sendCancelMessage(ctx, &cancellation.TCancelRequest{RequestMessageId: id, Reason: &cancellation.TCancelRequest_UserStop{UserStop: &cancellation.TCancelRequest_TReasonUserStop{}}})
+}
+func (n *Native) sendCancelMessage(ctx context.Context, cancel *cancellation.TCancelRequest) error {
+	m := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}, Event: &client.TClientMessage_TEvent_CancelRequest{CancelRequest: cancel}}}}
 	b, err := (wire.Frame{Client: m, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err
 	}
 	return n.up(ctx, websocket.MessageBinary, b)
 }
+func (n *Native) finishSilent(p *nativeRequest) error {
+	if !p.gated && !p.cloud {
+		if err := n.ack(p); err != nil {
+			return err
+		}
+	}
+	requestID := p.request.GetHeader().GetRequestId()
+	if requestID == "" {
+		requestID = p.id
+	}
+	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{ShouldListen: false}, Response: &response.TAliceResponseProto_TResponse{}}
+	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: answer}}}}
+	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
+	if err != nil {
+		return err
+	}
+	return n.down(n.live(p), websocket.MessageBinary, b)
+}
+
+// waitsForSpotter reports routes that execute on this speaker. The cloud
+// route keeps Yandex's own election, and a drop never starts work.
+func waitsForSpotter(route string) bool {
+	switch route {
+	case "home", "llm", "music", "playback":
+		return true
+	default:
+		return false
+	}
+}
+
+type spotterChoice int
+
+const (
+	spotterSpeak spotterChoice = iota
+	spotterLose
+	spotterAbort
+)
+
+func (n *Native) noteSpotter(p *nativeRequest, v *spotter.TSpotterValidation) {
+	if p.spotterReady {
+		return
+	}
+	p.spotterReady = true
+	p.spotterOK = v.GetResult() == spotter.TSpotterValidation_Ok && !v.GetCanceledCauseOfMultiactivation()
+	slog.Info("native_spotter", "request", requestTag(p.id), "result", v.GetResult().String(), "multiactivation", v.GetCanceledCauseOfMultiactivation())
+	// Armed means local work already started because the wait expired.
+	// Cancel it before any speech; the caller then finishes the dialog.
+	if !p.spotterOK && p.spotterArmed && !p.local && !p.cloud {
+		p.cancel()
+	}
+	if p.spotterWait != nil {
+		close(p.spotterWait)
+	}
+}
+
+func (n *Native) waitSpotter(p *nativeRequest) spotterChoice {
+	n.mu.Lock()
+	if p.canceled || p.ctx.Err() != nil {
+		n.mu.Unlock()
+		return spotterAbort
+	}
+	if choice, ready := spotterReadyChoice(p); ready {
+		n.mu.Unlock()
+		return choice
+	}
+	wait := n.SpotterWait
+	if wait <= 0 {
+		n.mu.Unlock()
+		return spotterSpeak
+	}
+	if p.spotterWait == nil {
+		p.spotterWait = make(chan struct{})
+	}
+	ch := p.spotterWait
+	n.mu.Unlock()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		n.mu.Lock()
+		choice, _ := spotterReadyChoice(p)
+		canceled := p.canceled
+		n.mu.Unlock()
+		if canceled {
+			return spotterAbort
+		}
+		return choice
+	case <-timer.C:
+		n.mu.Lock()
+		if p.canceled || p.ctx.Err() != nil {
+			n.mu.Unlock()
+			return spotterAbort
+		}
+		if choice, ready := spotterReadyChoice(p); ready {
+			n.mu.Unlock()
+			return choice
+		}
+		p.spotterArmed = true
+		n.mu.Unlock()
+		slog.Info("native_spotter", "request", requestTag(p.id), "result", "timeout")
+		return spotterSpeak
+	case <-p.ctx.Done():
+		return spotterAbort
+	}
+}
+
+func spotterReadyChoice(p *nativeRequest) (spotterChoice, bool) {
+	if !p.spotterReady {
+		return 0, false
+	}
+	if p.spotterOK {
+		return spotterSpeak, true
+	}
+	return spotterLose, true
+}
+
+func (n *Native) lostElection(p *nativeRequest) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return p.spotterReady && !p.spotterOK
+}
+
+// live is the context for the closing cloud and speaker messages. A lost
+// election cancels the request in order to stop local work, and those
+// messages still have to leave on the open session.
+func (n *Native) live(p *nativeRequest) context.Context {
+	if p.ctx.Err() != nil {
+		return n.ctx
+	}
+	return p.ctx
+}
+
+func (n *Native) wantListen(p *nativeRequest, silentPlayback bool) bool {
+	if silentPlayback {
+		return false
+	}
+	if p.listen != nil {
+		return *p.listen
+	}
+	return n.ShouldListen
+}
+
 func (n *Native) reply(p *nativeRequest, text string) error {
 	if p.streaming {
 		return n.finishDeferred(p, text)
@@ -629,7 +859,7 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	}
 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
 	silentPlayback := n.hasSilentPlayback(p)
-	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback
+	answer.VoiceResponse.ShouldListen = n.wantListen(p, silentPlayback)
 	if silentPlayback {
 		answer.VoiceResponse.HasVoiceResponse = false
 		answer.VoiceResponse.OutputSpeech.Text = new("")
