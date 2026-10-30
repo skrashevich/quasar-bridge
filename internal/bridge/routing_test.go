@@ -250,3 +250,19 @@ func TestSpeakerPlaybackControlSkipsClassifier(t *testing.T) {
 		}
 	}
 }
+
+func TestBridgeUpdateRequestsNeverReachHomeClassifier(t *testing.T) {
+	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) {
+		t.Fatal("update reached Home Assistant")
+		return "", nil
+	}), LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		t.Error("update request reached classifier")
+		return `{"route":"home"}`, nil
+	})}
+	for _, text := range []string{"Проверь обновления", "Есть ли обновления?", "Алиса, проверь обновления, пожалуйста!", "Спроси нейросеть: проверь обновления", "Проверь обновления Quasar Bridge", "Установи новую версию", "Установи обновления"} {
+		got := e.Decide(t.Context(), text)
+		if got.Route != "llm" || got.Rule != "bridge_updates" {
+			t.Errorf("%q: %+v", text, got)
+		}
+	}
+}

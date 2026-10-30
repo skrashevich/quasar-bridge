@@ -80,16 +80,25 @@ func New(configPath string) *Updater {
 }
 
 func (u *Updater) Check(ctx context.Context) (Status, error) {
-	data, err := u.fetch(ctx, latestURL, 1<<20)
-	if err != nil {
-		return Status{}, err
-	}
+	// Leave enough time for the model and the speaker's final voice reply.
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	apiCtx, cancelAPI := context.WithTimeout(ctx, 3*time.Second)
+	data, err := u.fetch(apiCtx, latestURL, 1<<20)
+	cancelAPI()
 	var release struct {
 		Tag        string `json:"tag_name"`
 		Draft      bool   `json:"draft"`
 		Prerelease bool   `json:"prerelease"`
 	}
-	if json.Unmarshal(data, &release) != nil || release.Draft || release.Prerelease || !strings.HasPrefix(release.Tag, "v") || !stableVersion.MatchString(release.Tag) {
+	if err != nil {
+		// Some speaker networks can reach github.com but drop api.github.com.
+		// GitHub's latest release link supplies the same stable tag via a redirect.
+		release.Tag, err = u.latestReleaseTag(ctx)
+		if err != nil {
+			return Status{}, err
+		}
+	} else if json.Unmarshal(data, &release) != nil || release.Draft || release.Prerelease || !strings.HasPrefix(release.Tag, "v") || !stableVersion.MatchString(release.Tag) {
 		return Status{}, errors.New("GitHub did not return a valid stable release")
 	}
 	current := stableVersion.FindStringSubmatch(u.currentVersion)
@@ -110,6 +119,35 @@ func (u *Updater) Check(ctx context.Context) (Status, error) {
 		status.InstallSupported = true
 	}
 	return status, nil
+}
+
+// Read only the official redirect; never fetch HTML or follow a release-supplied
+// URL. A different repository, host or prerelease is not a valid update.
+func (u *Updater) latestReleaseTag(ctx context.Context) (string, error) {
+	client := *u.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, repository+"/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "quasar-bridge-updater")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", errors.New("cannot reach GitHub API or latest release page")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently && resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusTemporaryRedirect && resp.StatusCode != http.StatusPermanentRedirect {
+		return "", fmt.Errorf("GitHub latest release page did not return a release redirect (HTTP %d)", resp.StatusCode)
+	}
+	location, err := req.URL.Parse(resp.Header.Get("Location"))
+	if err != nil || location.Scheme != "https" || location.Host != "github.com" || location.User != nil || location.RawQuery != "" || location.ForceQuery || location.Fragment != "" {
+		return "", errors.New("invalid GitHub latest release redirect")
+	}
+	tag, ok := strings.CutPrefix(location.Path, "/skrashevich/quasar-bridge/releases/tag/")
+	if !ok || !strings.HasPrefix(tag, "v") || !stableVersion.MatchString(tag) {
+		return "", errors.New("GitHub latest release redirect is not a stable bridge release")
+	}
+	return tag, nil
 }
 
 func (u *Updater) installState() (string, error) {

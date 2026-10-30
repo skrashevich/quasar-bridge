@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/json/v2"
 	"fmt"
@@ -31,6 +32,10 @@ func (tr githubTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func releaseServer(t *testing.T, tag string, status int) *Updater {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/skrashevich/quasar-bridge/releases/latest" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		if r.URL.Path != "/repos/skrashevich/quasar-bridge/releases/latest" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
@@ -298,4 +303,68 @@ func TestInstallSchedulesVerifiedReleaseAndRejectsConcurrentUpdate(t *testing.T)
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("scheduled installer did not complete")
+}
+
+type stalledReleaseTransport struct{}
+
+func (stalledReleaseTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	<-r.Context().Done()
+	return nil, r.Context().Err()
+}
+
+func TestUnreachableGitHubCheckLeavesTimeForVoiceReply(t *testing.T) {
+	u := &Updater{currentVersion: "1.2.3", client: &http.Client{Transport: stalledReleaseTransport{}}}
+	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err := u.Check(ctx); err == nil {
+		t.Fatal("unreachable server reported success")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("release check took %v; voice reply needs time before the request expires", elapsed)
+	}
+}
+
+func TestCheckUsesOfficialLatestReleaseRedirectWhenAPIUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		location string
+		ok       bool
+	}{
+		{"https://github.com/skrashevich/quasar-bridge/releases/tag/v1.2.4", true},
+		{"/skrashevich/quasar-bridge/releases/tag/v1.2.4", true},
+		{"https://github.com/another/repository/releases/tag/v1.2.4", false},
+		{"https://example.org/skrashevich/quasar-bridge/releases/tag/v1.2.4", false},
+		{"http://github.com/skrashevich/quasar-bridge/releases/tag/v1.2.4", false},
+		{"https://github.com/skrashevich/quasar-bridge/releases/tag/v1.2.4-rc1", false},
+	} {
+		t.Run(tc.location, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/skrashevich/quasar-bridge/releases/latest":
+					w.WriteHeader(http.StatusServiceUnavailable)
+				case "/skrashevich/quasar-bridge/releases/latest":
+					if r.Method != http.MethodHead {
+						t.Errorf("latest release used %s, want HEAD", r.Method)
+					}
+					w.Header().Set("Location", tc.location)
+					w.WriteHeader(http.StatusFound)
+				default:
+					t.Errorf("followed release redirect instead of validating it: %s", r.URL)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			u := &Updater{currentVersion: "1.2.3", client: &http.Client{Transport: githubTransport{server.URL}}}
+			result, err := u.Check(t.Context())
+			if !tc.ok {
+				if err == nil {
+					t.Fatalf("accepted %q", tc.location)
+				}
+				return
+			}
+			if err != nil || !result.UpdateAvailable || result.LatestVersion != "1.2.4" {
+				t.Fatalf("check=%+v, %v", result, err)
+			}
+		})
+	}
 }
