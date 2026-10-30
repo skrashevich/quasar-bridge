@@ -155,3 +155,58 @@ func TestHistoryQuestionNeverExecutesQuotedHomeCommand(t *testing.T) {
 		}
 	}
 }
+
+type followupHome struct {
+	calls     []string
+	followups [][3]string
+}
+
+func (h *followupHome) Handle(_ context.Context, s string) (string, error) {
+	h.calls = append(h.calls, s)
+	return "Выключить телевизор или и приставку тоже?", nil
+}
+func (h *followupHome) HandleFollowup(_ context.Context, text, request, question string) (string, error) {
+	h.followups = append(h.followups, [3]string{text, request, question})
+	return "Готово: Телевизор.", nil
+}
+
+func TestHomeClarifyingQuestionResumes(t *testing.T) {
+	h := &followupHome{}
+	e := &Engine{Home: h, LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		return `{"route":"yandex"}`, nil
+	})}
+	if _, err := e.Resolve(t.Context(), "Выключи телевизор"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.Resolve(t.Context(), "только телевизор")
+	if err != nil || second.Route != "home" || len(h.followups) != 1 {
+		t.Fatalf("follow-up not resumed: %+v %v %+v", second, err, h)
+	}
+	if f := h.followups[0]; f[1] != "Выключи телевизор" || !strings.Contains(f[2], "приставку") {
+		t.Fatalf("lost context: %+v", f)
+	}
+	third, _ := e.Resolve(t.Context(), "Какая завтра погода")
+	if third.Route != "yandex" {
+		t.Fatalf("question must be answered once: %+v", third)
+	}
+}
+
+func TestExplicitRuleAbandonsHomeQuestion(t *testing.T) {
+	h := &followupHome{}
+	e := &Engine{Home: h}
+	if _, err := e.Resolve(t.Context(), "Выключи телевизор"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := e.Resolve(t.Context(), "Поставь таймер на 5 минут")
+	if r.Route == "home" || len(h.followups) != 0 {
+		t.Fatalf("timer captured by pending question: %+v", r)
+	}
+}
+
+func TestIsQuestion(t *testing.T) {
+	for s, want := range map[string]bool{"Какой телевизор выключить?": true, "Уточните, пожалуйста, название.": true, "Готово: Телевизор.": false, "Команда отправлена: Телевизор.": false} {
+		if isQuestion(s) != want {
+			t.Errorf("%q", s)
+		}
+	}
+}

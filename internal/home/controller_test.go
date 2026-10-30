@@ -235,3 +235,19 @@ func TestStateQuestionCannotPlanPhysicalActions(t *testing.T) {
 		t.Fatalf("answer=%q err=%v actions=%d", answer, err, f.actions)
 	}
 }
+
+func TestDegreesScopeWaterHeaterNotSpeakers(t *testing.T) {
+	for text, want := range map[string][]string{
+		"Сделай колонку 40 градусов": {"climate"},
+		"Сделай колонку 37":          {"climate"},
+		"Сделай колонку погромче":    {"climate", "media_player"},
+		"Включи телевизор":           {"media_player"},
+	} {
+		if got := controlDomains(text); !slices.Equal(got, want) {
+			t.Errorf("%q: %v", text, got)
+		}
+	}
+	if _, ok := serviceFields["media_player.turn_on"]; !ok {
+		t.Error("TV cannot be switched on")
+	}
+}

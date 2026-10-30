@@ -21,6 +21,20 @@ type Completer interface {
 type HomeHandler interface {
 	Handle(context.Context, string) (string, error)
 }
+
+// Optional: a handler that can resume its own clarifying question.
+type HomeFollowupHandler interface {
+	HandleFollowup(ctx context.Context, text, request, question string) (string, error)
+}
+
+// homeFollowupTTL bounds how long the next utterance counts as an answer to a
+// home clarifying question; the Station keeps listening after the reply.
+const homeFollowupTTL = 45 * time.Second
+
+type homeQuestion struct {
+	request, question string
+	at                time.Time
+}
 type PlaybackController interface {
 	Active(context.Context) bool
 	Control(context.Context, string) (string, error)
@@ -30,12 +44,15 @@ type MusicStarter interface {
 	StartMusic(context.Context, string) (string, error)
 }
 type Engine struct {
-	LLM          Completer
-	Assistant    Completer
-	Home         HomeHandler
-	Playback     PlaybackController
-	Music        MusicStarter
-	Dialogue     *dialogue.Store
+	LLM       Completer
+	Assistant Completer
+	Home      HomeHandler
+	Playback  PlaybackController
+	Music     MusicStarter
+	Dialogue  *dialogue.Store
+
+	homeMu       sync.Mutex
+	homePending  *homeQuestion
 	dialogueOnce sync.Once
 	routing      atomic.Pointer[RoutingPolicy]
 }
@@ -119,7 +136,23 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
-		answer, err := e.Home.Handle(ctx, text)
+		var answer string
+		var err error
+		q := e.takeHomeQuestion()
+		if f, ok := e.Home.(HomeFollowupHandler); ok && q != nil && decision.Source == "home_followup" {
+			answer, err = f.HandleFollowup(ctx, text, q.request, q.question)
+		} else {
+			answer, err = e.Home.Handle(ctx, text)
+		}
+		if err == nil && isQuestion(answer) {
+			request := text
+			if q != nil && decision.Source == "home_followup" {
+				request = q.request + ". " + text
+			}
+			e.homeMu.Lock()
+			e.homePending = &homeQuestion{request: request, question: answer, at: time.Now()}
+			e.homeMu.Unlock()
+		}
 		result.Answer = answer
 		return result, err
 	case "llm":
@@ -168,6 +201,33 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	r.Answer = answer
 	return r, err
 }
+func (e *Engine) peekHomeQuestion() bool {
+	e.homeMu.Lock()
+	defer e.homeMu.Unlock()
+	if e.homePending != nil && time.Since(e.homePending.at) > homeFollowupTTL {
+		e.homePending = nil
+	}
+	return e.homePending != nil
+}
+
+// takeHomeQuestion consumes the pending question: it answers exactly one turn.
+func (e *Engine) takeHomeQuestion() *homeQuestion {
+	e.homeMu.Lock()
+	defer e.homeMu.Unlock()
+	q := e.homePending
+	e.homePending = nil
+	if q != nil && time.Since(q.at) > homeFollowupTTL {
+		return nil
+	}
+	return q
+}
+
+// Models often phrase clarifications as "Уточните, …." without a question mark.
+func isQuestion(answer string) bool {
+	a := strings.ToLower(answer)
+	return strings.Contains(a, "?") || strings.Contains(a, "уточни")
+}
+
 func containsOne(text string, needles []string) bool {
 	for _, s := range needles {
 		if strings.Contains(text, s) {
@@ -218,16 +278,26 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		return RouteDecision{Route: "llm", Source: "dialogue_retry"}
 	}
 	if dialogue.IsReset(text) {
+		e.takeHomeQuestion()
 		return RouteDecision{Route: "llm", Source: "dialogue_reset"}
 	}
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
+		e.takeHomeQuestion()
 		return RouteDecision{Route: "playback", Source: "playback"}
 	}
+	// An explicit non-home rule (timer, music, …) abandons the pending question.
 	if d, ok := p.match(text); ok {
+		if d.Route == "home" && e.peekHomeQuestion() {
+			return RouteDecision{Route: "home", Source: "home_followup"}
+		}
+		e.takeHomeQuestion()
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
 			d.Route = "music"
 		}
 		return d
+	}
+	if e.peekHomeQuestion() {
+		return RouteDecision{Route: "home", Source: "home_followup"}
 	}
 	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue"}
