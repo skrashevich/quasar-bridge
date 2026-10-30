@@ -24,6 +24,27 @@ type ReplaySnapshot struct {
 	PrivateHistory bool          `json:"private_history"`
 }
 
+// SkipEmpty preserves a completed target when the recognizer confirms silence.
+// An unfinished question still invalidates replay unless this hook is called.
+func (s *Store) SkipEmpty(ctx context.Context, ticket Ticket) {
+	if s == nil || !s.cfg.Enabled || ticket.replay == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.current(ctx, ticket) || s.now().Sub(ticket.replay.at) >= time.Duration(s.cfg.TTLSeconds)*time.Second {
+		return
+	}
+	e := s.entries[ticket.key]
+	if e.replayInvalid || e.replayPartial != "" {
+		return
+	}
+	e.replay = slices.Clone(ticket.replay.turns)
+	e.replayReady = true
+	e.pending = false
+	e.at = ticket.replay.at
+}
+
 func (s *Store) Replay(ctx context.Context, ticket Ticket) (ReplaySnapshot, bool) {
 	if s == nil || !s.cfg.Enabled || ticket.replay == nil {
 		return ReplaySnapshot{}, false

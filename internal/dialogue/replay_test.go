@@ -130,3 +130,36 @@ func TestReplayCancellationDoesNotCommit(t *testing.T) {
 		t.Fatal("canceled response became replayable")
 	}
 }
+
+func TestSkipEmptyDoesNotExtendExpiryOrUndoActions(t *testing.T) {
+	for _, action := range []bool{false, true} {
+		t.Run(map[bool]string{false: "expiry", true: "action"}[action], func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.TTLSeconds = 30
+			s := New(cfg)
+			now := time.Unix(1000, 0)
+			s.now = func() time.Time { return now }
+			ctx := WithSpeaker(t.Context(), "speaker")
+			_, seed := s.Begin(ctx)
+			s.CaptureReplay(ctx, seed, "Небо?", "Голубое.", true, false, false, false)
+			now = now.Add(20 * time.Second)
+			_, empty := s.Begin(ctx)
+			if action {
+				s.CaptureReplay(ctx, empty, "", "", false, true, false, false)
+			}
+			s.SkipEmpty(ctx, empty)
+			if action {
+				_, next := s.Begin(ctx)
+				if _, ok := s.Replay(ctx, next); ok {
+					t.Fatal("empty input restored an action-invalidated target")
+				}
+			} else {
+				now = now.Add(11 * time.Second)
+				_, next := s.Begin(ctx)
+				if _, ok := s.Replay(ctx, next); ok {
+					t.Fatal("empty listening extended the original question's lifetime")
+				}
+			}
+		})
+	}
+}
