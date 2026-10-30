@@ -15,7 +15,12 @@ func isRetryCommand(text string) bool {
 	if rest, ok := strings.CutPrefix(text, "алиса"); ok && len(rest) > 0 && strings.ContainsAny(rest[:1], " ,.!?:;") {
 		text = dialogue.Normalize(rest)
 	}
-	return strings.Join(strings.Fields(text), " ") == "используй нейросеть"
+	switch strings.Join(strings.Fields(text), " ") {
+	case "используй нейросеть", "спроси нейросеть":
+		return true
+	default:
+		return false
+	}
 }
 
 // RecordDelivered retains text only, never tool results, audio or device IDs.
@@ -26,6 +31,12 @@ func (e *Engine) RecordDelivered(ctx context.Context, question, answer string, f
 		action = true
 	}
 	e.dialogue().CaptureReplay(ctx, ticket, question, answer, final, action, view.PrivateHistory, isRetryCommand(question))
+}
+
+// EmptyInput is called only for a successful final ASR result with no words.
+func (e *Engine) EmptyInput(ctx context.Context) {
+	_, _, ticket := e.dialogue().Start(ctx)
+	e.dialogue().SkipEmpty(ctx, ticket)
 }
 
 func (e *Engine) retryQuestion(ctx context.Context, ticket dialogue.Ticket) (Resolution, error) {
