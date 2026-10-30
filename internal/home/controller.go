@@ -236,6 +236,9 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 		if strings.TrimSpace(plan.Answer) == "" {
 			return "", errors.New("empty home answer")
 		}
+		if err := llm.ValidateAnswer(plan.Answer); err != nil {
+			return "", err
+		}
 		return plan.Answer, nil
 	}
 	// Exposure is cached for discovery, but always checked fresh before actions.

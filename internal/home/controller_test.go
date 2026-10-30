@@ -152,6 +152,15 @@ func TestHomeValidatesEntireBatchBeforeFirstAction(t *testing.T) {
 	}
 }
 
+func TestHomeRejectsServiceMarkupInPlanAnswer(t *testing.T) {
+	c := Controller{Tools: &homeFixture{state: "off"}, Domains: []string{"light"}, Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		return `{"answer":"<think>рассуждения</think>Уточните комнату.","actions":[]}`, nil
+	})}
+	if answer, err := c.Handle(t.Context(), "Включи свет"); err == nil || answer != "" {
+		t.Fatalf("service markup accepted: answer=%q error=%v", answer, err)
+	}
+}
+
 func TestRoomScopeKeepsGroupsAndSeparatelyNamedFixtures(t *testing.T) {
 	entities := []Entity{{ID: "light.group", Name: "Кабинет", Area: "Кабинет"}, {ID: "light.chandelier", Name: "Люстра", Area: "Кабинет"}, {ID: "switch.extra", Name: "Лампа кабинет"}, {ID: "light.bedroom", Name: "Спальня", Area: "Спальня"}}
 	got := scopeEntities("Горит ли свет в кабинете?", entities)
