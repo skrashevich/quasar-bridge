@@ -57,7 +57,7 @@ func (e *Engine) retryQuestion(ctx context.Context, ticket dialogue.Ticket) (Res
 	}
 	if !safe {
 		slog.Info("native_retry_guard", "result", "blocked")
-		result.Answer = "Этот запрос нельзя повторить с помощью этой команды. Задайте новый безопасный вопрос."
+		result.Answer = "Этот запрос нельзя повторить с помощью этой команды. Задайте новый вопрос."
 		return result, nil
 	}
 	slog.Info("native_retry_guard", "result", "allowed")
