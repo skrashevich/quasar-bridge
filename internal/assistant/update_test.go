@@ -2,8 +2,11 @@ package assistant
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
+	"quasarbridge/internal/llm"
 	"quasarbridge/internal/update"
 )
 
@@ -66,5 +69,71 @@ func TestUpdateToolsRespectHistoryPrivacy(t *testing.T) {
 		if agent.allowedAfterHistory(name) || mcpTools.AllowedAfterHistory(name) {
 			t.Fatalf("network tool %s allowed after private history", name)
 		}
+	}
+}
+
+func TestShortUpdateCommandsUsePrefetchedCheck(t *testing.T) {
+	tools := &Tools{Config: DefaultConfig(), Updater: new(testUpdater)}
+	for _, text := range []string{"Проверь обновления", "Есть ли обновления?", "Алиса, проверь обновления, пожалуйста!", "Спроси нейросеть: проверь обновления"} {
+		t.Run(text, func(t *testing.T) {
+			modelCalls := 0
+			agent := &Agent{Tools: tools, MaxCalls: 4, MaxRounds: 3, Client: chatFunc(func(context.Context, []llm.Message, []llm.Tool) (llm.Message, error) {
+				modelCalls++
+				return llm.Message{}, errors.New("simple update check must not call the model")
+			})}
+			if reply, err := agent.Complete(t.Context(), []llm.Message{{Role: "user", Content: text}}, false); err != nil || modelCalls != 0 || !strings.Contains(reply, "1.2.4") {
+				t.Fatalf("calls=%d error=%v", modelCalls, err)
+			}
+		})
+	}
+	for _, text := range []string{"Не проверяй обновления", "В истории найди проверь обновления", "Проверь обновления датчика", "Проверь обновления прошивки", "Проверь обновления и включи свет", "Установи обновления"} {
+		for _, call := range tools.InitialCalls(text) {
+			if call.Name == "check_quasar_bridge_update" || call.Name == "install_quasar_bridge_update" {
+				t.Errorf("unexpected update prefetch for %q: %s", text, call.Name)
+			}
+		}
+	}
+	tools.Config.Updates = false
+	for _, call := range tools.InitialCalls("Проверь обновления") {
+		if call.Name == "check_quasar_bridge_update" {
+			t.Fatal("disabled update prefetched")
+		}
+	}
+}
+
+type updateReplyFixture struct {
+	testUpdater
+	status update.Status
+	err    error
+}
+
+func (u *updateReplyFixture) Check(context.Context) (update.Status, error) { return u.status, u.err }
+
+func TestSimpleUpdateCheckRepliesWithoutModelAndDistinguishesUnknownVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status update.Status
+		err    error
+		want   string
+	}{
+		{name: "available", status: update.Status{CurrentVersion: "1.2.3", CurrentVersionKnown: true, LatestVersion: "1.2.4", UpdateAvailable: true}, want: "Есть новая версия"},
+		{name: "current", status: update.Status{CurrentVersion: "1.2.4", CurrentVersionKnown: true, LatestVersion: "1.2.4"}, want: "Более новой стабильной версии нет"},
+		{name: "development", status: update.Status{CurrentVersion: "dev", LatestVersion: "1.2.4"}, want: "сравнить версии автоматически нельзя"},
+		{name: "unreachable", err: errors.New("offline"), want: "Не удалось проверить обновления"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tools := &Tools{Config: DefaultConfig(), Updater: &updateReplyFixture{status: tc.status, err: tc.err}}
+			agent := &Agent{Tools: tools, MaxCalls: 4, MaxRounds: 3, Client: chatFunc(func(context.Context, []llm.Message, []llm.Tool) (llm.Message, error) {
+				t.Error("simple update check reached model")
+				return llm.Message{Content: "Обновлений нет"}, nil
+			})}
+			reply, err := agent.Complete(t.Context(), []llm.Message{{Role: "user", Content: "Проверь обновления"}}, false)
+			if err != nil || !strings.Contains(reply, tc.want) {
+				t.Fatalf("reply=%q, error=%v", reply, err)
+			}
+			if tc.name == "development" && strings.Contains(strings.ToLower(reply), "обновлений нет") {
+				t.Fatal("unknown build reported up to date")
+			}
+		})
 	}
 }

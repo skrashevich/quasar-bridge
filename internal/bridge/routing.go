@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"quasarbridge/internal/dialogue"
+	"quasarbridge/internal/update"
 	"regexp"
 	"strings"
 )
@@ -67,6 +68,7 @@ type RoutingPolicy struct {
 func DefaultRoutingConfig() RoutingConfig {
 	return RoutingConfig{
 		Rules: []RoutingRule{
+			{Name: "bridge_updates", Route: "llm", Match: RoutingMatch{Regex: update.RequestPattern}},
 			{Name: "speaker_playback", Route: "yandex", Match: RoutingMatch{Regex: `^\s*(?:алиса[,\s]+)?(?:пожалуйста[,\s]+)?(?:хватит|стоп|пауза|останови(?:те)?|(?:останови(?:те)?|выключи(?:те)?|прекрати(?:те)?) (?:музыку|воспроизведение|песню|песни|трек|радио)|поставь(?:те)? на паузу|(?:продолжи(?:те)?|возобнови(?:те)?) (?:музыку|воспроизведение|песню|трек))[,\s]*(?:пожалуйста)?[.!?]*\s*$`}},
 			{Name: "music_from_site", Route: "llm", Match: RoutingMatch{
 				ContainsAllGroups: [][]string{

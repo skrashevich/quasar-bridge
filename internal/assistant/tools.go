@@ -170,6 +170,10 @@ func (t *Tools) initialCalls(text string, history bool) []llm.FunctionCall {
 	if t.Config.Time {
 		calls = append(calls, llm.FunctionCall{Name: "current_time", Arguments: "{}"})
 	}
+	if t.Config.Updates && t.Updater != nil && update.IsCheckRequest(text) {
+		calls = append(calls, llm.FunctionCall{Name: "check_quasar_bridge_update", Arguments: "{}"})
+		return calls
+	}
 	history = history || historyQuestion(text)
 	text = dialogue.Normalize(text)
 	// A request that explicitly combines a page with history must read the page first.

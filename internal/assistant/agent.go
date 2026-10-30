@@ -11,6 +11,7 @@ import (
 	"uuid"
 
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/update"
 )
 
 type Chatter interface {
@@ -105,6 +106,9 @@ func (a *Agent) complete(ctx context.Context, messages []llm.Message, structured
 				return "", err
 			}
 			messages = append(messages, llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{call}}, result)
+			if function.Name == "check_quasar_bridge_update" && update.IsCheckRequest(user) {
+				return updateCheckReply(result.Content), nil
+			}
 		}
 	}
 	for round := 0; round <= a.MaxRounds; round++ {
