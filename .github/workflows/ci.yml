@@ -14,7 +14,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Validate release tag
         if: github.ref_type == 'tag'
@@ -46,14 +46,24 @@ jobs:
           docker run --rm -v "$PWD:/src:ro" -v /tmp/quasar-bridge:/test-binary:ro \
             -e QUASAR_TEST_BINARY=/test-binary -w /src python:3.13-alpine \
             python3 scripts/test-speaker-package.py
-      - name: Build standalone speaker archives
+      - name: Install UPX 5.2.1
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/upx-5.2.1-amd64_linux.tar.xz"
+          curl --fail --location --retry 3 \
+            https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-amd64_linux.tar.xz \
+            --output "$archive"
+          echo "402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657  $archive" | sha256sum --check --strict
+          tar -xJf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/upx-5.2.1-amd64_linux" >> "$GITHUB_PATH"
+      - name: Build UPX-compressed standalone speaker archives
         shell: bash
         run: |
           for arch in arm64 armv7; do
             if [ "$GITHUB_REF_TYPE" = tag ]; then
-              python3 scripts/build-speaker-package.py --arch "$arch" --tag "$GITHUB_REF_NAME"
+              python3 scripts/build-speaker-package.py --arch "$arch" --upx --tag "$GITHUB_REF_NAME"
             else
-              python3 scripts/build-speaker-package.py --arch "$arch"
+              python3 scripts/build-speaker-package.py --arch "$arch" --upx
             fi
           done
           cp install.sh dist/install.sh

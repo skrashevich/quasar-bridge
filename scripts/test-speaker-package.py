@@ -19,6 +19,60 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackageTest(unittest.TestCase):
+    def test_upx_packages_compressed_copy_and_checks_integrity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "binary"
+            original = b"\x7fELF\x02" + bytes(13) + b"\xb7\x00" + bytes(44)
+            binary.write_bytes(original)
+            upx = root / "upx"
+            upx.write_text(
+                '#!/usr/bin/env python3\n'
+                'from pathlib import Path\nimport sys\n'
+                'binary = Path(sys.argv[-1])\n'
+                'if sys.argv[1:-1] == ["--ultra-brute", "--no-lzma"]:\n'
+                '    binary.write_bytes(binary.read_bytes() + b"packed")\n'
+                'elif sys.argv[1:-1] == ["-t"]:\n'
+                '    assert binary.read_bytes().endswith(b"packed")\n'
+                '    binary.write_bytes(binary.read_bytes() + b"tested")\n'
+                'else:\n    sys.exit(99)\n'
+            )
+            upx.chmod(0o755)
+            output = root / "packed.tar.gz"
+            result = subprocess.run([
+                "python3", str(ROOT / "scripts/build-speaker-package.py"),
+                "--binary", str(binary), "--output", str(output), "--upx",
+            ], env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"]),
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(binary.read_bytes(), original)
+            with tarfile.open(output) as archive:
+                self.assertEqual(archive.extractfile("bin/quasar-bridge").read(),
+                                 original + b"packedtested")
+            self.assertEqual(output.with_suffix(".gz.sha256").read_text(),
+                             f"{hashlib.sha256(output.read_bytes()).hexdigest()}  {output.name}\n")
+
+    def test_upx_failure_does_not_produce_archive(self):
+        for failing_stage in ("compression", "integrity"):
+            with self.subTest(stage=failing_stage), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                binary = root / "binary"
+                binary.write_bytes(b"\x7fELF\x02" + bytes(13) + b"\xb7\x00" + bytes(44))
+                upx = root / "upx"
+                upx.write_text('#!/bin/sh\n' + (
+                    'exit 1\n' if failing_stage == "compression" else
+                    'if [ "$1" = "-t" ]; then exit 1; fi\nexit 0\n'))
+                upx.chmod(0o755)
+                output = root / "bad.tar.gz"
+                result = subprocess.run([
+                    "python3", str(ROOT / "scripts/build-speaker-package.py"),
+                    "--binary", str(binary), "--output", str(output), "--upx",
+                ], env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"]),
+                    capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(output.exists())
+                self.assertFalse(output.with_suffix(".gz.sha256").exists())
+
     def test_archives_contain_only_public_payload_and_matching_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

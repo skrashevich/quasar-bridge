@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   build:
+    # Reuse CI's integrity-checked UPX archives, without rebuilding for publication.
     uses: ./.github/workflows/ci.yml
     with:
       upload-speaker: true
