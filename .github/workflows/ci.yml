@@ -66,6 +66,11 @@ jobs:
               python3 scripts/build-speaker-package.py --arch "$arch" --upx
             fi
           done
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            python3 scripts/build-source-package.py --tag "$GITHUB_REF_NAME"
+          else
+            python3 scripts/build-source-package.py
+          fi
           cp install.sh dist/install.sh
       - name: Keep release assets
         if: inputs.upload-speaker
@@ -74,6 +79,8 @@ jobs:
           name: speaker-release
           path: |
             dist/install.sh
+            dist/quasar-bridge-source.tar.gz
+            dist/quasar-bridge-source.tar.gz.sha256
             dist/quasar-bridge-linux-arm64.tar.gz
             dist/quasar-bridge-linux-arm64.tar.gz.sha256
             dist/quasar-bridge-linux-armv7.tar.gz

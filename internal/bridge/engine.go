@@ -12,6 +12,7 @@ import (
 
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/playback"
+	"quasarbridge/internal/reply"
 	"quasarbridge/internal/webaddress"
 )
 
@@ -30,6 +31,7 @@ type MusicStarter interface {
 	StartMusic(context.Context, string) (string, error)
 }
 type Engine struct {
+	AirPlay      AirPlayController
 	LLM          Completer
 	Assistant    Completer
 	Home         HomeHandler
@@ -91,6 +93,33 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "airplay":
+		if e.AirPlay == nil {
+			return Resolution{Route: "yandex"}, nil
+		}
+		action := airPlayCommand(text)
+		if decision.Source == "airplay_media" {
+			controller, ok := e.AirPlay.(AirPlayMediaController)
+			if !ok || !controller.Active(ctx) {
+				return Resolution{Route: "yandex"}, nil
+			}
+			action = airPlayMediaCommand(text)
+			if action == "" {
+				return result, errors.New("unknown AirPlay media control")
+			}
+			answer, err := controller.ControlMedia(ctx, action)
+			result.Answer = answer
+			return result, err
+		}
+		if action == "" {
+			return result, errors.New("unknown AirPlay control")
+		}
+		answer, err := e.AirPlay.Control(ctx, action)
+		if err == nil && action == "start" {
+			reply.SuppressListening(ctx)
+		}
+		result.Answer = answer
+		return result, err
 	case "music":
 		if e.Music == nil {
 			return result, errors.New("music playback is unavailable")
@@ -214,11 +243,17 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.prepared = true
 	}()
 	p := e.policy()
+	if e.AirPlay != nil && airPlayCommand(text) != "" {
+		return RouteDecision{Route: "airplay", Source: "airplay"}
+	}
 	if isRetryCommand(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue_retry"}
 	}
 	if dialogue.IsReset(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue_reset"}
+	}
+	if controller, ok := e.AirPlay.(AirPlayMediaController); ok && airPlayMediaCommand(text) != "" && controller.Active(ctx) {
+		return RouteDecision{Route: "airplay", Source: "airplay_media"}
 	}
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}

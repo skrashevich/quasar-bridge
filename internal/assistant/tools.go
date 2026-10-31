@@ -26,6 +26,7 @@ type Tools struct {
 	JournalConfig func() journal.Config
 	WebReader     *WebReader
 	Playback      *MusicPlayback
+	AirPlay       AirPlayController
 	Now           func() time.Time
 }
 
@@ -34,6 +35,9 @@ func definition(name, description string, properties map[string]any, required []
 }
 func (t *Tools) Definitions() []llm.Tool {
 	var tools []llm.Tool
+	if t.AirPlay != nil {
+		tools = append(tools, airPlayDefinitions()...)
+	}
 	if t.Config.Updates && t.Updater != nil {
 		tools = append(tools,
 			definition("check_quasar_bridge_update", "Проверить на GitHub последний стабильный выпуск Quasar Bridge, сравнить с текущей версией и узнать возможность автоматической установки. Не меняет программу.", map[string]any{}, []string{}),
@@ -64,6 +68,8 @@ func (t *Tools) Call(ctx context.Context, name, args string) (any, error) {
 		return nil, errors.New("tool arguments exceed limit")
 	}
 	switch {
+	case (name == "get_airplay_status" || name == "control_airplay" || name == "control_airplay_playback" || name == "set_airplay_volume") && t.AirPlay != nil:
+		return t.callAirPlay(ctx, name, args)
 	case (name == "check_quasar_bridge_update" || name == "install_quasar_bridge_update") && t.Config.Updates && t.Updater != nil:
 		var p struct{}
 		if !strings.HasPrefix(strings.TrimSpace(args), "{") || json.Unmarshal([]byte(args), &p, json.RejectUnknownMembers(true)) != nil {

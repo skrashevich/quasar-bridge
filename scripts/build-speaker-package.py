@@ -41,7 +41,9 @@ def build(arch="arm64", output=None, binary=None, tag=None, upx=False):
             subprocess.run(["upx", "--ultra-brute", "--no-lzma", str(executable)], check=True)
             subprocess.run(["upx", "-t", str(executable)], check=True)
         files = [(name, (ROOT / "packaging/speaker" / name).read_bytes()) for name in PAYLOAD]
-        files += [(name, (ROOT / name).read_bytes()) for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES")]
+        files += [(name, (ROOT / name).read_bytes()) for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "SOURCE.md")]
+        files += [(str(path.relative_to(ROOT)), path.read_bytes())
+                  for path in sorted((ROOT / "docs/licenses").glob("*.txt"))]
         files += [("bin/quasar-bridge", executable.read_bytes()),
                   ("ARCH", (arch + "\n").encode()), ("VERSION", (version + "\n").encode())]
         output.parent.mkdir(parents=True, exist_ok=True)

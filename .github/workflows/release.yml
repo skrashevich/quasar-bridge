@@ -44,6 +44,7 @@ jobs:
           for arch in arm64 armv7; do
             sha256sum --check "quasar-bridge-linux-$arch.tar.gz.sha256"
           done
+          sha256sum --check quasar-bridge-source.tar.gz.sha256
 
           if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
             if [ "$draft" != true ]; then
@@ -57,6 +58,7 @@ jobs:
           # A failed upload leaves a draft that a rerun can complete.
           gh release upload "$RELEASE_TAG" --clobber \
             ./install.sh \
+            ./quasar-bridge-source.tar.gz ./quasar-bridge-source.tar.gz.sha256 \
             ./quasar-bridge-linux-arm64.tar.gz ./quasar-bridge-linux-arm64.tar.gz.sha256 \
             ./quasar-bridge-linux-armv7.tar.gz ./quasar-bridge-linux-armv7.tar.gz.sha256
           downloaded=$(mktemp -d)
@@ -68,5 +70,7 @@ jobs:
             cmp "$package" "$downloaded/$package"
             cmp "$package.sha256" "$downloaded/$package.sha256"
           done
+          cmp quasar-bridge-source.tar.gz "$downloaded/quasar-bridge-source.tar.gz"
+          cmp quasar-bridge-source.tar.gz.sha256 "$downloaded/quasar-bridge-source.tar.gz.sha256"
           gh release edit "$RELEASE_TAG" --draft=false
           gh release view "$RELEASE_TAG" --json url --jq .url

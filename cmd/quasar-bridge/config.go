@@ -24,6 +24,7 @@ type progressConfig struct {
 }
 
 type config struct {
+	AirPlay            airPlayConfig        `json:"airplay"`
 	DialogueContext    dialogue.Config      `json:"dialogue_context"`
 	LocalProgress      progressConfig       `json:"local_progress"`
 	AssistantTools     assistant.Config     `json:"assistant_tools"`
@@ -168,6 +169,10 @@ func readConfig(path string) (config, error) {
 		return cfg, err
 	}
 	if err := cfg.ConversationLog.Validate(); err != nil {
+		return cfg, err
+	}
+	cfg.AirPlay.defaults()
+	if _, err := cfg.AirPlay.receiverConfig(); err != nil {
 		return cfg, err
 	}
 	if _, err := bridge.CompileRouting(cfg.Routing); err != nil {

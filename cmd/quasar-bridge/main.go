@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -93,6 +94,8 @@ func main() {
 		}
 		return
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	var clientCount, serverCount atomic.Int64
 	subscriptions := new(bridge.SubscriptionMonitor)
 	proxy := &bridge.Proxy{Subscriptions: subscriptions, Upstream: cfg.Upstream, Observer: func(direction string, kind websocket.MessageType, data []byte) {
@@ -147,6 +150,19 @@ func main() {
 		ChatParameters: cfg.LLMChatParameters,
 	}
 	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
+	var airPlay *airPlayControl
+	cleanupAirPlay := sync.OnceFunc(func() { shutdownAirPlay(stop, airPlay) })
+	defer cleanupAirPlay()
+	if cfg.Mode == "hybrid" {
+		airPlay, err = newAirPlayControl(ctx, cfg.AirPlay)
+		if err != nil {
+			slog.Error("AirPlay configuration rejected", "error", err)
+			os.Exit(1)
+		}
+		if airPlay != nil {
+			engine.AirPlay = airPlay
+		}
+	}
 	var musicQueue *assistant.MusicQueue
 	var hc *home.Controller
 	if endpoint := os.Getenv("QUASAR_HOME_MCP_URL"); endpoint != "" {
@@ -180,6 +196,9 @@ func main() {
 			engine.Playback = musicPlayback
 		}
 		tools := &assistant.Tools{Updater: update.New(*path), Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback}
+		if airPlay != nil {
+			tools.AirPlay = airPlay
+		}
 		engine.Music = tools
 		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 	}
@@ -274,7 +293,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()})
+		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()})
 		_, _ = w.Write(data)
 	})
 	mux.Handle("/uni.ws", proxy)
@@ -296,8 +315,6 @@ func main() {
 		mux.ServeHTTP(w, r)
 	})
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	reloads := make(chan os.Signal, 1)
 	signal.Notify(reloads, syscall.SIGHUP)
 	defer signal.Stop(reloads)
@@ -323,13 +340,19 @@ func main() {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 	slog.Info("listening", "address", cfg.Listen, "mode", cfg.Mode, "routing_revision", engine.RoutingStatus().Revision)
-	if cfg.TLSCert != "" && cfg.TLSKey != "" {
-		err = server.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
-	} else {
-		err = server.ListenAndServe()
-	}
+	err = serveBridgeHTTP(server, cfg.TLSCert, cfg.TLSKey, cleanupAirPlay)
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("listener failed")
 		os.Exit(1)
 	}
+}
+
+// Keep resource cleanup inside the serving call: main may exit after a listener
+// failure, and os.Exit does not run main's deferred functions.
+func serveBridgeHTTP(server *http.Server, cert, key string, cleanup func()) error {
+	defer cleanup()
+	if cert != "" && key != "" {
+		return server.ListenAndServeTLS(cert, key)
+	}
+	return server.ListenAndServe()
 }

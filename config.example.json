@@ -14,6 +14,9 @@
   "llm_hosted_tools": [],
   "home_warm_area": "",
   "listen_after_reply": true,
+  "airplay": {
+    "disabled": false
+  },
   "routing": {
     "rules": [
       {

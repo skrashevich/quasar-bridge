@@ -91,7 +91,8 @@ class PackageTest(unittest.TestCase):
                         "bin/quasar-bridge", "start.sh", "control.sh", "install.sh",
                         "uninstall.sh", "setup.sh", "S96quasar-bridge", "firmware.sh",
                         "config.device.example.json", "ARCH", "VERSION",
-                        "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES",
+                        "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "SOURCE.md",
+                        "docs/licenses/go-aac-LGPL-3.0.txt", "docs/licenses/go-aac-GPL-3.0.txt",
                     })
                     self.assertEqual(archive.extractfile("ARCH").read(), (arch + "\n").encode())
                     self.assertEqual(archive.extractfile("VERSION").read(), b"1.2.3\n")
@@ -132,8 +133,9 @@ class InstallationTest(unittest.TestCase):
         machine = os.uname().machine
         (self.package / "ARCH").write_text("armv7\n" if machine in ("armv7l", "armv8l") else "arm64\n")
         (self.package / "VERSION").write_text("fixture\n")
-        for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES"):
+        for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "SOURCE.md"):
             shutil.copy2(ROOT / name, self.package / name)
+        shutil.copytree(ROOT / "docs/licenses", self.package / "docs/licenses")
         self.env = dict(os.environ, QUASAR_DATA_DIR=str(self.state), QUASAR_INIT_DIR=str(self.init))
         if machine not in ("aarch64", "arm64", "armv7l", "armv8l"):
             # The lifecycle fixture uses a native binary; simulate only the speaker's uname.
@@ -165,6 +167,10 @@ class InstallationTest(unittest.TestCase):
 
     def test_install_update_and_uninstall_keep_state_and_boot_independently(self):
         self.install()
+        for name in ("SOURCE.md", "docs/licenses/go-aac-LGPL-3.0.txt",
+                     "docs/licenses/go-aac-GPL-3.0.txt"):
+            self.assertEqual((self.state / "app" / name).read_bytes(),
+                             (self.package / name).read_bytes())
         self.control("status")
         self.control("restart")
         config = self.state / "config.json"

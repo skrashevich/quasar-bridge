@@ -30,14 +30,15 @@ func TestCustomMCPProcess(t *testing.T) {
 		return
 	}
 	for _, apiName := range []string{"chat_completions", "responses"} {
-		t.Run(apiName, func(t *testing.T) { testCustomMCPProcess(t, apiName, nil) })
+		t.Run(apiName, func(t *testing.T) { testCustomMCPProcess(t, apiName, nil, false) })
+		t.Run(apiName+"/airplay_disabled", func(t *testing.T) { testCustomMCPProcess(t, apiName, nil, true) })
 	}
 	t.Run("chat_parameters", func(t *testing.T) {
-		testCustomMCPProcess(t, "chat_completions", map[string]any{"temperature": nil, "response_format": nil, "chat_template_kwargs": nil})
+		testCustomMCPProcess(t, "chat_completions", map[string]any{"temperature": nil, "response_format": nil, "chat_template_kwargs": nil}, false)
 	})
 }
 
-func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[string]any) {
+func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[string]any, airPlayDisabled bool) {
 	t.Helper()
 	var toolCalls, llmCalls atomic.Int64
 	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
@@ -69,11 +70,15 @@ func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[strin
 			}
 			var output []any
 			if llmCalls.Add(1) == 1 {
-				if len(request.Tools) != 1 || request.Tools[0].Type != "function" || !strings.HasPrefix(request.Tools[0].Name, "mcp__fixture__") {
-					t.Error("MCP definitions did not reach Responses API")
+				tools := make([]llm.Tool, 0, len(request.Tools))
+				for _, tool := range request.Tools {
+					tools = append(tools, llm.Tool{Type: tool.Type, Function: llm.Function{Name: tool.Name}})
+				}
+				name := mcpProcessTool(t, tools, airPlayDisabled)
+				if name == "" {
 					return
 				}
-				output = []any{map[string]any{"id": "fc-mcp-1", "type": "function_call", "status": "completed", "call_id": "mcp-1", "name": request.Tools[0].Name, "arguments": `{}`}}
+				output = []any{map[string]any{"id": "fc-mcp-1", "type": "function_call", "status": "completed", "call_id": "mcp-1", "name": name, "arguments": `{}`}}
 			} else {
 				if len(request.Input) == 0 {
 					t.Error("Responses input missing")
@@ -109,11 +114,11 @@ func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[strin
 		}
 		var message llm.Message
 		if llmCalls.Add(1) == 1 {
-			if len(request.Tools) != 1 || !strings.HasPrefix(request.Tools[0].Function.Name, "mcp__fixture__") {
-				t.Error("MCP definitions did not reach LLM")
+			name := mcpProcessTool(t, request.Tools, airPlayDisabled)
+			if name == "" {
 				return
 			}
-			message.ToolCalls = []llm.ToolCall{{ID: "mcp-1", Type: "function", Function: llm.FunctionCall{Name: request.Tools[0].Function.Name, Arguments: `{}`}}}
+			message.ToolCalls = []llm.ToolCall{{ID: "mcp-1", Type: "function", Function: llm.FunctionCall{Name: name, Arguments: `{}`}}}
 		} else {
 			if !strings.Contains(request.Messages[len(request.Messages)-1].Content, "through MCP") {
 				t.Error("MCP output did not return to LLM")
@@ -125,7 +130,7 @@ func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[strin
 		_, _ = w.Write(body)
 	}))
 	defer api.Close()
-	body, _ := json.Marshal(map[string]any{"mode": "hybrid", "llm_api": apiName, "llm_chat_parameters": chatParameters, "llm_base_url": api.URL + "/v1", "llm_model": "fixture", "assistant_tools": map[string]any{"enabled": true, "web": false, "history": false, "time": false, "updates": false, "mcp_servers": []any{map[string]any{"name": "fixture", "url": mcpAPI.URL}}}})
+	body, _ := json.Marshal(map[string]any{"mode": "hybrid", "airplay": map[string]any{"disabled": airPlayDisabled}, "llm_api": apiName, "llm_chat_parameters": chatParameters, "llm_base_url": api.URL + "/v1", "llm_model": "fixture", "assistant_tools": map[string]any{"enabled": true, "web": false, "history": false, "time": false, "updates": false, "mcp_servers": []any{map[string]any{"name": "fixture", "url": mcpAPI.URL}}}})
 	path := configFile(t, string(body))
 	for _, action := range []string{"check-mcp", "query"} {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -151,4 +156,40 @@ func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[strin
 			t.Fatal("CLI → LLM → MCP → LLM failed", stdout.String())
 		}
 	}
+}
+
+// Inspect both API catalogs by name, independently of built-in/MCP ordering.
+func mcpProcessTool(t *testing.T, tools []llm.Tool, airPlayDisabled bool) string {
+	t.Helper()
+	expected := map[string]bool{}
+	if !airPlayDisabled {
+		for _, name := range []string{"get_airplay_status", "control_airplay", "control_airplay_playback", "set_airplay_volume"} {
+			expected[name] = true
+		}
+	}
+	if len(tools) != len(expected)+1 {
+		t.Errorf("unexpected tool count with airplay.disabled=%v: %+v", airPlayDisabled, tools)
+		return ""
+	}
+	var mcpName string
+	for _, tool := range tools {
+		name := tool.Function.Name
+		if tool.Type != "function" {
+			t.Errorf("non-function tool reached API: %+v", tool)
+			return ""
+		}
+		if strings.HasPrefix(name, "mcp__fixture__") && mcpName == "" {
+			mcpName = name
+		} else if expected[name] {
+			delete(expected, name)
+		} else {
+			t.Errorf("unexpected or duplicate tool reached API: %q", name)
+			return ""
+		}
+	}
+	if mcpName == "" || len(expected) != 0 {
+		t.Errorf("missing MCP or AirPlay tools: MCP=%q missing=%v", mcpName, expected)
+		return ""
+	}
+	return mcpName
 }
