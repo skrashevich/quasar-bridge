@@ -126,19 +126,13 @@ func (c *conversation) server(data []byte, delivered bool) {
 		id = e.GetHeader().GetSubRequestRef().GetRequestId()
 	}
 	if asr := e.GetAsrResult(); asr != nil && asr.GetEndOfUtt() && !delivered {
-		text := ""
-		if len(asr.GetRecognition()) > 0 {
-			r := asr.GetRecognition()[0]
-			text = r.GetNormalized()
-			if text == "" {
-				var words []string
-				for _, w := range r.GetWords() {
-					words = append(words, w.GetValue())
-				}
-				text = strings.Join(words, " ")
+		hypotheses := asr.GetRecognition()
+		if len(hypotheses) > 1 {
+			for i, hypothesis := range hypotheses[:min(len(hypotheses), asrHypothesisLimit)] {
+				c.emit(id, journal.Event{Event: "asr_hypothesis", Kind: fmt.Sprintf("%s/%d", f.Kind(), i), Text: recognitionText(hypothesis)})
 			}
 		}
-		c.emit(id, journal.Event{Event: "transcript", Kind: f.Kind(), Text: text})
+		c.emit(id, journal.Event{Event: "transcript", Kind: f.Kind(), Text: selectASRText(hypotheses)})
 	}
 	if d := e.GetDeferredAliceResponse(); d != nil {
 		name := "progress"

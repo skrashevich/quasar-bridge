@@ -107,3 +107,35 @@ func TestStartMusicPreservesDirectAudioExtension(t *testing.T) {
 		t.Fatalf("extension changed: played=%+v error=%v", played, err)
 	}
 }
+
+func TestUnresolvedMusicWebsiteRequestsNeedSourceClarification(t *testing.T) {
+	tools := musicTools(t, func(*http.Request) (*http.Response, error) {
+		t.Fatal("clarification fetched a website")
+		return nil, nil
+	})
+	handler, ok := any(tools).(interface{ NeedsMusicSource(string) bool })
+	if !ok {
+		t.Fatal("music requests with an unreadable address have no clarification handler")
+	}
+	for _, text := range []string{"Включи музыку с сайта абв точка слух", "Включи музыку с сайта abc.invalid", "Проиграй песни со страницы", "Алиса, включи музыку с сайта"} {
+		if !handler.NeedsMusicSource(text) {
+			t.Errorf("missing clarification: %q", text)
+		}
+	}
+	for _, text := range []string{"Включи музыку с сайта abc.su", "Включи музыку", "Не включи музыку с сайта абв точка слух", "Как включить музыку с сайта абв точка слух?", "Вчера я просил включи музыку с сайта абв точка слух", "Прочитай сайт абв точка слух", "Включи музыку не с сайта абв точка слух", "Включи музыку с сайта не абв точка слух", "Включи музыку, только не с сайта абв точка слух"} {
+		if handler.NeedsMusicSource(text) {
+			t.Errorf("unexpected music clarification: %q", text)
+		}
+	}
+	tools.Config.PlaySound = false
+	if handler.NeedsMusicSource("Включи музыку с сайта абв точка слух") {
+		t.Fatal("clarification despite disabled playback")
+	}
+}
+
+func TestMusicSourceNegationDoesNotLaunchLiteralURL(t *testing.T) {
+	tools := musicTools(t, func(*http.Request) (*http.Response, error) { t.Fatal("negation fetched music"); return nil, nil })
+	if tools.CanStartMusic("Включи музыку не с сайта https://audio.example.org") {
+		t.Fatal("negated source started music")
+	}
+}

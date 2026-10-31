@@ -13,17 +13,33 @@ import (
 )
 
 var musicStartCommand = regexp.MustCompile(`(?i)^(?:(?:алиса|пожалуйста|спроси нейросеть|спроси свою модель)[\s,;:]+)*(?:включи(?:те)?|проиграй(?:те)?|воспроизведи(?:те)?|поставь(?:те)?|запусти(?:те)?|сыграй(?:те)?)(?:\s|$)`)
+var musicSourceIntent = regexp.MustCompile(`(?i)^(?:музыку|аудио|песню|песни|трек|треки|радио|звук)\s+(?:с\s+сайта|со\s+страницы|с|со)(?:\s+.*)?$`)
+var musicSourceNegation = regexp.MustCompile(`(?i)(?:^|\s)(?:не|без)(?:\s|$)`)
 
 // CanStartMusic recognizes a current explicit command without consulting history.
 func (t *Tools) CanStartMusic(text string) bool {
 	return t != nil && t.Config.PlaySound && t.Config.Web && t.Playback != nil && musicStartSource(text) != ""
 }
 
+// NeedsMusicSource identifies an explicit website playback request whose address
+// could not be read; the bridge can ask for spelling without consulting a model.
+func (t *Tools) NeedsMusicSource(text string) bool {
+	return t != nil && t.Config.PlaySound && t.Config.Web && t.Playback != nil &&
+		musicStartCommand.MatchString(dialogue.Normalize(text)) &&
+		musicSourceIntent.MatchString(musicStartCommand.ReplaceAllString(dialogue.Normalize(text), "")) &&
+		!musicSourceNegation.MatchString(text) && webaddress.MusicRequest(text) && musicStartSource(text) == ""
+}
+
 func musicStartSource(text string) string {
-	if !webaddress.MusicRequest(text) || !musicStartCommand.MatchString(dialogue.Normalize(text)) {
+	if !webaddress.MusicRequest(text) || !musicStartCommand.MatchString(dialogue.Normalize(text)) || musicSourceNegation.MatchString(text) {
 		return ""
 	}
 	source := strings.TrimRight(explicitURL.FindString(webaddress.Normalize(text)), ".,!?;:)]}")
+	if explicitURL.FindString(text) == "" {
+		if _, reliable := webaddress.CanonicalSource(source); !reliable {
+			return ""
+		}
+	}
 	u, err := url.Parse(source)
 	if err != nil || len(source) > 2048 || validateWebURL(u) != nil || u.Fragment != "" {
 		return ""

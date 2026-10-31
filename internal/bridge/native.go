@@ -492,15 +492,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String())
 		}
 		if asr.GetEndOfUtt() && len(asr.GetRecognition()) > 0 {
-			r := asr.GetRecognition()[0]
-			p.text = r.GetNormalized()
-			if p.text == "" {
-				var words []string
-				for _, w := range r.GetWords() {
-					words = append(words, w.GetValue())
-				}
-				p.text = strings.Join(words, " ")
-			}
+			p.text = selectASRText(asr.GetRecognition())
 		}
 		emptyFinal = !p.started && asr.GetEndOfUtt() && asr.GetResponseCode() == asrcommon.EAsrResponseCode_OK && strings.TrimSpace(p.text) == ""
 

@@ -76,6 +76,9 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	if !e.dialogue().Current(ctx, ticket) {
 		return Resolution{Route: route}, context.Canceled
 	}
+	if decision.Source == "music_source_cancel" {
+		return Resolution{Route: "music", Answer: "Отменено."}, nil
+	}
 	if decision.Source == "dialogue_retry" {
 		return e.retryQuestion(ctx, ticket)
 	}
@@ -94,6 +97,19 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	case "music":
 		if e.Music == nil {
 			return result, errors.New("music playback is unavailable")
+		}
+		if decision.Source == "music_source_reply" {
+			text = musicSourceReply(text)
+			if text == "" {
+				return result, errors.New("invalid music source reply")
+			}
+		}
+		if decision.Source == "music_source_prompt" || e.needsMusicSource(text) {
+			if !e.dialogue().SetPendingMusicSource(ctx, ticket, true) {
+				return result, context.Canceled
+			}
+			result.Answer = musicSourcePrompt
+			return result, nil
 		}
 		answer, err := e.Music.StartMusic(ctx, text)
 		if !e.dialogue().Current(ctx, ticket) {
@@ -214,6 +230,14 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.prepared = true
 	}()
 	p := e.policy()
+	if snapshot.PendingMusicSource {
+		if !e.dialogue().SetPendingMusicSource(ctx, ticket, false) {
+			return RouteDecision{Route: "llm", Source: "canceled"}
+		}
+		if d, ok := e.musicSourceDecision(text); ok {
+			return d
+		}
+	}
 	if isRetryCommand(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue_retry"}
 	}
@@ -224,7 +248,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		return RouteDecision{Route: "playback", Source: "playback"}
 	}
 	if d, ok := p.match(text); ok {
-		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
+		if d.Route == "llm" && e.Music != nil && (e.Music.CanStartMusic(text) || e.needsMusicSource(text)) {
 			d.Route = "music"
 		}
 		return d

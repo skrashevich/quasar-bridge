@@ -48,19 +48,21 @@ type turn struct {
 	private      bool
 }
 type entry struct {
-	turns         []turn
-	replay        []turn
-	replayReady   bool
-	replayPartial string
-	replayInvalid bool
-	retryAnswered bool
-	at            time.Time
-	generation    uint64
-	pending       bool
+	turns              []turn
+	replay             []turn
+	replayReady        bool
+	replayPartial      string
+	replayInvalid      bool
+	retryAnswered      bool
+	pendingMusicSource bool
+	at                 time.Time
+	generation         uint64
+	pending            bool
 }
 type Snapshot struct {
-	Messages       []llm.Message
-	PrivateHistory bool
+	Messages           []llm.Message
+	PrivateHistory     bool
+	PendingMusicSource bool
 }
 type Ticket struct {
 	key        string
@@ -87,6 +89,7 @@ func (s *Store) expired(e *entry) bool {
 func snapshot(e *entry) Snapshot {
 	var v Snapshot
 	if e != nil {
+		v.PendingMusicSource = e.pendingMusicSource
 		for _, t := range e.turns {
 			v.Messages = append(v.Messages, llm.Message{Role: "user", Content: t.user}, llm.Message{Role: "assistant", Content: t.answer})
 			v.PrivateHistory = v.PrivateHistory || t.private
@@ -102,6 +105,7 @@ func (s *Store) View(ctx context.Context) Snapshot {
 	defer s.mu.Unlock()
 	e := s.entries[key(ctx)]
 	if e != nil && s.expired(e) {
+		e.pendingMusicSource = false
 		e.turns = nil
 		e.replay = nil
 		e.replayReady = false
@@ -120,6 +124,7 @@ func (s *Store) Begin(ctx context.Context) (Snapshot, Ticket) {
 	defer s.mu.Unlock()
 	for k, e := range s.entries {
 		if s.expired(e) {
+			e.pendingMusicSource = false
 			e.turns = nil
 			e.replay = nil
 			e.replayReady = false
@@ -145,6 +150,7 @@ func (s *Store) Begin(ctx context.Context) (Snapshot, Ticket) {
 		s.entries[k] = e
 	}
 	if s.expired(e) {
+		e.pendingMusicSource = false
 		e.turns = nil
 		e.replay = nil
 		e.replayReady = false
@@ -177,6 +183,7 @@ func (s *Store) Commit(ctx context.Context, ticket Ticket, user, answer string, 
 		return false
 	}
 	e.pending = false
+	e.pendingMusicSource = false
 	e.at = s.now()
 	if strings.TrimSpace(answer) == "" {
 		return true
@@ -273,5 +280,23 @@ func (s *Store) Clear(ctx context.Context, ticket Ticket) bool {
 		return false
 	}
 	s.entries[ticket.key].turns = nil
+	s.entries[ticket.key].pendingMusicSource = false
+	return true
+}
+
+// SetPendingMusicSource scopes a single address clarification to the latest request.
+func (s *Store) SetPendingMusicSource(ctx context.Context, ticket Ticket, pending bool) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if !s.cfg.Enabled {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.current(ctx, ticket) || s.expired(s.entries[ticket.key]) {
+		return false
+	}
+	s.entries[ticket.key].pendingMusicSource = pending
 	return true
 }
