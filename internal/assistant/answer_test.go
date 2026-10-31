@@ -37,8 +37,11 @@ func TestAgentRejectsToolMarkupAfterFailedToolBudget(t *testing.T) {
 		rounds++
 		message := llm.Message{Role: "assistant", Content: raw}
 		if rounds <= 3 {
-			if len(input.Tools) != 1 {
-				t.Error("tool unavailable before budget exhausted")
+			if rounds == 1 && len(input.Tools) != 1 {
+				t.Error("tool unavailable before any attempt")
+			}
+			if rounds > 1 && len(input.Tools) != 0 {
+				t.Error("failed tool kept offered")
 			}
 			message = llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: string(rune('a' + rounds)), Type: "function", Function: llm.FunctionCall{Name: "read_webpage", Arguments: `{"url":"https://example.org"}`}}}}
 		} else if len(input.Tools) != 0 {
@@ -50,11 +53,11 @@ func TestAgentRejectsToolMarkupAfterFailedToolBudget(t *testing.T) {
 	defer server.Close()
 	tools := new(unavailableWebTools)
 	agent := Agent{Client: &llm.Client{BaseURL: server.URL}, Tools: tools, MaxRounds: 3, MaxCalls: 4}
-	answer, err := agent.Complete(t.Context(), []llm.Message{{Role: "user", Content: "Открой страницу"}}, false)
+	answer, err := agent.Complete(t.Context(), []llm.Message{{Role: "user", Content: "Открой страницу https://example.org"}}, false)
 	if err == nil || answer != "" {
 		t.Fatalf("raw tool call accepted as final speech: answer=%q error=%v", answer, err)
 	}
-	if rounds != 4 || tools.calls != 3 {
+	if rounds != 4 || tools.calls != 1 {
 		t.Fatalf("unexpected retry: model rounds=%d tool calls=%d", rounds, tools.calls)
 	}
 	if strings.Contains(err.Error(), "example.org") {

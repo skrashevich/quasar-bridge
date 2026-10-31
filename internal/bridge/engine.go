@@ -189,6 +189,9 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
+	if err == nil && strings.TrimSpace(answer) == "" {
+		return r, errors.New("empty assistant answer")
+	}
 	if err == nil {
 		if !e.dialogue().Commit(ctx, ticket, text, answer, private) {
 			return r, context.Canceled

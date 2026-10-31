@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
+	"golang.org/x/net/proxy"
 )
 
 type WebResult struct {
@@ -29,10 +31,11 @@ type WebReader struct {
 	config Config
 	http   *http.Client
 	lookup func(context.Context, string) ([]net.IPAddr, error)
+	socks  *socksDialer
 }
 
 func NewWebReader(c Config) *WebReader {
-	w := &WebReader{config: c, lookup: net.DefaultResolver.LookupIPAddr}
+	w := &WebReader{config: c, lookup: net.DefaultResolver.LookupIPAddr, socks: proxyFromEnv()}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil // DNS validation must not be bypassed by a proxy from the environment.
 	transport.DialContext = w.dial
@@ -48,6 +51,43 @@ func NewWebReader(c Config) *WebReader {
 	}}
 	return w
 }
+
+// proxyFromEnv returns a SOCKS dialer from HTTPS_PROXY or ALL_PROXY.
+// The address is still resolved and checked locally, so the proxy cannot
+// reach private hosts through this path.
+type socksDialer struct {
+	address string
+}
+
+func proxyFromEnv() *socksDialer {
+	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+		raw := strings.TrimSpace(os.Getenv(name))
+		if i := strings.Index(raw, "://"); i >= 0 {
+			scheme := strings.ToLower(raw[:i])
+			if scheme != "socks5" && scheme != "socks5h" {
+				continue
+			}
+			hostport := strings.TrimSuffix(raw[i+3:], "/")
+			if hostport != "" {
+				return &socksDialer{address: hostport}
+			}
+		}
+	}
+	return nil
+}
+
+func (d *socksDialer) dial(ctx context.Context, address string, fallback *net.Dialer) (net.Conn, error) {
+	dialer, err := proxy.SOCKS5("tcp", d.address, nil, fallback)
+	if err != nil {
+		return nil, err
+	}
+	contextDialer, ok := dialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, errors.New("socks dialer does not support contexts")
+	}
+	return contextDialer.DialContext(ctx, "tcp", address)
+}
+
 func publicIP(ip netip.Addr) bool {
 	ip = ip.Unmap()
 	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
@@ -89,7 +129,13 @@ func (w *WebReader) dial(ctx context.Context, network, address string) (net.Conn
 	}
 	dialer := net.Dialer{Timeout: 5 * time.Second}
 	for _, ip := range ips {
-		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		var conn net.Conn
+		var err error
+		if w.socks != nil && network == "tcp" {
+			conn, err = w.socks.dial(ctx, net.JoinHostPort(ip.IP.String(), port), &dialer)
+		} else {
+			conn, err = dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		}
 		if err == nil {
 			return conn, nil
 		}
