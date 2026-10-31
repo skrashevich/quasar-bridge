@@ -12,6 +12,7 @@ import (
 	device "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/common/device_state"
 	environment "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/common/environment_state"
 	endpoint "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint"
+	alicepro "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/alice_pro"
 	brick "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/brick"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -29,9 +30,10 @@ type SubscriptionMonitor struct {
 }
 
 type SpeakerSubscription struct {
-	Connection         uint64                 `json:"connection"`
-	DeviceSubscription string                 `json:"device_subscription"`
-	Endpoints          []SubscriptionEndpoint `json:"endpoints"`
+	Connection           uint64                 `json:"connection"`
+	DeviceSubscription   string                 `json:"device_subscription"`
+	AliceProSubscription string                 `json:"alice_pro_subscription"`
+	Endpoints            []SubscriptionEndpoint `json:"endpoints"`
 }
 
 type SubscriptionEndpoint struct {
@@ -43,12 +45,14 @@ type SubscriptionEndpoint struct {
 }
 
 type subscriptionSession struct {
-	monitor            *SubscriptionMonitor
-	id                 uint64
-	up, down           Sender
-	delegate           Session
-	deviceSubscription string
-	endpoints          map[string]SubscriptionEndpoint
+	monitor              *SubscriptionMonitor
+	id                   uint64
+	up, down             Sender
+	delegate             Session
+	deviceID             string
+	deviceSubscription   string
+	aliceProSubscription string
+	endpoints            map[string]SubscriptionEndpoint
 }
 
 func (m *SubscriptionMonitor) NewSession(up, down Sender, delegate Session) Session {
@@ -58,7 +62,7 @@ func (m *SubscriptionMonitor) NewSession(up, down Sender, delegate Session) Sess
 		m.sessions = make(map[uint64]*subscriptionSession)
 	}
 	m.next++
-	s := &subscriptionSession{monitor: m, id: m.next, up: up, down: down, delegate: delegate, deviceSubscription: "unknown", endpoints: make(map[string]SubscriptionEndpoint)}
+	s := &subscriptionSession{monitor: m, id: m.next, up: up, down: down, delegate: delegate, deviceSubscription: "unknown", aliceProSubscription: "unknown", endpoints: make(map[string]SubscriptionEndpoint)}
 	m.sessions[s.id] = s
 	return s
 }
@@ -69,7 +73,7 @@ func (m *SubscriptionMonitor) Snapshot() []SpeakerSubscription {
 	defer m.mu.Unlock()
 	out := make([]SpeakerSubscription, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		state := SpeakerSubscription{Connection: s.id, DeviceSubscription: s.deviceSubscription, Endpoints: make([]SubscriptionEndpoint, 0, len(s.endpoints))}
+		state := SpeakerSubscription{Connection: s.id, DeviceSubscription: s.deviceSubscription, AliceProSubscription: s.aliceProSubscription, Endpoints: make([]SubscriptionEndpoint, 0, len(s.endpoints))}
 		for _, ep := range s.endpoints {
 			state.Endpoints = append(state.Endpoints, ep)
 		}
@@ -85,6 +89,7 @@ func (s *subscriptionSession) Client(ctx context.Context, kind websocket.Message
 	if e := f.Client.GetEvent(); e != nil {
 		if update := e.GetCapabilityUpdateState(); update != nil {
 			s.capability(update.GetEndpointId(), update.GetCapability(), update.GetAnyCapability())
+			s.aliceProCapability(update.GetEndpointId(), update.GetCapability(), update.GetAnyCapability())
 		}
 		req := e.GetVoiceInput()
 		if req == nil {
@@ -99,18 +104,17 @@ func (s *subscriptionSession) Client(ctx context.Context, kind websocket.Message
 					ds = nil
 				}
 			}
-			if sub := ds.GetDeviceSubscriptionState(); sub != nil {
-				// Unknown/future enum values must not be treated as retail or paid.
-				value := "unknown"
-				switch sub.GetSubscription() {
-				case subscription.TSubscriptionState_none:
-					value = "none"
-				case subscription.TSubscriptionState_yandex_subscription:
-					value = "yandex_subscription"
+			deviceID := ds.GetDeviceId()
+			applicationID := req.GetApplication().GetDeviceId()
+			// Conflicting identities cannot establish ownership of account state.
+			identityMatches := deviceID == "" || applicationID == "" || deviceID == applicationID
+			if identityMatches {
+				deviceID = cmp.Or(deviceID, applicationID)
+				if deviceID != "" {
+					s.bindDevice(deviceID)
 				}
-				s.monitor.mu.Lock()
-				s.deviceSubscription = value
-				s.monitor.mu.Unlock()
+			} else {
+				s.bindDevice("")
 			}
 			env := r.GetEnvironmentState()
 			if raw := r.GetEnvironmentStateRaw(); len(raw) > 0 {
@@ -119,12 +123,39 @@ func (s *subscriptionSession) Client(ctx context.Context, kind websocket.Message
 					env = nil
 				}
 			}
+			if identityMatches {
+				sub := ds.GetDeviceSubscriptionState()
+				if sub == nil && deviceID != "" {
+					for _, info := range env.GetDevices() {
+						state := info.GetSpeakerDeviceState()
+						appID, stateID := info.GetApplication().GetDeviceId(), state.GetDeviceId()
+						if (appID != "" && appID != deviceID) || (stateID != "" && stateID != deviceID) {
+							continue
+						}
+						if appID == deviceID || stateID == deviceID {
+							sub = state.GetDeviceSubscriptionState()
+							if sub != nil {
+								break
+							}
+						}
+					}
+				}
+				if sub != nil {
+					s.deviceState(sub)
+				}
+			}
 			for _, ep := range env.GetEndpoints() {
 				for _, cap := range ep.GetCapabilities() {
 					s.capability(ep.GetId(), cap, nil)
+					if identityMatches && deviceID != "" {
+						s.aliceProCapability(ep.GetId(), cap, nil)
+					}
 				}
 				for _, cap := range ep.GetAnyCapabilities() {
 					s.capability(ep.GetId(), nil, cap)
+					if identityMatches && deviceID != "" {
+						s.aliceProCapability(ep.GetId(), nil, cap)
+					}
 				}
 			}
 		}
@@ -136,6 +167,75 @@ func (s *subscriptionSession) Client(ctx context.Context, kind websocket.Message
 		return s.up(ctx, kind, data)
 	}
 	return nil
+}
+
+func (s *subscriptionSession) bindDevice(id string) {
+	s.monitor.mu.Lock()
+	defer s.monitor.mu.Unlock()
+	if id == "" || id != s.deviceID {
+		s.deviceID = id
+		s.setDeviceSubscription("unknown")
+		s.setAliceProSubscription("unknown")
+	}
+}
+
+func (s *subscriptionSession) deviceState(sub *subscription.TSubscriptionState) {
+	value := "unknown"
+	switch sub.GetSubscription() {
+	case subscription.TSubscriptionState_none:
+		value = "none"
+	case subscription.TSubscriptionState_yandex_subscription:
+		value = "yandex_subscription"
+	}
+	s.monitor.mu.Lock()
+	defer s.monitor.mu.Unlock()
+	s.setDeviceSubscription(value)
+}
+
+// The caller holds monitor.mu; only safe status values enter these logs.
+func (s *subscriptionSession) setDeviceSubscription(value string) {
+	if s.deviceSubscription != value {
+		s.deviceSubscription = value
+		slog.Info("speaker_device_subscription_state", "connection", s.id, "status", value)
+	}
+}
+
+func (s *subscriptionSession) setAliceProSubscription(value string) {
+	if s.aliceProSubscription != value {
+		s.aliceProSubscription = value
+		slog.Info("speaker_alice_pro_subscription_state", "connection", s.id, "status", value)
+	}
+}
+
+func (s *subscriptionSession) aliceProCapability(id string, cap *anypb.Any, holder *endpoint.TAnyCapabilityHolder) {
+	var value alicepro.TAliceProCapability
+	switch {
+	case cap.MessageIs(&value):
+		if cap.UnmarshalTo(&value) != nil {
+			return
+		}
+	case holder.GetCapabilityType() == endpoint.TCapability_AliceProCapabilityType:
+		if proto.Unmarshal(holder.GetRawCapability(), &value) != nil {
+			return
+		}
+	default:
+		return
+	}
+	if value.GetState() == nil {
+		return
+	}
+	status := "unknown"
+	switch value.GetState().GetSubscriptionStatus() {
+	case alicepro.TAliceProCapability_SubscriptionActive:
+		status = "active"
+	case alicepro.TAliceProCapability_NoSubscription:
+		status = "none"
+	}
+	s.monitor.mu.Lock()
+	defer s.monitor.mu.Unlock()
+	if id != "" && id == s.deviceID {
+		s.setAliceProSubscription(status)
+	}
 }
 
 func (s *subscriptionSession) capability(id string, cap *anypb.Any, holder *endpoint.TAnyCapabilityHolder) {

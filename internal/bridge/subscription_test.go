@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	application "github.com/freequasar/quasar-go-genproto/proto/alice/library/client/protos"
 	subscription "github.com/freequasar/quasar-go-genproto/proto/alice/megamind/protos/common/subscription_state"
 	device "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/common/device_state"
 	environment "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/common/environment_state"
@@ -20,6 +21,7 @@ import (
 	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	endpoint "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint"
+	alicepro "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/alice_pro"
 	brick "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/brick"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -263,4 +265,245 @@ func TestSubscriptionMonitorIgnoresMissingAndMalformedCapabilities(t *testing.T)
 	if m.Snapshot()[0].Endpoints[0].Status != "blocked_subscription" {
 		t.Fatal("missing state cleared a lock")
 	}
+}
+
+// Real firmware puts the legacy subscription in EnvironmentState.Devices and
+// Alice Pro in the local endpoint, alongside endpoints for other speakers.
+func TestSubscriptionMonitorReadsLocalEnvironmentSubscription(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		raw, text bool
+	}{
+		{"typed_voice_any", false, false},
+		{"typed_text_any", false, true},
+		{"raw_voice_holder", true, false},
+		{"raw_text_holder", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var m SubscriptionMonitor
+			var forwarded []byte
+			s := m.NewSession(func(_ context.Context, _ websocket.MessageType, data []byte) error {
+				forwarded = bytes.Clone(data)
+				return nil
+			}, nil, nil)
+			defer s.Close()
+			env := &environment.TEnvironmentState{
+				Devices: []*environment.TEnvironmentDeviceInfo{
+					subscriptionDevice("foreign", "", subscription.TSubscriptionState_yandex_subscription),
+					subscriptionDevice("local", "", subscription.TSubscriptionState_none),
+				},
+				Endpoints: []*endpoint.TEndpoint{
+					aliceProEndpoint(t, "foreign", alicepro.TAliceProCapability_NoSubscription, tc.raw),
+					aliceProEndpoint(t, "local", alicepro.TAliceProCapability_SubscriptionActive, tc.raw),
+				},
+			}
+			frame := subscriptionRequest(t, &device.TDeviceState{DeviceId: new("local")}, "local", env, tc.raw)
+			if tc.text {
+				var message client.TClientMessage
+				if err := proto.Unmarshal(frame, &message); err != nil {
+					t.Fatal(err)
+				}
+				event := message.GetEvent()
+				event.Event = &client.TClientMessage_TEvent_TextInput{TextInput: event.GetVoiceInput()}
+				frame = marshalSubscriptionMessage(t, &message)
+			}
+			if err := s.Client(t.Context(), websocket.MessageBinary, frame); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(frame, forwarded) {
+				t.Fatal("request changed in transit")
+			}
+			got := m.Snapshot()[0]
+			if got.DeviceSubscription != "none" || len(got.Endpoints) != 0 || aliceProStatus(t, got) != "active" {
+				t.Fatalf("snapshot=%+v Alice Pro=%q", got, aliceProStatus(t, got))
+			}
+		})
+	}
+}
+
+func TestSubscriptionMonitorResetsConflictingRequesterIdentity(t *testing.T) {
+	var m SubscriptionMonitor
+	s := m.NewSession(nil, nil, nil)
+	defer s.Close()
+	env := &environment.TEnvironmentState{Endpoints: []*endpoint.TEndpoint{aliceProEndpoint(t, "local", alicepro.TAliceProCapability_SubscriptionActive, true)}}
+	ds := &device.TDeviceState{DeviceId: new("local"), DeviceSubscriptionState: &subscription.TSubscriptionState{Subscription: subscription.TSubscriptionState_none}}
+	s.Client(t.Context(), websocket.MessageBinary, subscriptionRequest(t, ds, "local", env, true))
+	s.Client(t.Context(), websocket.MessageBinary, subscriptionRequest(t, &device.TDeviceState{DeviceId: new("other")}, "local", nil, true))
+	s.Client(t.Context(), websocket.MessageBinary, aliceProUpdate(t, env.Endpoints[0]))
+	got := m.Snapshot()[0]
+	if got.DeviceSubscription != "unknown" || aliceProStatus(t, got) != "unknown" {
+		t.Fatalf("conflicting requester kept previous subscription: %+v", got)
+	}
+}
+
+func TestSubscriptionMonitorConflictClearsUnboundLegacySubscription(t *testing.T) {
+	var m SubscriptionMonitor
+	s := m.NewSession(nil, nil, nil)
+	defer s.Close()
+	ds := &device.TDeviceState{DeviceSubscriptionState: &subscription.TSubscriptionState{Subscription: subscription.TSubscriptionState_yandex_subscription}}
+	s.Client(t.Context(), websocket.MessageBinary, subscriptionRequest(t, ds, "", nil, true))
+	if got := m.Snapshot()[0].DeviceSubscription; got != "yandex_subscription" {
+		t.Fatalf("explicit unbound subscription=%q", got)
+	}
+	// Ordinary missing identity still preserves an explicit legacy observation.
+	s.Client(t.Context(), websocket.MessageBinary, subscriptionRequest(t, nil, "", nil, true))
+	if got := m.Snapshot()[0].DeviceSubscription; got != "yandex_subscription" {
+		t.Fatalf("missing identity cleared subscription=%q", got)
+	}
+	s.Client(t.Context(), websocket.MessageBinary, subscriptionRequest(t, &device.TDeviceState{DeviceId: new("other")}, "local", nil, true))
+	if got := m.Snapshot()[0].DeviceSubscription; got != "unknown" {
+		t.Fatalf("conflict retained unbound subscription=%q", got)
+	}
+}
+
+func TestSubscriptionMonitorAttributesEnvironmentDevice(t *testing.T) {
+	for _, tc := range []struct {
+		name, rootID, applicationID, environmentID, environmentStateID string
+		rootSubscription                                               *subscription.TSubscriptionState
+		want                                                           string
+	}{
+		{name: "application_match", rootID: "local", environmentID: "local", want: "none"},
+		{name: "state_match", rootID: "local", environmentStateID: "local", want: "none"},
+		{name: "application_fallback", applicationID: "local", environmentID: "local", want: "none"},
+		{name: "foreign_device", rootID: "local", environmentID: "foreign", want: "unknown"},
+		{name: "empty_environment_identity", rootID: "local", want: "unknown"},
+		{name: "empty_request_identity", environmentID: "local", want: "unknown"},
+		{name: "conflicting_environment_identity", rootID: "local", environmentID: "local", environmentStateID: "foreign", want: "unknown"},
+		{name: "conflicting_request_identity", rootID: "local", applicationID: "foreign", environmentID: "local", want: "unknown"},
+		{name: "explicit_root_precedence", rootID: "local", environmentID: "local", rootSubscription: &subscription.TSubscriptionState{Subscription: subscription.TSubscriptionState_yandex_subscription}, want: "yandex_subscription"},
+		{name: "explicit_root_unknown_precedence", rootID: "local", environmentID: "local", rootSubscription: &subscription.TSubscriptionState{Subscription: 99}, want: "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var m SubscriptionMonitor
+			s := m.NewSession(nil, nil, nil)
+			defer s.Close()
+			ds := &device.TDeviceState{DeviceId: new(tc.rootID), DeviceSubscriptionState: tc.rootSubscription}
+			env := &environment.TEnvironmentState{Devices: []*environment.TEnvironmentDeviceInfo{subscriptionDevice(tc.environmentID, tc.environmentStateID, subscription.TSubscriptionState_none)}}
+			if err := s.Client(t.Context(), websocket.MessageBinary, subscriptionRequest(t, ds, tc.applicationID, env, true)); err != nil {
+				t.Fatal(err)
+			}
+			if got := m.Snapshot()[0].DeviceSubscription; got != tc.want {
+				t.Fatalf("device_subscription=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSubscriptionMonitorAliceProUpdatesAreScopedAndExplicit(t *testing.T) {
+	var m SubscriptionMonitor
+	s := m.NewSession(nil, nil, nil)
+	defer s.Close()
+	// An update cannot establish the requester's identity by itself.
+	active := aliceProEndpoint(t, "local", alicepro.TAliceProCapability_SubscriptionActive, true)
+	s.Client(t.Context(), websocket.MessageBinary, aliceProUpdate(t, active))
+	if got := aliceProStatus(t, m.Snapshot()[0]); got != "unknown" {
+		t.Fatalf("unattributed Alice Pro=%q", got)
+	}
+	s.Client(t.Context(), websocket.MessageBinary, subscriptionRequest(t, &device.TDeviceState{DeviceId: new("local")}, "", nil, false))
+	for _, tc := range []struct {
+		name string
+		ep   *endpoint.TEndpoint
+		want string
+	}{
+		{"active", active, "active"},
+		{"foreign", aliceProEndpoint(t, "foreign", alicepro.TAliceProCapability_NoSubscription, true), "active"},
+		{"empty_id", aliceProEndpoint(t, "", alicepro.TAliceProCapability_NoSubscription, true), "active"},
+		{"malformed", &endpoint.TEndpoint{Id: "local", AnyCapabilities: []*endpoint.TAnyCapabilityHolder{{CapabilityType: endpoint.TCapability_AliceProCapabilityType, RawCapability: []byte{255}}}}, "active"},
+		{"missing_state", &endpoint.TEndpoint{Id: "local", AnyCapabilities: []*endpoint.TAnyCapabilityHolder{{CapabilityType: endpoint.TCapability_AliceProCapabilityType}}}, "active"},
+		{"none", aliceProEndpoint(t, "local", alicepro.TAliceProCapability_NoSubscription, false), "none"},
+		{"future", aliceProEndpoint(t, "local", 99, true), "unknown"},
+		{"active_again", active, "active"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s.Client(t.Context(), websocket.MessageBinary, aliceProUpdate(t, tc.ep))
+			if got := aliceProStatus(t, m.Snapshot()[0]); got != tc.want {
+				t.Fatalf("Alice Pro=%q, want %q", got, tc.want)
+			}
+		})
+	}
+	// Neither missing nor malformed state clears explicit observations.
+	s.Client(t.Context(), websocket.MessageBinary, subscriptionRequest(t, nil, "", nil, true))
+	s.Client(t.Context(), websocket.MessageBinary, []byte{255})
+	if got := aliceProStatus(t, m.Snapshot()[0]); got != "active" {
+		t.Fatalf("missing state cleared Alice Pro: %q", got)
+	}
+	other := m.NewSession(nil, nil, nil)
+	defer other.Close()
+	if got := aliceProStatus(t, m.Snapshot()[1]); got != "unknown" {
+		t.Fatalf("session inherited Alice Pro=%q", got)
+	}
+	// A changed requester must not inherit the previous speaker's state.
+	s.Client(t.Context(), websocket.MessageBinary, subscriptionRequest(t, &device.TDeviceState{DeviceId: new("other")}, "", nil, true))
+	s.Client(t.Context(), websocket.MessageBinary, aliceProUpdate(t, active))
+	if got := aliceProStatus(t, m.Snapshot()[0]); got != "unknown" {
+		t.Fatalf("changed identity inherited Alice Pro=%q", got)
+	}
+}
+
+func subscriptionDevice(appID, stateID string, status subscription.TSubscriptionState_ESubscriptionType) *environment.TEnvironmentDeviceInfo {
+	return &environment.TEnvironmentDeviceInfo{Application: &application.TClientInfoProto{DeviceId: new(appID)}, OneOfStates: &environment.TEnvironmentDeviceInfo_SpeakerDeviceState{SpeakerDeviceState: &device.TDeviceState{DeviceId: new(stateID), DeviceSubscriptionState: &subscription.TSubscriptionState{Subscription: status}}}}
+}
+
+func subscriptionRequest(t *testing.T, ds *device.TDeviceState, appID string, env *environment.TEnvironmentState, raw bool) []byte {
+	t.Helper()
+	r := &request.TAliceRequestProto_TRequest{}
+	if raw {
+		r.DeviceStateType = &request.TAliceRequestProto_TRequest_DeviceStateRaw{DeviceStateRaw: marshalSubscriptionMessage(t, ds)}
+		r.EnvironmentStateType = &request.TAliceRequestProto_TRequest_EnvironmentStateRaw{EnvironmentStateRaw: marshalSubscriptionMessage(t, env)}
+	} else {
+		r.DeviceStateType = &request.TAliceRequestProto_TRequest_DeviceState{DeviceState: ds}
+		r.EnvironmentStateType = &request.TAliceRequestProto_TRequest_EnvironmentState{EnvironmentState: env}
+	}
+	return marshalSubscriptionMessage(t, &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Application: &application.TClientInfoProto{DeviceId: new(appID)}, Request: r}}}}})
+}
+
+func aliceProEndpoint(t *testing.T, id string, status alicepro.TAliceProCapability_ESubscriptionStatus, holder bool) *endpoint.TEndpoint {
+	t.Helper()
+	cap := &alicepro.TAliceProCapability{State: &alicepro.TAliceProCapability_TState{SubscriptionStatus: status}}
+	ep := &endpoint.TEndpoint{Id: id}
+	if holder {
+		ep.AnyCapabilities = []*endpoint.TAnyCapabilityHolder{{CapabilityType: endpoint.TCapability_AliceProCapabilityType, RawCapability: marshalSubscriptionMessage(t, cap)}}
+	} else {
+		value, err := anypb.New(cap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ep.Capabilities = []*anypb.Any{value}
+	}
+	return ep
+}
+
+func aliceProUpdate(t *testing.T, ep *endpoint.TEndpoint) []byte {
+	t.Helper()
+	update := &update.TCapabilityUpdateState{EndpointId: ep.GetId()}
+	if len(ep.Capabilities) > 0 {
+		update.Capability = ep.Capabilities[0]
+	}
+	if len(ep.AnyCapabilities) > 0 {
+		update.AnyCapability = ep.AnyCapabilities[0]
+	}
+	return marshalSubscriptionMessage(t, &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{}, Event: &client.TClientMessage_TEvent_CapabilityUpdateState{CapabilityUpdateState: update}}}})
+}
+
+func marshalSubscriptionMessage(t *testing.T, message proto.Message) []byte {
+	t.Helper()
+	data, err := proto.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func aliceProStatus(t *testing.T, state SpeakerSubscription) string {
+	t.Helper()
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := fields["alice_pro_subscription"].(string)
+	return status
 }
