@@ -36,6 +36,7 @@ type config struct {
 	AllowedIPs         []string             `json:"allowed_ips"`
 	Mode               string               `json:"mode"`
 	LLMBaseURL         string               `json:"llm_base_url"`
+	LLMSystemPrompt    string               `json:"llm_system_prompt,omitempty"`
 	LLMModel           string               `json:"llm_model"`
 	LLMAPI             string               `json:"llm_api"`
 	LLMReasoningEffort string               `json:"llm_reasoning_effort"`
@@ -60,7 +61,8 @@ func readConfig(path string) (config, error) {
 		"QUASAR_LISTEN": &cfg.Listen, "QUASAR_UPSTREAM": &cfg.Upstream,
 		"QUASAR_TLS_CERT": &cfg.TLSCert, "QUASAR_TLS_KEY": &cfg.TLSKey,
 		"QUASAR_MODE": &cfg.Mode, "QUASAR_LLM_BASE_URL": &cfg.LLMBaseURL,
-		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
+		"QUASAR_LLM_SYSTEM_PROMPT": &cfg.LLMSystemPrompt,
+		"QUASAR_LLM_MODEL":         &cfg.LLMModel, "QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
 		"QUASAR_LLM_API": &cfg.LLMAPI, "QUASAR_LLM_REASONING_EFFORT": &cfg.LLMReasoningEffort,
 	} {
 		if value, ok := os.LookupEnv(name); ok {

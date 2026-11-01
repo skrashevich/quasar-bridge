@@ -151,7 +151,7 @@ func main() {
 		MaxOutputTokens: cfg.LLMMaxOutputTokens, HostedTools: cfg.LLMHostedTools,
 		ChatParameters: cfg.LLMChatParameters,
 	}
-	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
+	engine := &bridge.Engine{LLM: lc, SystemPrompt: cfg.LLMSystemPrompt, Dialogue: dialogue.New(cfg.DialogueContext)}
 	var airPlay *airPlayControl
 	cleanupAirPlay := sync.OnceFunc(func() { shutdownAirPlay(stop, airPlay) })
 	defer cleanupAirPlay()
@@ -202,7 +202,7 @@ func main() {
 			tools.AirPlay = airPlay
 		}
 		engine.Music = tools
-		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
+		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, SystemPrompt: cfg.AssistantTools.SystemPrompt, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 	}
 	if err := engine.SetRouting(cfg.Routing); err != nil {
 		slog.Error("routing rejected", "error", err)

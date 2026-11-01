@@ -10,6 +10,7 @@ import (
 )
 
 type Config struct {
+	SystemPrompt     string            `json:"system_prompt,omitempty"`
 	MCPServers       []MCPServerConfig `json:"mcp_servers,omitempty"`
 	Enabled          bool              `json:"enabled"`
 	Web              bool              `json:"web"`

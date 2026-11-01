@@ -26,6 +26,7 @@ type Prefetcher interface {
 }
 
 type Agent struct {
+	SystemPrompt        string
 	Client              Chatter
 	Tools               Toolset
 	MaxRounds, MaxCalls int
@@ -64,7 +65,10 @@ func (a *Agent) complete(ctx context.Context, messages []llm.Message, structured
 		a.Tools = tools
 	}
 	// Qwen chat templates require exactly one initial system message.
-	system := toolPrompt
+	system := a.SystemPrompt
+	if strings.TrimSpace(system) == "" {
+		system = toolPrompt
+	}
 	if status, ok := a.Tools.(interface{ ToolStatus() string }); ok {
 		system += "\n" + status.ToolStatus()
 	}
