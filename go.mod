@@ -7,7 +7,7 @@ require (
 	github.com/freequasar/quasar-go-genproto v0.0.0-20261025092142-2f85025877ff
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/skrashevich/station-airplay v0.0.0-20261101202123-215e74678f1f
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	google.golang.org/protobuf v1.36.12
 )
 
