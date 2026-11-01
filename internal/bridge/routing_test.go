@@ -251,6 +251,71 @@ func TestSpeakerPlaybackControlSkipsClassifier(t *testing.T) {
 	}
 }
 
+func TestSpeakerVolumeSkipsHomeClassifier(t *testing.T) {
+	classifierCalls := 0
+	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) {
+		t.Fatal("speaker volume reached Home Assistant")
+		return "", nil
+	}), LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		classifierCalls++
+		return `{"route":"home"}`, nil
+	})}
+	for _, text := range []string{"Алиса громче", "Алиса, громче!", "погромче", "сделай громче", "прибавь громкость", "увеличь громкость", "тише", "потише", "сделай тише", "убавь громкость", "уменьши громкость", "громкость пять", "Алиса, установи громкость на десять", "громкость 35 процентов", "поставь громкость на 5%", "Алиса, пожалуйста, сделай громче, пожалуйста!"} {
+		d := e.Decide(t.Context(), text)
+		if d.Route != "yandex" || d.Rule != "speaker_volume" || d.Source != "rule" {
+			t.Errorf("%q: %+v", text, d)
+			continue
+		}
+		if r, err := e.ResolveDecision(t.Context(), text, d); err != nil || r.Route != "yandex" || r.Answer != "" {
+			t.Errorf("cloud handoff failed for %q: %+v %v", text, r, err)
+		}
+	}
+	if classifierCalls != 0 {
+		t.Errorf("speaker volume called classifier %d times", classifierCalls)
+	}
+	for _, text := range []string{"сделай телевизор тише", "громче в спальне", "не делай громче", "объясни слово громче", "громче и выключи свет"} {
+		if d := e.Decide(t.Context(), text); d.Route != "home" {
+			t.Errorf("unrelated request was claimed as speaker volume: %q: %+v", text, d)
+		}
+	}
+}
+
+func TestSpeakerVolumeRespectsCustomRouting(t *testing.T) {
+	for _, scenario := range []string{"overridden", "disabled", "replaced"} {
+		t.Run(scenario, func(t *testing.T) {
+			cfg := DefaultRoutingConfig()
+			custom := RoutingRule{Name: "custom_volume", Route: "home", Match: RoutingMatch{Regex: "^громче$"}}
+			wantRule, wantSource := "custom_volume", "rule"
+			switch scenario {
+			case "overridden":
+				cfg.Rules = append([]RoutingRule{custom}, cfg.Rules...)
+			case "disabled":
+				found := false
+				for i := range cfg.Rules {
+					if cfg.Rules[i].Name == "speaker_volume" {
+						cfg.Rules[i].Disabled = true
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("missing default volume rule")
+				}
+				cfg.DefaultRoute = "home"
+				wantRule, wantSource = "", "default"
+			case "replaced":
+				cfg.Rules = []RoutingRule{custom}
+			}
+			e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) { return "", nil })}
+			if err := e.SetRouting(cfg); err != nil {
+				t.Fatal(err)
+			}
+			if d := e.Decide(t.Context(), "громче"); d.Route != "home" || d.Rule != wantRule || d.Source != wantSource {
+				t.Fatalf("custom routing lost: %+v", d)
+			}
+		})
+	}
+}
+
 func TestBridgeUpdateRequestsNeverReachHomeClassifier(t *testing.T) {
 	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) {
 		t.Fatal("update reached Home Assistant")
