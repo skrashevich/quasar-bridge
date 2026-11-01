@@ -9,4 +9,10 @@ ARM64 or ARMv7. The application code remains Apache-2.0; go-aac retains its
 LGPL-3.0 license. A replacement executable can be installed on a rooted speaker
 without a signing key. Configuration and pairing state are separate files.
 
+The source archive also vendors station-airplay, including its PCM implementation,
+single-file bundler and purego dependency. REBUILD.md describes how to embed the
+PCM modules in the final Bridge executable. Only that one executable is installed;
+its selected PCM module is materialized in a private cache on demand. The speaker's
+existing ALSA library is not copied into the binary package.
+
 Source archive generation: python3 scripts/build-source-package.py

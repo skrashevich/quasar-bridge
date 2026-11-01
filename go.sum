@@ -9,6 +9,8 @@ github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNU
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/ebitengine/purego v0.11.2 h1:WWiTx8rD8zYdOwSj8O/NiNbsOvSAgJMTlyV1XlbUSeU=
+github.com/ebitengine/purego v0.11.2/go.mod h1:DCHPP08djqhNSoTfImcnHYQRZmd0qhakvrozqaEYhGQ=
 github.com/freequasar/quasar-go-genproto v0.0.0-20261025092142-2f85025877ff h1:LRQHoboL5rEc+aNFsijoWvBfXzxsRYqKCm8MGi1Zgew=
 github.com/freequasar/quasar-go-genproto v0.0.0-20261025092142-2f85025877ff/go.mod h1:0eBNnweNX8lc3mkYSCIVleD4BA4cgidCef3WKoqlFkA=
 github.com/golang-jwt/jwt/v5 v5.3.1 h1:kYf81DTWFe7t+1VvL7eS+jKFVWaUnK9cB1qbwn63YCY=
@@ -39,8 +41,8 @@ github.com/segmentio/encoding v0.5.4 h1:OW1VRern8Nw6ITAtwSZ7Idrl3MXCFwXHPgqESYfv
 github.com/segmentio/encoding v0.5.4/go.mod h1:HS1ZKa3kSN32ZHVZ7ZLPLXWvOVIiZtyJnO1gPH1sKt0=
 github.com/skrashevich/go-aac v0.1.1-0.20261014125626-800d9fa00267 h1:xtsCsIGWoQVsE9MUqj0/2PF191dhCE146rgYMU2i/ik=
 github.com/skrashevich/go-aac v0.1.1-0.20261014125626-800d9fa00267/go.mod h1:Mj7r//4LDL4FC0ezORj+MnmQ+nDEkJhTOy2aMC8dzww=
-github.com/skrashevich/station-airplay v0.0.0-20261031034730-0f8f07957554 h1:K7gMOiKBqbowARo7mAFWqyYqdCGzEdGjOlNQy5Pd8Jw=
-github.com/skrashevich/station-airplay v0.0.0-20261031034730-0f8f07957554/go.mod h1:V/II59z4AdB6sGfbqDjLXCkybdb7pno/TgP5Xy0d75E=
+github.com/skrashevich/station-airplay v0.0.0-20261101093805-163d0ad3e830 h1:IlYWou0mIcRgCYQjWU880uPhU+rtZGqP+Z6yrAHK8r0=
+github.com/skrashevich/station-airplay v0.0.0-20261101093805-163d0ad3e830/go.mod h1:BBEotyvePIVjchZMo0KP61NjIjmpTyisgpvcJ0Js5xE=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=

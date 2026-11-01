@@ -43,6 +43,8 @@ relink a replacement executable. No module download is needed for the build:
 ```sh
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -trimpath -ldflags '-s -w -X quasarbridge/internal/update.Version={version}' -o quasar-bridge-arm64 ./cmd/quasar-bridge
 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -mod=vendor -trimpath -ldflags '-s -w -X quasarbridge/internal/update.Version={version}' -o quasar-bridge-armv7 ./cmd/quasar-bridge
+CGO_ENABLED=0 go run -mod=vendor github.com/skrashevich/station-airplay/cmd/station-pcm-package -arch arm64 -binary ./quasar-bridge-arm64
+CGO_ENABLED=0 go run -mod=vendor github.com/skrashevich/station-airplay/cmd/station-pcm-package -arch armv7 -binary ./quasar-bridge-armv7
 ```
 
 Go's own toolchain and system libraries are available from https://go.dev/dl/.
@@ -52,6 +54,18 @@ installation; stop Bridge before replacement and restart it afterwards.
 Pairing state and configuration are outside the executable. No signing key
 or authorization token is required to install a modified executable on a
 rooted speaker. See docs/guide.md for standalone package installation.
+
+The PCM implementation and bundler belong to station-airplay, whose sources
+are in vendor/. The final two commands above build the necessary PCM ABIs and
+embed them inside each Bridge ELF. Install only the resulting quasar-bridge
+file. No launcher or companion executable is installed beside it. Bridge stays
+static and extracts the selected, hash-verified PCM module into its private
+AirPlay cache on demand. The speaker's ALSA library is not bundled.
+
+For a fully offline build set GOPROXY=off GOSUMDB=off GOFLAGS=-mod=vendor and
+use the installed Go toolchain version recorded in go.mod. This also applies
+to the bundler's helper builds. To produce the complete installation archive,
+run scripts/build-speaker-package.py; it performs the bundling automatically.
 
 License texts are in LICENSE, THIRD_PARTY_NOTICES and docs/licenses/;
 dependency-specific notices are retained in vendor/.

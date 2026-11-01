@@ -36,6 +36,7 @@ jobs:
       - run: go test -race ./... -count=1 -timeout=60s
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -trimpath -o /tmp/quasar-bridge ./cmd/quasar-bridge
+      - run: CGO_ENABLED=0 go build -trimpath -o /tmp/station-pcm-package github.com/skrashevich/station-airplay/cmd/station-pcm-package
       - name: Check shell syntax
         run: |
           for script in install.sh packaging/speaker/*.sh packaging/speaker/S96quasar-bridge; do
@@ -44,7 +45,9 @@ jobs:
       - name: Test standalone installation with BusyBox
         run: |
           docker run --rm -v "$PWD:/src:ro" -v /tmp/quasar-bridge:/test-binary:ro \
-            -e QUASAR_TEST_BINARY=/test-binary -w /src python:3.13-alpine \
+            -v /tmp/station-pcm-package:/pcm-package-tool:ro \
+            -e QUASAR_TEST_BINARY=/test-binary -e STATION_PCM_PACKAGE_TOOL=/pcm-package-tool \
+            -w /src python:3.13-alpine \
             python3 scripts/test-speaker-package.py
       - name: Install UPX 5.2.1
         shell: bash

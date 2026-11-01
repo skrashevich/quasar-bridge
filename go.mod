@@ -6,7 +6,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/freequasar/quasar-go-genproto v0.0.0-20261025092142-2f85025877ff
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/skrashevich/station-airplay v0.0.0-20261031034730-0f8f07957554
+	github.com/skrashevich/station-airplay v0.0.0-20261101093805-163d0ad3e830
 	golang.org/x/net v0.61.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -15,6 +15,7 @@ require (
 	github.com/albanseurat/go-ptp v0.0.0-20210621114405-a6d76e8bd928 // indirect
 	github.com/brutella/hc v1.2.5 // indirect
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
+	github.com/ebitengine/purego v0.11.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
@@ -35,4 +36,9 @@ require (
 	golang.org/x/tools v0.51.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	howett.net/plist v1.0.1 // indirect
+)
+
+tool (
+	github.com/skrashevich/station-airplay/cmd/station-pcm
+	github.com/skrashevich/station-airplay/cmd/station-pcm-package
 )

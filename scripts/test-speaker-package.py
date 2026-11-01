@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package and BusyBox installation regression checks; no speaker required."""
 import hashlib
+import io
 import http.server
 import os
 from pathlib import Path
@@ -14,16 +15,25 @@ import threading
 import unittest
 import time
 import urllib.request
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackageTest(unittest.TestCase):
+    def helpers(self, root):
+        result = []
+        for arch, elf in (("arm64", b"\x02\xb7\x00"), ("armv7", b"\x01\x28\x00")):
+            path = root / ("pcm-" + arch)
+            path.write_bytes(b"\x7fELF" + elf[:1] + b"\x01" + bytes(12) + elf[1:] + bytes(44))
+            result += ["--pcm-" + arch + "-binary", str(path)]
+        return result
+
     def test_upx_packages_compressed_copy_and_checks_integrity(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = root / "binary"
-            original = b"\x7fELF\x02" + bytes(13) + b"\xb7\x00" + bytes(44)
+            original = b"\x7fELF\x02\x01" + bytes(12) + b"\xb7\x00" + bytes(44)
             binary.write_bytes(original)
             upx = root / "upx"
             upx.write_text(
@@ -41,14 +51,14 @@ class PackageTest(unittest.TestCase):
             output = root / "packed.tar.gz"
             result = subprocess.run([
                 "python3", str(ROOT / "scripts/build-speaker-package.py"),
-                "--binary", str(binary), "--output", str(output), "--upx",
+                "--binary", str(binary), "--output", str(output), "--upx", *self.helpers(root),
             ], env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"]),
                 capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(binary.read_bytes(), original)
             with tarfile.open(output) as archive:
-                self.assertEqual(archive.extractfile("bin/quasar-bridge").read(),
-                                 original + b"packedtested")
+                self.assertTrue(archive.extractfile("bin/quasar-bridge").read().startswith(original + b"packedtested"))
+                self.assertEqual([n for n in archive.getnames() if n.startswith("bin/")], ["bin/quasar-bridge"])
             self.assertEqual(output.with_suffix(".gz.sha256").read_text(),
                              f"{hashlib.sha256(output.read_bytes()).hexdigest()}  {output.name}\n")
 
@@ -57,7 +67,7 @@ class PackageTest(unittest.TestCase):
             with self.subTest(stage=failing_stage), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 binary = root / "binary"
-                binary.write_bytes(b"\x7fELF\x02" + bytes(13) + b"\xb7\x00" + bytes(44))
+                binary.write_bytes(b"\x7fELF\x02\x01" + bytes(12) + b"\xb7\x00" + bytes(44))
                 upx = root / "upx"
                 upx.write_text('#!/bin/sh\n' + (
                     'exit 1\n' if failing_stage == "compression" else
@@ -66,7 +76,7 @@ class PackageTest(unittest.TestCase):
                 output = root / "bad.tar.gz"
                 result = subprocess.run([
                     "python3", str(ROOT / "scripts/build-speaker-package.py"),
-                    "--binary", str(binary), "--output", str(output), "--upx",
+                    "--binary", str(binary), "--output", str(output), "--upx", *self.helpers(root),
                 ], env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"]),
                     capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
@@ -78,25 +88,36 @@ class PackageTest(unittest.TestCase):
             root = Path(tmp)
             for arch, elf in (("arm64", b"\x02\xb7\x00"), ("armv7", b"\x01\x28\x00")):
                 binary = root / "binary"
-                binary.write_bytes(b"\x7fELF" + elf[:1] + bytes(13) + elf[1:] + bytes(44))
+                binary.write_bytes(b"\x7fELF" + elf[:1] + b"\x01" + bytes(12) + elf[1:] + bytes(44))
                 output = root / f"{arch}.tar.gz"
                 result = subprocess.run([
                     "python3", str(ROOT / "scripts/build-speaker-package.py"),
                     "--arch", arch, "--binary", str(binary), "--output", str(output),
-                    "--tag", "v1.2.3",
+                    "--tag", "v1.2.3", *self.helpers(root),
                 ], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 with tarfile.open(output) as archive:
-                    self.assertEqual(set(archive.getnames()), {
+                    expected = {
                         "bin/quasar-bridge", "start.sh", "control.sh", "install.sh",
                         "uninstall.sh", "setup.sh", "S96quasar-bridge", "firmware.sh",
                         "config.device.example.json", "ARCH", "VERSION",
                         "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "SOURCE.md",
                         "docs/licenses/go-aac-LGPL-3.0.txt", "docs/licenses/go-aac-GPL-3.0.txt",
-                    })
+                    }
+                    # Dependency license notices may grow independently.
+                    expected.update(str(p.relative_to(ROOT)) for p in (ROOT / "docs/licenses").glob("*.txt"))
+                    self.assertEqual(set(archive.getnames()), expected)
                     self.assertEqual(archive.extractfile("ARCH").read(), (arch + "\n").encode())
                     self.assertEqual(archive.extractfile("VERSION").read(), b"1.2.3\n")
-                    self.assertEqual(archive.extractfile("bin/quasar-bridge").read(), binary.read_bytes())
+                    bundled = archive.extractfile("bin/quasar-bridge").read()
+                    self.assertTrue(bundled.startswith(binary.read_bytes()))
+                    self.assertEqual([n for n in archive.getnames() if n.startswith("bin/")], ["bin/quasar-bridge"])
+                    with zipfile.ZipFile(io.BytesIO(bundled)) as pcm:
+                        helpers = [pcm.read(n) for n in pcm.namelist() if pcm.read(n).startswith(b"\x7fELF")]
+                    expected_helpers = [(root / "pcm-armv7").read_bytes()]
+                    if arch == "arm64":
+                        expected_helpers.append((root / "pcm-arm64").read_bytes())
+                    self.assertCountEqual(helpers, expected_helpers)
                     self.assertEqual(archive.getmember("install.sh").mode, 0o755)
                 self.assertEqual(output.with_suffix(".gz.sha256").read_text(),
                                  f"{hashlib.sha256(output.read_bytes()).hexdigest()}  {output.name}\n")
@@ -105,12 +126,27 @@ class PackageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = root / "binary"
-            binary.write_bytes(b"\x7fELF\x02" + bytes(13) + b"\x3e\x00" + bytes(44))
+            binary.write_bytes(b"\x7fELF\x02\x01" + bytes(12) + b"\x3e\x00" + bytes(44))
             output = root / "bad.tar.gz"
             result = subprocess.run([
                 "python3", str(ROOT / "scripts/build-speaker-package.py"),
                 "--arch", "arm64", "--binary", str(binary), "--output", str(output),
             ], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(output.exists())
+
+    def test_wrong_helper_architecture_does_not_produce_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "binary"
+            binary.write_bytes(b"\x7fELF\x02\x01" + bytes(12) + b"\xb7\x00" + bytes(44))
+            helpers = self.helpers(root)
+            (root / "pcm-armv7").write_bytes((root / "pcm-arm64").read_bytes())
+            output = root / "bad.tar.gz"
+            result = subprocess.run([
+                "python3", str(ROOT / "scripts/build-speaker-package.py"),
+                "--binary", str(binary), "--output", str(output), *helpers,
+            ], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(output.exists())
 
@@ -167,6 +203,7 @@ class InstallationTest(unittest.TestCase):
 
     def test_install_update_and_uninstall_keep_state_and_boot_independently(self):
         self.install()
+        self.assertEqual(sorted(p.name for p in (self.state / "app/bin").iterdir()), ["quasar-bridge"])
         for name in ("SOURCE.md", "docs/licenses/go-aac-LGPL-3.0.txt",
                      "docs/licenses/go-aac-GPL-3.0.txt"):
             self.assertEqual((self.state / "app" / name).read_bytes(),
@@ -181,7 +218,10 @@ class InstallationTest(unittest.TestCase):
         runtime.write_text("GOMAXPROCS=2\n")
         backup = self.state / "endpoint-backup.json"
         backup.write_text("saved endpoint fixture")
+        replacement = (self.package / "bin/quasar-bridge").read_bytes() + b"updated-single-file-fixture"
+        (self.package / "bin/quasar-bridge").write_bytes(replacement)
         self.install()
+        self.assertEqual((self.state / "app/bin/quasar-bridge").read_bytes(), replacement)
         self.assertEqual(json.loads(config.read_text())["dialogue_context"]["max_turns"], 9)
         self.assertEqual(runtime.read_text(), "GOMAXPROCS=2\n")
         self.assertEqual(backup.read_text(), "saved endpoint fixture")
