@@ -272,6 +272,8 @@ sh /data/opt/quasar-bridge/app/uninstall.sh
 - [Пример настроек](config.example.json) и
   [пример с дополнительными MCP-серверами](config.mcp.example.json).
 - [Как устроен проект](docs/design.md) и [результаты проверок](docs/validation.md).
+- [Диагностика AirPlay в браузере](docs/guide.md#журнал-airplay-в-браузере):
+  состояние приёмника, обновляемый журнал и скачивание файла через SSH-туннель.
 
 ## Лицензия
 
@@ -279,3 +281,5 @@ sh /data/opt/quasar-bridge/app/uninstall.sh
 сторонние компоненты — в [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
 Встроенный AirPlay использует AAC-декодер `go-aac` под LGPL-3.0;
 условия этого компонента также применяются при распространении бинарных сборок.
+ALAC декодируется библиотекой `saprobe-alac` под Apache-2.0. Оба декодера
+написаны на Go и собираются с `CGO_ENABLED=0`.

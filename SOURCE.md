@@ -16,3 +16,8 @@ its selected PCM module is materialized in a private cache on demand. The speake
 existing ALSA library is not copied into the binary package.
 
 Source archive generation: python3 scripts/build-source-package.py
+
+Realtime ALAC decoding uses the pure-Go saprobe-alac module, licensed under
+Apache-2.0, with its Apple source attribution retained in THIRD_PARTY_NOTICES.
+Its exact source is included in vendor/ in the corresponding-source archive.
+No CGO or native codec library is required for either audio decoder.

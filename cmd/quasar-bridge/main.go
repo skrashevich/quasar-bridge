@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -50,7 +51,8 @@ func main() {
 		fmt.Println("Speaker endpoint updated; restart the voice service to apply")
 		return
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	diagnosticLogs := newDiagnosticLog(1 << 20)
+	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stderr, diagnosticLogs), nil))
 	slog.SetDefault(logger)
 	cfg, err := readConfig(*path)
 	if err != nil {
@@ -279,6 +281,7 @@ func main() {
 		}
 	}
 	mux := http.NewServeMux()
+	registerDiagnostics(mux, diagnosticLogs, func() map[string]any { return airPlayHealth(airPlay) })
 	if musicQueue != nil {
 		mux.Handle("/music-stream/", musicQueue)
 	}
