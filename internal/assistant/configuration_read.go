@@ -19,7 +19,7 @@ func (a *Agent) CompleteConfiguration(ctx context.Context, messages []llm.Messag
 type configurationReadTools struct{ base Toolset }
 
 func configurationReadName(name string) bool {
-	return name == "get_quasar_bridge_config" || name == "current_time"
+	return name == "get_quasar_bridge_config" || name == "current_time" || name == "get_quasar_bridge_routing" || name == "test_quasar_bridge_routing"
 }
 
 func (t *configurationReadTools) Definitions() []llm.Tool {

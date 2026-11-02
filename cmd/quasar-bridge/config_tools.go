@@ -50,6 +50,7 @@ var voiceSettings = []voiceSetting{
 	{"conversation_log.max_backups", "Число архивных журналов: целое число 0..20.", "", false},
 	{"conversation_log.max_text_chars", "Лимит символов записи: целое число 1..64000.", "", false},
 	{"routing.default_route", "Маршрут по умолчанию: classify, yandex, llm или home.", "", false},
+	{"routing.classifier.enabled", "Логическое: включить LLM-классификатор запросов без совпавшего правила. При false используется маршрут по умолчанию. Если поле отсутствует, действует прежнее поведение default_route.", "", false},
 	{"routing.rules", "Массив правил по порядку: name, route (yandex/llm/home), disabled, match с contains_any, contains_all_groups, contains_none, starts_with_any, regex. Перед изменением прочитай текущие правила и сохрани остальные.", "", false},
 	{"routing.classifier.prompt", "Непустая строка: инструкция классификатора маршрута.", "", false},
 	{"routing.classifier.timeout_ms", "Тайм-аут классификации в миллисекундах: целое число 1..60000.", "", false},
@@ -153,6 +154,10 @@ func (c *configurationControl) Get(ctx context.Context, section string) (any, er
 func (c *configurationControl) Set(ctx context.Context, changes map[string]jsontext.Value) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.setLocked(ctx, changes, nil)
+}
+
+func (c *configurationControl) setLocked(ctx context.Context, changes map[string]jsontext.Value, expected []byte) (any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -169,6 +174,9 @@ func (c *configurationControl) Set(ctx context.Context, changes map[string]jsont
 	raw, err := os.ReadFile(c.path)
 	if err != nil {
 		return nil, errors.New("cannot read configuration file")
+	}
+	if expected != nil && !bytes.Equal(expected, raw) {
+		return nil, errors.New("configuration changed externally; read it again before retrying")
 	}
 	if len(raw) > 1<<20 {
 		return nil, errors.New("configuration exceeds voice editing size limit")
@@ -263,6 +271,10 @@ func (c *configurationControl) Apply(ctx context.Context, action string) (any, e
 }
 
 func configValue(cfg config, path string) jsontext.Value {
+	if path == "routing.classifier.enabled" {
+		raw, _ := json.Marshal(cfg.Routing.ClassifierEnabled())
+		return raw
+	}
 	raw, _ := json.Marshal(cfg, json.Deterministic(true))
 	return configurationValue(raw, path)
 }

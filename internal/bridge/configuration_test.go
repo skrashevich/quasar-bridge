@@ -16,6 +16,48 @@ func TestConfigurationRequestsReachAssistant(t *testing.T) {
 	}
 }
 
+func TestVoiceRoutingAdministrationReachesAssistant(t *testing.T) {
+	for _, text := range []string{"Отключи классификатор", "Включи классификатор", "Установи маршрут по умолчанию в нейросеть", "Покажи правила маршрутизации", "Запросы о погоде отправляй нейросети", "Отправляй вопросы про рецепты Яндексу", "Хочу чтобы вопросы о прогнозе отправлялись нейросети", "Отключи правило маршрутизации погоды", "Проверь маршрут для фразы привет"} {
+		e := &Engine{Configuration: true}
+		if got := e.Decide(t.Context(), text); got.Route != "llm" || got.Source != "bridge_configuration" {
+			t.Errorf("routing administration went elsewhere: %q %+v", text, got)
+		}
+	}
+}
+
+func TestRoutingTopicDoesNotCaptureOtherRules(t *testing.T) {
+	e := &Engine{Configuration: true, Assistant: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		return "Правила прочитаны.", nil
+	}), LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) { return `{"route":"yandex"}`, nil })}
+	if _, err := e.Fallback(t.Context(), "Покажи правила маршрутизации"); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Какие правила сейчас включены", "Отключи это правило"} {
+		if got := e.Decide(t.Context(), text); got.Source != "bridge_configuration" {
+			t.Fatalf("routing topic lost: %q %+v", text, got)
+		}
+	}
+	for _, text := range []string{"Какие правила шахмат?", "Отправь запрос в Home Assistant включить свет"} {
+		if got := e.Decide(t.Context(), text); got.Source == "bridge_configuration" {
+			t.Fatalf("unrelated request treated as routing administration: %q %+v", text, got)
+		}
+	}
+}
+
+func TestBridgeRuleQuestionAnchorsRoutingFollowup(t *testing.T) {
+	for _, anchor := range []string{"Покажи правила quasar bridge", "Какие правила у квазар бридж"} {
+		e := &Engine{Configuration: true, Assistant: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+			return "Правила прочитаны.", nil
+		})}
+		if _, err := e.Fallback(t.Context(), anchor); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.Decide(t.Context(), "Отключи правило weather"); got.Source != "bridge_configuration" {
+			t.Errorf("Bridge rule question lost routing topic: %q %+v", anchor, got)
+		}
+	}
+}
+
 func TestConfigurationFollowupsKeepLocalTopic(t *testing.T) {
 	e := &Engine{Configuration: true, Assistant: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
 		return "Настройки доступны.", nil

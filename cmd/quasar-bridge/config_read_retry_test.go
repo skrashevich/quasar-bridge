@@ -53,7 +53,7 @@ func TestConfigurationRetryUsesCurrentSettingsWithoutWrites(t *testing.T) {
 			t.Error("current configuration unavailable to retry model")
 		}
 		for _, def := range defs {
-			if def.Function.Name != "get_quasar_bridge_config" && def.Function.Name != "current_time" {
+			if def.Function.Name != "get_quasar_bridge_config" && def.Function.Name != "current_time" && def.Function.Name != "get_quasar_bridge_routing" && def.Function.Name != "test_quasar_bridge_routing" {
 				t.Errorf("retry offered nonlocal or mutating tool %s", def.Function.Name)
 			}
 		}

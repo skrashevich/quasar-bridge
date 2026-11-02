@@ -223,13 +223,15 @@ func (e *Engine) policy() *RoutingPolicy {
 }
 
 type RoutingStatus struct {
-	Revision    string
-	ActiveRules int
+	Revision          string
+	ActiveRules       int
+	ClassifierEnabled bool
+	DefaultRoute      string
 }
 
 func (e *Engine) RoutingStatus() RoutingStatus {
 	p := e.policy()
-	return RoutingStatus{Revision: p.revision, ActiveRules: len(p.rules)}
+	return RoutingStatus{Revision: p.revision, ActiveRules: len(p.rules), ClassifierEnabled: p.classifierEnabled, DefaultRoute: p.defaultRoute}
 }
 func (e *Engine) IsRefusal(text string) bool { return e.policy().isRefusal(text) }
 func IsRefusal(text string) bool             { return builtInRouting.isRefusal(text) }
@@ -272,7 +274,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue"}
 	}
-	if p.defaultRoute != "classify" {
+	if !p.classifierEnabled {
 		return RouteDecision{Route: p.defaultRoute, Source: "default"}
 	}
 	failed := RouteDecision{Route: p.classifier.OnError, Source: "classifier_error"}
