@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect license notices for modules linked into the Linux ARM64 package."""
+"""Collect license notices for all executables in the Linux speaker package."""
 from pathlib import Path
 import os
 import subprocess
@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     env = dict(os.environ, CGO_ENABLED="0", GOOS="linux", GOARCH="arm64")
     output = subprocess.check_output(
-        ["go", "list", "-deps", "-f", "{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}", "./cmd/quasar-bridge"],
+        ["go", "list", "-deps", "-f", "{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}", "./cmd/quasar-bridge", "github.com/skrashevich/station-airplay/cmd/station-pcm", "github.com/skrashevich/station-airplay/cmd/station-pcm-package"],
         cwd=ROOT, env=env, text=True,
     )
     modules = {}
@@ -36,7 +36,7 @@ def main():
     parts = ["Third-party components linked into Quasar Bridge\n\nThese components retain their own licenses. This file does not relicense them.\n"]
     for notice, names in sorted(groups.items(), key=lambda item: item[1][0]):
         parts.append("\n" + "\n".join(names) + "\n\n" + notice + "\n")
-    (ROOT / "THIRD_PARTY_NOTICES").write_text("\n".join(parts))
+    (ROOT / "THIRD_PARTY_NOTICES").write_text("\n".join(line.rstrip() for line in "\n".join(parts).splitlines()) + "\n")
     print(f"Updated third-party notices for {len(modules)} modules and the Go runtime.")
 
 

@@ -156,6 +156,15 @@ func TestHomeValidatesEntireBatchBeforeFirstAction(t *testing.T) {
 	}
 }
 
+func TestHomeRejectsServiceMarkupInPlanAnswer(t *testing.T) {
+	c := Controller{Tools: &homeFixture{state: "off"}, Domains: []string{"light"}, Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		return `{"answer":"<think>рассуждения</think>Уточните комнату.","actions":[]}`, nil
+	})}
+	if answer, err := c.Handle(t.Context(), "Включи свет"); err == nil || answer != "" {
+		t.Fatalf("service markup accepted: answer=%q error=%v", answer, err)
+	}
+}
+
 func TestRoomScopeKeepsGroupsAndSeparatelyNamedFixtures(t *testing.T) {
 	entities := []Entity{{ID: "light.group", Name: "Кабинет", Area: "Кабинет"}, {ID: "light.chandelier", Name: "Люстра", Area: "Кабинет"}, {ID: "switch.extra", Name: "Лампа кабинет"}, {ID: "light.bedroom", Name: "Спальня", Area: "Спальня"}}
 	got := scopeEntities("Горит ли свет в кабинете?", entities)
@@ -358,5 +367,37 @@ func TestStateQuestionCannotPlanPhysicalActions(t *testing.T) {
 	answer, err := c.Handle(t.Context(), "Горит ли свет в кабинете?")
 	if err != nil || answer != "Свет выключен." || f.actions != 0 {
 		t.Fatalf("answer=%q err=%v actions=%d", answer, err, f.actions)
+	}
+}
+
+// User story: the speaker reads home answers aloud, so a reply must name a
+// device the way people call it ("Свет в кабинете"), never by its Home
+// Assistant entity_id. The prompts ask for that, and the bridge also replaces
+// any entity_id the planner still writes, because the model can ignore a prompt.
+func TestHomeAnswerNamesDevicesWithoutEntityIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name, question, reply, want string
+	}{
+		{"command_answer_with_id_in_brackets", "Включи свет в кабинете", "Свет в кабинете (light.office) уже включён.", "Свет в кабинете уже включён."},
+		{"command_answer_with_bare_id", "Включи свет в кабинете", "light.office уже включён.", "Свет в кабинете уже включён."},
+		{"state_answer_with_bare_id", "Горит ли свет в кабинете?", "light.office включён.", "Свет в кабинете включён."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &homeFixture{state: "on"}
+			c := Controller{Tools: f, Domains: []string{"light"}, Planner: plannerFunc(func(_ context.Context, m []llm.Message, structured bool) (string, error) {
+				if !strings.Contains(m[0].Content, "Называй устройства по friendly_name") {
+					t.Fatalf("prompt does not ask for friendly names: %q", m[0].Content)
+				}
+				if !structured {
+					return tc.reply, nil
+				}
+				b, _ := json.Marshal(Plan{Answer: tc.reply, Actions: []Action{}})
+				return string(b), nil
+			})}
+			answer, err := c.Handle(t.Context(), tc.question)
+			if err != nil || answer != tc.want || f.actions != 0 {
+				t.Fatalf("answer=%q want=%q err=%v actions=%d", answer, tc.want, err, f.actions)
+			}
+		})
 	}
 }

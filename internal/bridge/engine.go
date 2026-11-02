@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"quasarbridge/internal/configvoice"
 	"quasarbridge/internal/dialogue"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/playback"
+	"quasarbridge/internal/reply"
 	"quasarbridge/internal/webaddress"
 )
 
@@ -30,15 +32,17 @@ type MusicStarter interface {
 	StartMusic(context.Context, string) (string, error)
 }
 type Engine struct {
-	LLM          Completer
-	Assistant    Completer
-	Home         HomeHandler
-	Playback     PlaybackController
-	Music        MusicStarter
-	Dialogue     *dialogue.Store
-	SystemPrompt string
-	dialogueOnce sync.Once
-	routing      atomic.Pointer[RoutingPolicy]
+	Configuration bool
+	AirPlay       AirPlayController
+	LLM           Completer
+	Assistant     Completer
+	Home          HomeHandler
+	Playback      PlaybackController
+	Music         MusicStarter
+	Dialogue      *dialogue.Store
+	SystemPrompt  string
+	dialogueOnce  sync.Once
+	routing       atomic.Pointer[RoutingPolicy]
 }
 
 func (e *Engine) dialogue() *dialogue.Store {
@@ -98,6 +102,33 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "airplay":
+		if e.AirPlay == nil {
+			return Resolution{Route: "yandex"}, nil
+		}
+		action := airPlayCommand(text)
+		if decision.Source == "airplay_media" {
+			controller, ok := e.AirPlay.(AirPlayMediaController)
+			if !ok || !controller.Active(ctx) {
+				return Resolution{Route: "yandex"}, nil
+			}
+			action = airPlayMediaCommand(text)
+			if action == "" {
+				return result, errors.New("unknown AirPlay media control")
+			}
+			answer, err := controller.ControlMedia(ctx, action)
+			result.Answer = answer
+			return result, err
+		}
+		if action == "" {
+			return result, errors.New("unknown AirPlay control")
+		}
+		answer, err := e.AirPlay.Control(ctx, action)
+		if err == nil && action == "start" {
+			reply.SuppressListening(ctx)
+		}
+		result.Answer = answer
+		return result, err
 	case "music":
 		if e.Music == nil {
 			return result, errors.New("music playback is unavailable")
@@ -208,13 +239,15 @@ func (e *Engine) policy() *RoutingPolicy {
 }
 
 type RoutingStatus struct {
-	Revision    string
-	ActiveRules int
+	Revision          string
+	ActiveRules       int
+	ClassifierEnabled bool
+	DefaultRoute      string
 }
 
 func (e *Engine) RoutingStatus() RoutingStatus {
 	p := e.policy()
-	return RoutingStatus{Revision: p.revision, ActiveRules: len(p.rules)}
+	return RoutingStatus{Revision: p.revision, ActiveRules: len(p.rules), ClassifierEnabled: p.classifierEnabled, DefaultRoute: p.defaultRoute}
 }
 func (e *Engine) IsRefusal(text string) bool { return e.policy().isRefusal(text) }
 
@@ -251,9 +284,20 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.prepared = true
 	}()
 	p := e.policy()
-	// A whole playback command still stops music. «Алиса, хватит» inside a
-	// longer utterance is not such a command and is dropped below, before
-	// retry, reset, and every other rule.
+	// Bridge configuration and an explicit AirPlay command stay ahead of the
+	// stop phrase. An active AirPlay sender also owns a whole playback
+	// command, including «Алиса, хватит». Otherwise that whole command still
+	// stops music. The same phrase inside a longer utterance is dropped
+	// before retry, reset, and the remaining rules.
+	if e.Configuration && configvoice.InConversation(text, snapshot.Messages) {
+		return RouteDecision{Route: "llm", Source: "bridge_configuration"}
+	}
+	if e.AirPlay != nil && airPlayCommand(text) != "" {
+		return RouteDecision{Route: "airplay", Source: "airplay"}
+	}
+	if controller, ok := e.AirPlay.(AirPlayMediaController); ok && airPlayMediaCommand(text) != "" && controller.Active(ctx) {
+		return RouteDecision{Route: "airplay", Source: "airplay_media"}
+	}
 	if d, ok := e.directPlayback(ctx, text); ok {
 		return d
 	}
@@ -284,7 +328,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if p.unknownToHome {
 		return RouteDecision{Route: "home", Source: "unknown"}
 	}
-	if p.defaultRoute != "classify" {
+	if !p.classifierEnabled {
 		return RouteDecision{Route: p.defaultRoute, Source: "default"}
 	}
 	failed := RouteDecision{Route: p.classifier.OnError, Source: "classifier_error"}

@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	asrcommon "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
 	cancellation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
 	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	continuation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
@@ -25,6 +26,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/dialogue"
+	"quasarbridge/internal/reply"
 	"quasarbridge/internal/sound"
 	"quasarbridge/internal/wire"
 )
@@ -167,6 +169,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			scope = "uuid:" + id
 		}
 		pctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
+		pctx = reply.WithPolicy(pctx)
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)
 		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
@@ -360,12 +363,17 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				sc.StreamId = int64(p.audioStream)
 			}
 			sc.MessageId = p.id
+			finalSpeech := sc.GetClose() != nil && (!p.streaming || !p.audioIsProgress)
 			n.mu.Unlock()
 			out, err := f.Marshal()
 			if err != nil {
 				return err
 			}
-			return n.down(ctx, k, out)
+			err = n.down(ctx, k, out)
+			if err == nil && finalSpeech {
+				reply.Delivered(p.ctx)
+			}
+			return err
 		}
 		drop := original != nil && original.local && (original.header.StreamId == nil || sc.GetStreamId() != original.header.GetStreamId())
 		n.mu.Unlock()
@@ -499,6 +507,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			return nil
 		}
 	}
+	emptyFinal := false
 	switch f.Kind() {
 	case "AliceResponse":
 		if !p.cloud {
@@ -525,9 +534,15 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				p.text = strings.Join(words, " ")
 			}
 		}
+		emptyFinal = !p.started && asr.GetEndOfUtt() && asr.GetResponseCode() == asrcommon.EAsrResponseCode_OK && strings.TrimSpace(p.text) == ""
 
 	}
 	n.mu.Unlock()
+	if emptyFinal {
+		if listener, ok := n.resolver.(interface{ EmptyInput(context.Context) }); ok {
+			listener.EmptyInput(p.ctx)
+		}
+	}
 	n.maybeResolve(p)
 	if err := n.down(ctx, k, data); err != nil {
 		return err
@@ -605,6 +620,8 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			if result.Route == "home" {
 				slog.Warn("home_command_failed", "error", err)
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
+			} else if result.Route == "airplay" {
+				result.Answer = "Не удалось изменить состояние AirPlay. Проверьте журнал Quasar Bridge."
 			} else if result.Route == "music" {
 				result.Answer = "Не удалось включить музыку с этой страницы."
 			} else {
@@ -840,7 +857,7 @@ func (n *Native) live(p *nativeRequest) context.Context {
 }
 
 func (n *Native) wantListen(p *nativeRequest, silentPlayback bool) bool {
-	if silentPlayback {
+	if silentPlayback || !reply.ListeningAllowed(p.ctx) {
 		return false
 	}
 	if p.listen != nil {
