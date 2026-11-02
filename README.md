@@ -272,6 +272,8 @@ sh /data/opt/quasar-bridge/app/uninstall.sh
 - [Пример настроек](config.example.json) и
   [пример с дополнительными MCP-серверами](config.mcp.example.json).
 - [Как устроен проект](docs/design.md) и [результаты проверок](docs/validation.md).
+- [Проверка в эмуляторе kuyase](scripts/kuyase/README.md): GitHub Actions для
+  Mini 1 и Станции 2, сборки ARM64/ARMv7, локальный ASR и управление AirPlay.
 - [Диагностика AirPlay в браузере](docs/guide.md#журнал-airplay-в-браузере):
   состояние приёмника, обновляемый журнал и скачивание файла через SSH-туннель.
 
