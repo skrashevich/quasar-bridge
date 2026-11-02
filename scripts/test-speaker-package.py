@@ -165,6 +165,147 @@ class PackageTest(unittest.TestCase):
             self.assertFalse(output.exists())
 
 
+class ChatGPTSetupTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.package = self.root / "package"
+        self.package.mkdir()
+        self.state = self.root / "state"
+        self.trace = self.root / "commands"
+        for name in ("setup.sh", "start.sh", "control.sh"):
+            shutil.copy2(ROOT / "packaging/speaker" / name, self.package / name)
+        shim = self.root / "shim"
+        shim.mkdir()
+        (shim / "id").write_text('#!/bin/sh\nprintf "0\\n"\n')
+        (shim / "id").chmod(0o755)
+        (self.package / "bin").mkdir()
+        binary = self.package / "bin/quasar-bridge"
+        binary.write_text('''#!/bin/sh
+if [ "$1" = -config ]; then shift 2; fi
+printf '%s\\n' "$*" >> "$QUASAR_TEST_TRACE"
+if [ "$1" = -chatgpt-auth ] && [ "$2" = login ]; then
+ test "${QUASAR_TEST_FAIL_LOGIN:-}" != yes || exit 1
+ if [ -n "${QUASAR_LLM_CHATGPT_AUTH_FILE:-}" ]; then printf '{}' > "$QUASAR_LLM_CHATGPT_AUTH_FILE"; fi
+fi
+if [ "$1" = -list-models ]; then
+ if [ "${QUASAR_TEST_FAIL_MODELS:-}" = yes ]; then
+  printf 'unusable\\t"Partial catalog"\\n'
+  exit 1
+ fi
+ if [ "${QUASAR_TEST_EMPTY_MODELS:-}" != yes ]; then
+  printf 'fixture-small\\t"Small fixture"\\nfixture-model\\t"Fixture model"\\n'
+ fi
+fi
+''')
+        binary.chmod(0o755)
+        (self.package / "install.sh").write_text('''#!/bin/sh
+printf 'install\\n' >> "$QUASAR_TEST_TRACE"
+''')
+        self.env = dict(os.environ, QUASAR_DATA_DIR=str(self.state),
+                        QUASAR_YAM_PACKAGE_DIR=str(self.root / "absent-yam"),
+                        QUASAR_TEST_TRACE=str(self.trace),
+                        PATH=str(shim) + os.pathsep + os.environ["PATH"])
+
+    def test_subscription_setup_signs_in_before_model_selection(self):
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=self.env, input="chatgpt\n2\n\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.trace.read_text().splitlines(),
+                         ["-chatgpt-auth login", "-list-models", "-check-config", "-check-backends", "install"])
+        output = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_LLM_API" '
+            '"$QUASAR_LLM_BASE_URL" "$QUASAR_LLM_MODEL" '
+            '"$QUASAR_LLM_API_KEY" "$QUASAR_LLM_CHATGPT_AUTH_FILE"',
+            "sh", str(self.state / "runtime.env"),
+        ], text=True)
+        self.assertEqual(output.splitlines(), ["chatgpt", "https://api.openai.com/v1",
+                         "fixture-model", "", str(self.state / "chatgpt-auth.json")])
+        self.assertTrue((self.state / "chatgpt-auth.json").exists())
+        self.assertIn("ssh -N -L 1455:127.0.0.1:1455", result.stdout)
+        self.assertIn("1 — fixture-small", result.stdout)
+        self.assertIn("2 — fixture-model", result.stdout)
+
+    def test_failed_sign_in_does_not_check_backend_or_install(self):
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_LOGIN="yes"),
+                                input="chatgpt\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.trace.read_text().splitlines(),
+                         ["-chatgpt-auth login"])
+        self.assertFalse((self.state / "runtime.env").exists())
+        self.assertFalse((self.state / "config.json").exists())
+
+    def test_standard_api_selects_catalog_model_and_keeps_secret(self):
+        key = "fixture'\"\\$`token"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=self.env,
+                                input=f"https://llm.example.invalid/v1\n{key}\n2\n2\n\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.trace.read_text().splitlines(),
+                         ["-list-models", "-check-config", "-check-backends", "install"])
+        output = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_LLM_API" "$QUASAR_LLM_API_KEY" "$QUASAR_LLM_MODEL"',
+            "sh", str(self.state / "runtime.env"),
+        ], text=True)
+        self.assertEqual(output.splitlines(), ["responses", key, "fixture-model"])
+        self.assertNotIn(key, result.stdout + result.stderr)
+
+    def test_model_selection_rejects_invalid_numbers_without_refetching(self):
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=self.env, input="chatgpt\nname\n0\n3\n2\n\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s" "$QUASAR_LLM_MODEL"',
+            "sh", str(self.state / "runtime.env"),
+        ], text=True)
+        self.assertEqual(output, "fixture-model")
+        self.assertEqual(self.trace.read_text().splitlines().count("-list-models"), 1)
+
+    def test_failed_or_empty_catalog_does_not_install(self):
+        for setting in ("QUASAR_TEST_FAIL_MODELS", "QUASAR_TEST_EMPTY_MODELS"):
+            with self.subTest(setting=setting):
+                self.trace.unlink(missing_ok=True)
+                result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                        env=dict(self.env, **{setting: "yes"}),
+                                        input="https://llm.example.invalid/v1\n\n1\nn\n",
+                                        capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.trace.read_text().splitlines(), ["-list-models"])
+                self.assertNotIn("Номер модели:", result.stdout)
+                self.assertFalse((self.state / "runtime.env").exists())
+                self.assertFalse((self.state / "config.json").exists())
+
+    def test_catalog_failure_restores_existing_configuration(self):
+        self.state.mkdir()
+        config = '{"mode":"observe","llm_model":"old-model"}'
+        runtime = "KEEP_FIXTURE=yes\nQUASAR_LLM_MODEL=old-model\n"
+        (self.state / "config.json").write_text(config)
+        (self.state / "runtime.env").write_text(runtime)
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_MODELS="yes"),
+                                input="y\nhttps://llm.example.invalid/v1\n\n1\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.state / "config.json").read_text(), config)
+        self.assertEqual((self.state / "runtime.env").read_text(), runtime)
+
+    def test_control_forwards_authentication_actions(self):
+        self.state.mkdir()
+        for action in ("login", "status", "models", "logout"):
+            with self.subTest(action=action):
+                result = subprocess.run(["sh", str(self.package / "control.sh"), "chatgpt-" + action],
+                                        env=self.env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.trace.read_text().splitlines(),
+                         ["-chatgpt-auth " + action for action in ("login", "status", "models", "logout")])
+
+
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0,
                      "installation tests require Linux root (run in a disposable container)")
 class InstallationTest(unittest.TestCase):
@@ -380,6 +521,12 @@ class InstallationTest(unittest.TestCase):
 
     def backend_url(self):
         class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"object":"list","data":[{"id":"fixture-model","object":"model"}]}')
+
             def do_POST(self):
                 self.rfile.read(int(self.headers["Content-Length"]))
                 self.send_response(200)
@@ -409,7 +556,7 @@ class InstallationTest(unittest.TestCase):
         self.env["QUASAR_RELEASE_URL"] = self.serve_directory(release)
         key = "fixture'\"\\$`token"
         result = self.run_script(ROOT / "install.sh",
-                                 input_text=f"{url}\nfixture-model\n{key}\n1\n\ny\nn\n")
+                                 input_text=f"{url}\n{key}\n1\n1\n\ny\nn\n")
         self.assertNotIn(key, result.stdout + result.stderr)
         self.control("status")
         self.assertEqual(json.loads(firmware.read_text())["aliced"]["uniProxyUrl"],
@@ -479,6 +626,12 @@ exec sh -c "$*"
 
     def test_failed_backend_setup_restores_existing_settings(self):
         class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"object":"list","data":[{"id":"fixture-model","object":"model"}]}')
+
             def do_POST(self):
                 self.rfile.read(int(self.headers["Content-Length"]))
                 self.send_response(401)
@@ -494,7 +647,7 @@ exec sh -c "$*"
         runtime.write_text("KEEP_FIXTURE=yes\n")
         url = self.serve(Handler) + "/v1"
         self.run_script(self.package / "setup.sh",
-                        input_text=f"y\n{url}\nfixture-model\nfixture-key\n1\n\nn\n", ok=False)
+                        input_text=f"y\n{url}\nfixture-key\n1\n1\n\nn\n", ok=False)
         self.assertEqual(config.read_bytes(), original)
         self.assertEqual(runtime.read_text(), "KEEP_FIXTURE=yes\n")
         self.control("status")

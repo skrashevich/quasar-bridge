@@ -57,33 +57,10 @@ setting() {
  printf '%s' "$2" | sed 's/[\\`"$]/\\&/g'
  printf '"\n'
 }
-configure=true
-if [ -f "$state/config.json" ]; then
- echo 'Найдены существующие настройки. По умолчанию они будут сохранены.'
- ask 'Изменить подключение к нейросети? [y/N]'
- if ! yes; then configure=false; fi
-fi
-if [ "$configure" = true ]; then
- while :; do
-  while :; do
-   ask 'Адрес API нейросети (с /v1):'
-   case "$answer" in http://?*|https://?*) base=$answer; break ;; *) echo 'Введите полный адрес, например https://llm.example.invalid/v1.' ;; esac
-  done
-  while :; do
-   ask 'Название модели:'
-   if [ -n "$answer" ]; then model=$answer; break; fi
-  done
-  secret 'Ключ API (Enter, если не нужен):'
-  key=$answer
-  while :; do
-   ask 'API: 1 — Chat Completions, 2 — Responses [1]:'
-   case "$answer" in ''|1) api=chat_completions; break ;; 2) api=responses; break ;; esac
-  done
-  secret 'Секретный URL Home Assistant MCP (Enter, если не нужен):'
-  home_url=$answer
-  changed=true
-  if [ ! -f "$state/config.json" ]; then
-   cat > "$state/config.json" <<'CONFIG'
+save_configuration() {
+ changed=true
+ if [ ! -f "$state/config.json" ]; then
+  cat > "$state/config.json" <<'CONFIG'
 {
  "listen": "127.0.0.1:8443",
  "mode": "hybrid",
@@ -93,22 +70,90 @@ if [ "$configure" = true ]; then
  "local_progress": {"enabled": true}
 }
 CONFIG
+ fi
+ {
+  if [ -f "$state/runtime.env" ]; then
+   sed '/^# BEGIN QUASAR SETUP$/,/^# END QUASAR SETUP$/d' "$state/runtime.env"
   fi
-  {
-   if [ -f "$state/runtime.env" ]; then
-    sed '/^# BEGIN QUASAR SETUP$/,/^# END QUASAR SETUP$/d' "$state/runtime.env"
-   fi
-   printf '\n# BEGIN QUASAR SETUP\n'
-   setting QUASAR_MODE hybrid
-   setting QUASAR_LLM_BASE_URL "$base"
-   setting QUASAR_LLM_MODEL "$model"
-   setting QUASAR_LLM_API "$api"
-   setting QUASAR_LLM_API_KEY "$key"
-   setting QUASAR_HOME_MCP_URL "$home_url"
-   printf '# END QUASAR SETUP\n'
-  } > "$saved/runtime.new"
-  mv "$saved/runtime.new" "$state/runtime.env"
-  chmod 0600 "$state/config.json" "$state/runtime.env"
+  printf '\n# BEGIN QUASAR SETUP\n'
+  setting QUASAR_MODE hybrid
+  setting QUASAR_LLM_BASE_URL "$base"
+  setting QUASAR_LLM_MODEL "$model"
+  setting QUASAR_LLM_API "$api"
+  setting QUASAR_LLM_API_KEY "$key"
+  if [ "$api" = chatgpt ]; then
+   setting QUASAR_LLM_CHATGPT_AUTH_FILE "$state/chatgpt-auth.json"
+  fi
+  setting QUASAR_HOME_MCP_URL "$home_url"
+  printf '# END QUASAR SETUP\n'
+ } > "$saved/runtime.new"
+ mv "$saved/runtime.new" "$state/runtime.env"
+ chmod 0600 "$state/config.json" "$state/runtime.env"
+}
+choose_model() {
+ if [ "$api" = chatgpt ]; then
+  echo 'Для входа с компьютера откройте SSH-туннель во втором терминале:'
+  echo 'ssh -N -L 1455:127.0.0.1:1455 -p SSH_PORT root@SPEAKER_IP'
+  echo 'Замените SSH_PORT и SPEAKER_IP своими значениями. Затем откройте ссылку входа в браузере компьютера.'
+  sh "$package/start.sh" -chatgpt-auth login || return 1
+ fi
+ echo 'Получение списка доступных моделей…'
+ if ! sh "$package/start.sh" -list-models > "$saved/models"; then
+  echo 'Не удалось получить список моделей. Проверьте адрес API, доступ и авторизацию.' >&2
+  return 1
+ fi
+ if [ ! -s "$saved/models" ]; then
+  echo 'API не вернул доступных моделей.' >&2
+  return 1
+ fi
+ awk -F '\t' '{ printf "%d — %s (%s)\n", NR, $1, $2 }' "$saved/models"
+ while :; do
+  ask 'Номер модели:'
+  case "$answer" in
+   ''|*[!0-9]*) echo 'Введите номер из списка.'; continue ;;
+  esac
+  model=$(awk -F '\t' -v choice="$answer" 'NR == choice { print $1 }' "$saved/models")
+  if [ -n "$model" ]; then return 0; fi
+  echo 'Такого номера в списке нет.'
+ done
+}
+configure=true
+if [ -f "$state/config.json" ]; then
+ echo 'Найдены существующие настройки. По умолчанию они будут сохранены.'
+ ask 'Изменить подключение к нейросети? [y/N]'
+ if ! yes; then configure=false; fi
+fi
+if [ "$configure" = true ]; then
+ while :; do
+  while :; do
+   ask 'Адрес API нейросети (с /v1) или chatgpt для подписки ChatGPT/Codex:'
+   case "$answer" in
+    chatgpt) base=https://api.openai.com/v1; api=chatgpt; break ;;
+    http://?*|https://?*) base=$answer; api=chat_completions; break ;;
+    *) echo 'Введите полный адрес, например https://llm.example.invalid/v1, или chatgpt.' ;;
+   esac
+  done
+  key=
+  if [ "$api" != chatgpt ]; then
+   secret 'Ключ API (Enter, если не нужен):'
+   key=$answer
+   while :; do
+    ask 'API: 1 — Chat Completions, 2 — Responses [1]:'
+    case "$answer" in ''|1) api=chat_completions; break ;; 2) api=responses; break ;; esac
+   done
+  fi
+  model=
+  home_url=
+  save_configuration
+  if ! choose_model; then
+   ask 'Ввести настройки подключения заново? [Y/n]'
+   answer=${answer:-y}
+   yes || exit 1
+   continue
+  fi
+  secret 'Секретный URL Home Assistant MCP (Enter, если не нужен):'
+  home_url=$answer
+  save_configuration
   echo 'Проверка подключения к нейросети и Home Assistant…'
   if sh "$package/start.sh" -check-config && sh "$package/start.sh" -check-backends; then break; fi
   ask 'Проверка не прошла. Ввести настройки заново? [Y/n]'

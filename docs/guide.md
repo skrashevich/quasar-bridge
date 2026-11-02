@@ -119,6 +119,24 @@ chmod 600 config.json runtime.env
 Если API требует ключ, запишите его в `QUASAR_LLM_API_KEY` в `runtime.env`.
 Встроенная пара логин/пароль в URL не поддерживается.
 
+Интерактивный установщик запрашивает доступные модели у выбранного провайдера
+через `GET /models` и предлагает выбрать номер из списка. Сначала указываются
+адрес и ключ API, для ChatGPT выполняется вход в браузере. Выбранный
+идентификатор сохраняется в `QUASAR_LLM_MODEL`. При ошибке API или пустом
+списке можно повторить настройку подключения либо отменить установку.
+
+Для самостоятельной настройки список можно получить без генерации ответа:
+
+```sh
+quasar-bridge -config config.json -list-models
+```
+
+Команда использует тот же ключ или аккаунт ChatGPT, что и ответы LLM.
+Она выводит по одной модели на строку: идентификатор и подпись, разделённые
+табуляцией. Подпись заключена в кавычки. `llm_model` для этой команды и
+`-chatgpt-auth` можно оставить пустым; обычный запуск и `-check-config`
+по-прежнему требуют выбранную модель в режиме `hybrid`.
+
 По умолчанию (`llm_api: "chat_completions"`) клиент делает
 `POST /chat/completions` с `stream=false`, `temperature=0`,
 `max_tokens=1024` и `chat_template_kwargs.enable_thinking=false`.
@@ -228,6 +246,111 @@ function tools. Внутренние вызовы hosted-инструменто�
 Проверены текст, JSON-режим, история диалога, `llm_reasoning_effort: "low"`
 и локальные function tools. Hosted-инструменты OpenRouter в этот прогон
 не входили. [Результаты проверки](validation.md#responses-api-и-openrouter).
+
+### Подписка ChatGPT/Codex
+
+Режим `llm_api: "chatgpt"` использует план ChatGPT через
+[Sign in with ChatGPT для локальных приложений](https://developers.openai.com/siwc/token-sharing-open-source).
+Доступность зависит от аккаунта, рабочего пространства и разрешения использовать
+план в приложении. Расход учитывается в лимитах подписки; отдельный API-ключ
+не нужен. `QUASAR_LLM_API_KEY` в этом режиме игнорируется. Доступ к истории
+чатов ChatGPT этот вход не предоставляет.
+
+При новой установке введите `chatgpt` вместо адреса API. Установщик предложит
+войти в браузере, загрузит доступные этому аккаунту модели и попросит выбрать
+номер. При ручной настройке существующей установки задайте в `config.json`
+следующие поля либо используйте
+[config.chatgpt.example.json](../config.chatgpt.example.json):
+
+```json
+{
+  "mode": "hybrid",
+  "llm_api": "chatgpt",
+  "llm_base_url": "https://api.openai.com/v1",
+  "llm_model": "your-account-model",
+  "llm_chatgpt_auth_file": "/data/opt/quasar-bridge/chatgpt-auth.json",
+  "llm_reasoning_effort": "low"
+}
+```
+
+`llm_base_url` можно не указывать: выбирается `https://api.openai.com/v1`.
+Другие адреса запрещены, чтобы токен подписки не попал стороннему провайдеру.
+Если в `runtime.env` есть переопределения `QUASAR_LLM_API`,
+`QUASAR_LLM_BASE_URL` или `QUASAR_LLM_MODEL`, измените их тоже: окружение
+имеет приоритет над JSON. Модель должна быть доступна вашему аккаунту.
+Точный идентификатор можно узнать командой `chatgpt-models` после входа.
+
+Для входа на колонке **на компьютере** откройте SSH-туннель и оставьте его работать:
+
+```sh
+ssh -N -L 1455:127.0.0.1:1455 -p 2222 root@SPEAKER_IP
+```
+
+В другом терминале выполните:
+
+```sh
+ssh -t -p 2222 root@SPEAKER_IP /data/opt/quasar-bridge/app/control.sh chatgpt-login
+```
+
+Откройте напечатанную ссылку в браузере компьютера, войдите в ChatGPT и
+разрешите Quasar Bridge использовать план. Обратный вызов браузера пройдёт
+через туннель на колонку. Вход ожидается до 10 минут. Если локальный порт
+1455 занят Codex, завершите его текущую процедуру входа либо выберите другой
+порт: туннель и `-chatgpt-login-listen` должны указывать один и тот же порт.
+Сам сервис Quasar Bridge не нужно останавливать для повторного входа.
+
+После входа проверьте доступные модели, замените `your-account-model`
+на нужный идентификатор, проверьте подключение и перезапустите сервис:
+
+```sh
+ssh -p 2222 root@SPEAKER_IP /data/opt/quasar-bridge/app/control.sh chatgpt-models
+ssh -p 2222 root@SPEAKER_IP /data/opt/quasar-bridge/app/control.sh check-backends
+ssh -p 2222 root@SPEAKER_IP /data/opt/quasar-bridge/app/control.sh restart
+```
+
+Состояние входа показывает `control.sh chatgpt-status`. Выход:
+`control.sh chatgpt-logout`; он отзывает обновляемую сессию и удаляет локальные
+токены, сохраняя регистрацию для повторного входа. Если удалённый отзыв
+не подтверждён из-за сети, команда сообщает об этом; отключить приложение
+можно также в настройках ChatGPT.
+
+При запуске обычного бинарника доступны те же команды:
+
+```sh
+quasar-bridge -config config.json -chatgpt-auth login
+quasar-bridge -config config.json -chatgpt-auth status
+quasar-bridge -config config.json -chatgpt-auth models
+quasar-bridge -config config.json -chatgpt-auth logout
+```
+
+JSON-конфигурация должна существовать и проходить проверку. Если файл учётных
+данных не задан, используется каталог конфигурации ОС:
+`quasar-bridge/chatgpt.json` внутри `os.UserConfigDir()`. Для колонки укажите
+постоянный путь в `/data`. Файл создаётся атомарно с правами `0600`.
+Токен обновляется автоматически, обновления сериализуются между процессами.
+Не публикуйте файл и не добавляйте его в репозиторий. Для другого аккаунта
+или рабочего пространства выберите другой `llm_chatgpt_auth_file` и выполните
+вход; переключение файла в конфигурации требует перезапуска сервиса.
+Кеш `~/.codex/auth.json` к этому формату не подходит: Bridge использует
+собственную регистрацию приложения и не меняет сессию Codex.
+
+По [ограничениям режима подписки](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+запросы используют `store=false`, `stream=true` и передают контекст в каждом
+запросе. Bridge принимает результат только после `response.completed`:
+обрыв потока или ошибка не приводят к выполнению частичных вызовов инструментов.
+История диалога, локальные инструменты и подключённые MCP работают через
+function tools. Для классификации и планирования JSON запрашивается промптом
+и проверяется мостом. `llm_chat_parameters` не поддерживается;
+`llm_max_output_tokens` не передаётся, поскольку этот параметр запрещён
+для подписки. Общий таймаут прямого запроса — 60 секунд. Из hosted-инструментов
+можно указать только `web_search`, если он доступен модели и аккаунту;
+`code_interpreter` отклоняется при проверке конфигурации.
+
+При исчерпании лимита Bridge сообщает ошибку; платный API автоматически
+не подключается. Проверить расход и разрешения приложения можно в
+[ChatGPT → Settings → Usage](https://chatgpt.com/settings/usage).
+Ошибки доступа и недоступные модели нужно проверить для выбранного аккаунта;
+сам факт наличия подписки не гарантирует доступ к каждой модели.
 
 ### Home Assistant MCP
 
@@ -1658,11 +1781,12 @@ sudo systemctl disable --now quasar-bridge
 | `allowed_ips` | `QUASAR_ALLOWED_IPS` | JSON-массив или список IP через запятую; пустой отключает фильтр |
 | `llm_base_url` | `QUASAR_LLM_BASE_URL` | Базовый API URL с `/v1` |
 | `llm_model` | `QUASAR_LLM_MODEL` | Идентификатор модели |
-| `llm_api` | `QUASAR_LLM_API` | `chat_completions` по умолчанию, либо `responses`; пустое значение выбирает `chat_completions` |
+| `llm_api` | `QUASAR_LLM_API` | `chat_completions` по умолчанию, `responses` либо `chatgpt` для подписки; пустое значение выбирает `chat_completions` |
+| `llm_chatgpt_auth_file` | `QUASAR_LLM_CHATGPT_AUTH_FILE` | Защищённый файл регистрации и OAuth-токенов ChatGPT; на колонке задайте постоянный путь в `/data` |
 | `llm_chat_parameters` | — | Явные параметры Chat Completions; `null` удаляет поле из запроса. По умолчанию пусто; требуется перезапуск |
-| `llm_reasoning_effort` | `QUASAR_LLM_REASONING_EFFORT` | Необязательный effort для Responses; допустимые значения зависят от модели |
-| `llm_max_output_tokens` | — | Положительный бюджет Responses с учётом reasoning, по умолчанию 4096 |
-| `llm_hosted_tools` | — | Список `web_search` и/или `code_interpreter` для Responses; по умолчанию пуст |
+| `llm_reasoning_effort` | `QUASAR_LLM_REASONING_EFFORT` | Необязательный effort для Responses/ChatGPT; допустимые значения зависят от модели |
+| `llm_max_output_tokens` | — | Положительный бюджет Responses с учётом reasoning, по умолчанию 4096; в `chatgpt` не отправляется |
+| `llm_hosted_tools` | — | `web_search` и/или `code_interpreter` для Responses, только `web_search` для `chatgpt`; по умолчанию пуст |
 | `home_warm_area` | `QUASAR_HOME_WARM_AREA` | Подготовка кеша света/выключателей области, не область по умолчанию |
 | `dialogue_context` | — | Короткая память локального диалога; по умолчанию включена, требуется перезапуск |
 | `local_progress` | — | Потоковое ожидание долгих локальных ответов; по умолчанию выключено, требуется перезапуск |

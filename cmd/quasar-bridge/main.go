@@ -38,6 +38,9 @@ func main() {
 	checkMCP := flag.Bool("check-mcp", false, "connect to configured MCP servers and list tools without executing them")
 	route := flag.String("route", "", "explain a route without executing home actions or generating an answer")
 	validate := flag.Bool("check-config", false, "validate configuration without contacting backends")
+	listModels := flag.Bool("list-models", false, "list available LLM models as ID and quoted label (tab-separated); no model selection required")
+	chatGPTAuth := flag.String("chatgpt-auth", "", "manage ChatGPT subscription: login, status, logout or models")
+	chatGPTListen := flag.String("chatgpt-login-listen", "127.0.0.1:1455", "loopback address for ChatGPT browser sign-in (use SSH forwarding on a speaker)")
 	speakerAction := flag.String("speaker-endpoint", "", "apply or rollback the on-device loopback endpoint (requires writable firmware)")
 	speakerConfig := flag.String("speaker-config", "/system/vendor/quasar/quasar.cfg", "firmware configuration path")
 	speakerBackup := flag.String("speaker-backup", "/data/opt/quasar-bridge/endpoint-backup.json", "persistent endpoint backup")
@@ -54,7 +57,7 @@ func main() {
 	diagnosticLogs := newDiagnosticLog(1 << 20)
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stderr, diagnosticLogs), nil))
 	slog.SetDefault(logger)
-	cfg, err := readConfig(*path)
+	cfg, err := readConfigForCommand(*path, *listModels || *chatGPTAuth != "")
 	if err != nil {
 		slog.Error("configuration rejected", "error", err)
 		os.Exit(1)
@@ -74,6 +77,12 @@ func main() {
 		diagnostics++
 	}
 	if *validate {
+		diagnostics++
+	}
+	if *chatGPTAuth != "" {
+		diagnostics++
+	}
+	if *listModels {
 		diagnostics++
 	}
 	if diagnostics > 1 {
@@ -98,6 +107,20 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *listModels {
+		if err := writeLLMModels(ctx, newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY")), os.Stdout); err != nil {
+			slog.Error("LLM model discovery failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *chatGPTAuth != "" {
+		if err := runChatGPTAuth(ctx, *chatGPTAuth, cfg.LLMChatGPTAuthFile, *chatGPTListen, os.Stdout); err != nil {
+			slog.Error("ChatGPT authentication command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	var clientCount, serverCount atomic.Int64
 	subscriptions := new(bridge.SubscriptionMonitor)
 	proxy := &bridge.Proxy{Subscriptions: subscriptions, Upstream: cfg.Upstream, Observer: func(direction string, kind websocket.MessageType, data []byte) {
@@ -145,12 +168,7 @@ func main() {
 		}
 	}}
 	logs := new(journal.Writer)
-	lc := &llm.Client{
-		BaseURL: cfg.LLMBaseURL, Model: cfg.LLMModel, APIKey: os.Getenv("QUASAR_LLM_API_KEY"),
-		API: cfg.LLMAPI, ReasoningEffort: cfg.LLMReasoningEffort,
-		MaxOutputTokens: cfg.LLMMaxOutputTokens, HostedTools: cfg.LLMHostedTools,
-		ChatParameters: cfg.LLMChatParameters,
-	}
+	lc := newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY"))
 	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
 	var airPlay *airPlayControl
 	cleanupAirPlay := sync.OnceFunc(func() { shutdownAirPlay(stop, airPlay) })

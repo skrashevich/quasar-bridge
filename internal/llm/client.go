@@ -51,6 +51,9 @@ type Client struct {
 	HostedTools     []string
 	ChatParameters  map[string]any
 	HTTP            *http.Client
+	// AccessToken supplies renewable subscription credentials for the ChatGPT API.
+	// APIKey is never used in this mode.
+	AccessToken func(context.Context) (string, error)
 }
 
 var serviceMarkup = regexp.MustCompile(`(?i)(?:</?[|｜]|<\s*/?\s*(?:[\w.-]+:)?(?:(?:tool_calls?|function_calls?|tool_responses?|tool_results?|think(?:ing)?|analysis|reasoning(?:_content)?)\b|(?:function|parameter|invoke)(?:\s*=|\s+|\s*>|$)))`)
@@ -99,7 +102,7 @@ func (c *Client) chat(ctx context.Context, messages []Message, structured bool, 
 	switch c.API {
 	case "", "chat_completions":
 		m, err = c.chatCompletions(ctx, messages, structured, tools)
-	case "responses":
+	case "responses", "chatgpt":
 		if len(c.ChatParameters) > 0 {
 			return Message{}, errors.New("LLM chat parameters require chat_completions API")
 		}
@@ -169,21 +172,50 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 func (c *Client) post(ctx context.Context, path string, request any) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	baseURL, apiKey := c.BaseURL, c.APIKey
+	if c.API == "chatgpt" {
+		if baseURL != "" && strings.TrimRight(baseURL, "/") != "https://api.openai.com/v1" {
+			return nil, errors.New("ChatGPT requires the official OpenAI endpoint")
+		}
+		baseURL = "https://api.openai.com/v1"
+		if c.AccessToken == nil {
+			return nil, errors.New("ChatGPT sign-in is required")
+		}
+		var err error
+		apiKey, err = c.AccessToken(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("ChatGPT sign-in: %w", ctx.Err())
+			}
+			return nil, errors.New("ChatGPT sign-in unavailable; check credentials or sign in again")
+		}
+		if strings.TrimSpace(apiKey) == "" {
+			return nil, errors.New("ChatGPT sign-in is required")
+		}
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, errors.New("cannot encode LLM request")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, errors.New("invalid LLM endpoint")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	hc := c.HTTP
 	if hc == nil {
 		hc = http.DefaultClient
+	}
+	if c.API == "chatgpt" {
+		req.Header.Set("Accept", "text/event-stream")
+		// An OAuth credential is valid only for this endpoint. A redirect must not
+		// forward it or turn an inference request into a different operation.
+		clone := *hc
+		clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		hc = &clone
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -194,7 +226,17 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if c.API == "chatgpt" {
+			return nil, chatGPTHTTPError(resp)
+		}
 		return nil, fmt.Errorf("LLM returned HTTP %d", resp.StatusCode)
+	}
+	if c.API == "chatgpt" {
+		data, err := readResponseStream(resp.Body)
+		if err != nil && ctx.Err() != nil {
+			return nil, fmt.Errorf("LLM transport: %w", ctx.Err())
+		}
+		return data, err
 	}
 	const maxResponseBytes = 2 << 20
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))

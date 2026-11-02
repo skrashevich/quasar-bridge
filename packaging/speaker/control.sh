@@ -52,6 +52,9 @@ action=${1:-status}
 case "$action" in
  check) exec sh "$package/start.sh" -check-config ;;
  check-backends) exec sh "$package/start.sh" -check-backends ;;
+ chatgpt-login|chatgpt-status|chatgpt-models|chatgpt-logout)
+  exec sh "$package/start.sh" -chatgpt-auth "${action#chatgpt-}"
+  ;;
  status) running && healthy || exit 1; echo "Bridge healthy (PID $pid)"; exit 0 ;;
  logs) exec tail -n 100 "$state/service.log" ;;
  start|stop|restart)
@@ -84,5 +87,5 @@ case "$action" in
   trap - EXIT HUP INT TERM
   echo 'Endpoint saved. Reboot the speaker to apply it.'
   ;;
- *) fail 'usage: control.sh start|stop|restart|status|logs|check|check-backends|apply|rollback' ;;
+ *) fail 'usage: control.sh start|stop|restart|status|logs|check|check-backends|chatgpt-login|chatgpt-status|chatgpt-models|chatgpt-logout|apply|rollback' ;;
 esac

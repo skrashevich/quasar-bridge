@@ -1,0 +1,11 @@
+{
+  "listen": "127.0.0.1:8443",
+  "mode": "hybrid",
+  "llm_api": "chatgpt",
+  "llm_model": "your-account-model",
+  "llm_chatgpt_auth_file": "/data/opt/quasar-bridge/chatgpt-auth.json",
+  "llm_reasoning_effort": "low",
+  "local_progress": {
+    "enabled": true
+  }
+}
