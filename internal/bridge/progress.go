@@ -118,7 +118,7 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	voice := text
 	if last {
 		silentPlayback := n.hasSilentPlayback(p)
-		base.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
+		base.ShouldListen = n.wantListen(p, silentPlayback)
 		if silentPlayback {
 			voice = ""
 		}

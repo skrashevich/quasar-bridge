@@ -84,6 +84,43 @@ func configFile(t *testing.T, body string) string {
 	return p
 }
 
+func TestSpotterWaitConfiguration(t *testing.T) {
+	cfg, err := readConfig(configFile(t, `{"mode":"observe"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SpotterWaitMS != 1500 {
+		t.Fatalf("spotter_wait_ms=%d", cfg.SpotterWaitMS)
+	}
+	cfg, err = readConfig(configFile(t, `{"mode":"observe","spotter_wait_ms":0}`))
+	if err != nil || cfg.SpotterWaitMS != 0 {
+		t.Fatalf("explicit zero rejected: %v %#v", err, cfg.SpotterWaitMS)
+	}
+	for _, body := range []string{`{"mode":"observe","spotter_wait_ms":-1}`, `{"mode":"observe","spotter_wait_ms":5001}`} {
+		if _, err := readConfig(configFile(t, body)); err == nil {
+			t.Fatalf("invalid %s accepted", body)
+		}
+	}
+}
+
+func TestReloadSpotterWaitRequiresRestart(t *testing.T) {
+	path := configFile(t, `{}`)
+	initial, err := readConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := new(bridge.Engine)
+	if err := engine.SetRouting(initial.Routing); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"spotter_wait_ms":0}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reloadRouting(path, initial, engine); err == nil || !strings.Contains(err.Error(), "restart required") {
+		t.Fatalf("changed spotter_wait_ms accepted: %v", err)
+	}
+}
+
 func TestReadConfigAcceptsListenAfterReply(t *testing.T) {
 	for _, tc := range []struct {
 		body string
@@ -137,6 +174,22 @@ func TestReadConfigRejectsInvalidAndUnknownSettings(t *testing.T) {
 		})
 	}
 }
+func TestLLMSystemPromptIsOptionalAndBounded(t *testing.T) {
+	note := "Ты находишься в комнате «Зал» в городе «Москва». Если пользователь не указал комнату, считай, что речь идёт о Зале."
+	cfg, err := readConfig(configFile(t, `{"llm_system_prompt":"  `+note+`  "}`))
+	if err != nil || cfg.LLMSystemPrompt != note {
+		t.Fatalf("prompt=%q err=%v", cfg.LLMSystemPrompt, err)
+	}
+	if _, err := readConfig(configFile(t, `{"llm_system_prompt":"`+strings.Repeat("я", 4001)+`"}`)); err == nil {
+		t.Fatal("overlong system prompt accepted")
+	}
+	t.Setenv("QUASAR_LLM_SYSTEM_PROMPT", "Комната «Кухня».")
+	cfg, err = readConfig(configFile(t, `{"llm_system_prompt":"Зал"}`))
+	if err != nil || cfg.LLMSystemPrompt != "Комната «Кухня»." {
+		t.Fatalf("env override=%q err=%v", cfg.LLMSystemPrompt, err)
+	}
+}
+
 func TestReadConfigHasGenericDefaults(t *testing.T) {
 	cfg, err := readConfig(configFile(t, `{}`))
 	if err != nil {
@@ -144,6 +197,50 @@ func TestReadConfigHasGenericDefaults(t *testing.T) {
 	}
 	if cfg.Mode != "observe" || !strings.HasPrefix(cfg.Listen, "localhost:") {
 		t.Fatalf("defaults=%+v", cfg)
+	}
+}
+
+func TestHomeAssistantConversationConfig(t *testing.T) {
+	body := `{"mode":"hybrid","llm_base_url":"https://llm.example.invalid/v1","llm_model":"test"}`
+	cfg, err := readConfig(configFile(t, body))
+	if err != nil || cfg.HomeAssistant.URL != "" {
+		t.Fatal(err)
+	}
+	if _, err := readConfig(configFile(t, `{"home_assistant":{"url":"http://ha.example.invalid:8123"}}`)); err == nil {
+		t.Fatal("missing token accepted")
+	}
+	t.Setenv("QUASAR_HOME_ASSISTANT_TOKEN", "token")
+	cfg, err = readConfig(configFile(t, `{"home_assistant":{"url":"http://ha.example.invalid:8123/"}}`))
+	if err != nil || cfg.HomeAssistant.URL != "http://ha.example.invalid:8123" || cfg.HomeAssistant.Language != "ru" || cfg.HomeAssistant.TimeoutMS != 20000 || cfg.HomeAssistant.TTLSeconds != 300 || cfg.HomeAssistant.ContinueConversation {
+		t.Fatalf("%+v %v", cfg.HomeAssistant, err)
+	}
+	cfg, err = readConfig(configFile(t, `{"home_assistant":{"url":"http://ha.example.invalid:8123","continue_conversation":true}}`))
+	if err != nil || !cfg.HomeAssistant.ContinueConversation {
+		t.Fatalf("%+v %v", cfg.HomeAssistant, err)
+	}
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("QUASAR_HOME_ASSISTANT_URL", "http://override.example.invalid")
+		t.Setenv("QUASAR_HOME_ASSISTANT_AGENT_ID", "conversation.custom")
+		cfg, err := readConfig(configFile(t, `{"home_assistant":{"url":"http://ha.example.invalid:8123"}}`))
+		if err != nil || cfg.HomeAssistant.URL != "http://override.example.invalid" || cfg.HomeAssistant.AgentID != "conversation.custom" {
+			t.Fatalf("%+v %v", cfg.HomeAssistant, err)
+		}
+	})
+	for _, raw := range []string{
+		`{"home_assistant":{"url":"http://user:secret@ha.example.invalid"}}`,
+		`{"home_assistant":{"url":"http://ha.example.invalid/api"}}`,
+		`{"home_assistant":{"url":"http://ha.example.invalid?token=1"}}`,
+		`{"home_assistant":{"url":"http://ha.example.invalid","agent_id":"bad id"}}`,
+		`{"home_assistant":{"url":"http://ha.example.invalid","pipeline_id":"bad id"}}`,
+		`{"home_assistant":{"url":"http://ha.example.invalid","device_id":"device"}}`,
+		`{"home_assistant":{"url":"http://ha.example.invalid","language":"RU"}}`,
+		`{"home_assistant":{"url":"http://ha.example.invalid","timeout_ms":500}}`,
+		`{"home_assistant":{"url":"http://ha.example.invalid","ttl_seconds":10}}`,
+		`{"home_assistant":{"url":"","unexpected":true}}`,
+	} {
+		if _, err := readConfig(configFile(t, raw)); err == nil {
+			t.Fatal("accepted", raw)
+		}
 	}
 }
 
@@ -198,6 +295,16 @@ func TestRuleArrayReplacesDefaultElements(t *testing.T) {
 	}
 	if got := e.Decide(t.Context(), "PING"); got.Route != "llm" || got.Rule != "custom" {
 		t.Fatal(got)
+	}
+}
+
+func TestUnknownToHomeOverlaysBuiltinRules(t *testing.T) {
+	cfg, err := readConfig(configFile(t, `{"routing":{"unknown_to_home":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Routing.UnknownToHome || len(cfg.Routing.Rules) != len(bridge.DefaultRoutingConfig().Rules) || cfg.Routing.DefaultRoute != "classify" {
+		t.Fatalf("option replaced built-in routing: %+v", cfg.Routing)
 	}
 }
 

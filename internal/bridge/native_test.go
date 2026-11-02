@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"quasarbridge/internal/journal"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	cancellation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
 	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	continuation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
+	spotter "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/spotter_validation"
 	tts "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_speak"
 	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
@@ -40,6 +42,40 @@ func (f resolverFunc) Resolve(ctx context.Context, s string) (Resolution, error)
 func aa(m proto.Message) []byte {
 	data, _ := proto.Marshal(m)
 	return append([]byte("AAPI"), data...)
+}
+
+func TestHomePipelineListenOverride(t *testing.T) {
+	stop, keep := false, true
+	for _, tc := range []struct {
+		name    string
+		session bool
+		listen  *bool
+		want    bool
+	}{
+		{"assist stops", true, &stop, false},
+		{"assist continues", false, &keep, true},
+		{"other local reply", true, nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listen := tc.listen
+			n, _, down := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
+				return Resolution{Route: "home", Answer: "Свет включён.", Listen: listen}, nil
+			}))
+			n.ShouldListen = tc.session
+			if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("home-listen")); err != nil {
+				t.Fatal(err)
+			}
+			for {
+				f := nextSoundFrame(t, down)
+				if r := f.Server.GetEvent().GetAliceResponse(); r != nil {
+					if got := r.GetVoiceResponse().GetShouldListen(); got != tc.want {
+						t.Fatalf("should_listen=%v, want %v", got, tc.want)
+					}
+					break
+				}
+			}
+		})
+	}
 }
 
 func TestNativeListenAfterReply(t *testing.T) {
@@ -428,6 +464,132 @@ func TestVoiceRoutesOnlyAfterFinalASR(t *testing.T) {
 	}
 }
 
+func TestNativeStopPhraseCancelsWithoutReply(t *testing.T) {
+	for _, tc := range []struct {
+		name, id, text string
+		voice          bool
+	}{
+		{"voice", "stop-voice", "Алиса, хватит включи свет", true},
+		{"text", "stop-text", "АЛИСА ХВАТИТ", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			up := make(chan []byte, 8)
+			down := make(chan []byte, 8)
+			called := make(chan struct{}, 1)
+			n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, resolverFunc(func(context.Context, string) (Resolution, error) {
+				called <- struct{}{}
+				return Resolution{Route: "home", Answer: "нельзя"}, nil
+			}))
+			defer n.Close()
+			n.GateText = true
+			var input []byte
+			if tc.voice {
+				input = aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: tc.id, StreamId: new(int64(1))}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: common.EEventType_voice_input.Enum()}}, Format: new("audio/opus")}}}}})
+			} else {
+				input = aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: tc.id}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new(tc.text)}}}}}}})
+			}
+			if err := n.Client(ctx, websocket.MessageBinary, input); err != nil {
+				t.Fatal(err)
+			}
+			first := wire.Decode(<-up, wire.ClientToServer)
+			approved := first.Client.GetEvent().GetVoiceInput().GetRequest().GetUniproxyOptions().GetWaitClientApproval() || first.Client.GetEvent().GetTextInput().GetRequest().GetUniproxyOptions().GetWaitClientApproval()
+			if !approved {
+				t.Fatal("ungated input")
+			}
+			if tc.voice {
+				asrResult := aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: tc.id}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(true), Recognition: []*recognition.TAsrRecognition{{Normalized: new(tc.text)}}}}}}})
+				if err := n.Server(ctx, websocket.MessageBinary, asrResult); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case b := <-up:
+				f := wire.Decode(b, wire.ClientToServer)
+				cancel := f.Client.GetEvent().GetCancelRequest()
+				if f.Kind() != "CancelRequest" || cancel.GetRequestMessageId() != tc.id || cancel.GetUserStop() == nil || cancel.GetLocalExecution() != nil {
+					t.Fatalf("kind=%s id=%s user_stop=%v", f.Kind(), cancel.GetRequestMessageId(), cancel.GetUserStop() != nil)
+				}
+			case <-ctx.Done():
+				t.Fatal("no cancel")
+			}
+			n.Close()
+			select {
+			case <-called:
+				t.Fatal("stop phrase reached a handler")
+			default:
+			}
+			select {
+			case b := <-up:
+				t.Fatalf("extra upstream %s", wire.Decode(b, wire.ClientToServer).Kind())
+			default:
+			}
+			silent := false
+			for {
+				select {
+				case b := <-down:
+					f := wire.Decode(b, wire.ServerToClient)
+					switch f.Kind() {
+					case "TtsSpeak":
+						t.Fatal("stop phrase started playback")
+					case "AsrResult":
+					case "AliceResponse":
+						if silent {
+							t.Fatal("extra alice response")
+						}
+						voice := f.Server.GetEvent().GetAliceResponse().GetVoiceResponse()
+						if voice.GetHasVoiceResponse() || voice.GetShouldListen() || voice.GetOutputSpeech().GetText() != "" {
+							t.Fatalf("spoken stop response: has_voice=%v listen=%v text=%q", voice.GetHasVoiceResponse(), voice.GetShouldListen(), voice.GetOutputSpeech().GetText())
+						}
+						if f.Server.GetEvent().GetAliceResponse().GetError() != nil {
+							t.Fatal("stop response carries an error")
+						}
+						silent = true
+					default:
+						t.Fatalf("unexpected downstream %s", f.Kind())
+					}
+				default:
+					if !silent {
+						t.Fatal("dialog was not finished")
+					}
+					return
+				}
+			}
+		})
+	}
+}
+
+func TestNativeStandalonePlaybackStopReachesYandex(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	up := make(chan []byte, 8)
+	down := make(chan []byte, 8)
+	n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, &Engine{})
+	defer n.Close()
+	n.GateText = true
+	input := aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "play-stop"}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new("Алиса, хватит!")}}}}}}})
+	if err := n.Client(ctx, websocket.MessageBinary, input); err != nil {
+		t.Fatal(err)
+	}
+	if kind := wire.Decode(<-up, wire.ClientToServer).Kind(); kind == "" {
+		t.Fatal("no gated input")
+	}
+	select {
+	case b := <-up:
+		if kind := wire.Decode(b, wire.ClientToServer).Kind(); kind != "ContinueRequest" {
+			t.Fatalf("kind=%s", kind)
+		}
+	case <-ctx.Done():
+		t.Fatal("standalone playback stop was not sent to Yandex")
+	}
+	select {
+	case b := <-down:
+		t.Fatalf("unexpected downstream %s", wire.Decode(b, wire.ServerToClient).Kind())
+	default:
+	}
+}
+
 func TestRefusalReplacementKeepsExecutorDirectives(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -543,5 +705,293 @@ func TestExistingNativeSessionUsesReloadedRoute(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("existing session did not change route")
 		}
+	}
+}
+
+type electionResolver struct {
+	route, answer string
+	called        chan struct{}
+	entered       chan struct{}
+	block         bool
+}
+
+func (e *electionResolver) Decide(context.Context, string) RouteDecision {
+	return RouteDecision{Route: e.route, Source: "rule"}
+}
+func (e *electionResolver) Resolve(ctx context.Context, text string) (Resolution, error) {
+	return e.ResolveDecision(ctx, text, e.Decide(ctx, text))
+}
+func (e *electionResolver) ResolveDecision(ctx context.Context, _ string, d RouteDecision) (Resolution, error) {
+	if e.entered != nil {
+		e.entered <- struct{}{}
+	}
+	if e.block {
+		<-ctx.Done()
+		return Resolution{}, ctx.Err()
+	}
+	if e.called != nil {
+		e.called <- struct{}{}
+	}
+	return Resolution{Route: d.Route, Answer: e.answer}, nil
+}
+
+func voiceRequest(id string) []byte {
+	return aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: id, StreamId: new(int64(1))}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: common.EEventType_voice_input.Enum()}}, Format: new("audio/opus")}}}}})
+}
+
+func asrFinal(id, text string) []byte {
+	return aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: id}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(true), Recognition: []*recognition.TAsrRecognition{{Normalized: new(text)}}}}}}})
+}
+
+func spotterFrame(id string, result spotter.TSpotterValidation_EResult, multi *bool) []byte {
+	v := &spotter.TSpotterValidation{Result: result}
+	if multi != nil {
+		v.CanceledCauseOfMultiactivation = multi
+	}
+	return aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: "spotter-" + id, RefMessageId: id}, Event: &server.TServerMessage_TEvent_SpotterValidation{SpotterValidation: v}}}})
+}
+
+func TestNativeSpotterElection(t *testing.T) {
+	rejected := spotter.TSpotterValidation_SpottingRejected
+	okResult := spotter.TSpotterValidation_Ok
+	multi := true
+	for _, tc := range []struct {
+		name    string
+		result  spotter.TSpotterValidation_EResult
+		multi   *bool
+		speak   bool
+		resolve bool
+	}{
+		{"rejected", rejected, nil, false, false},
+		{"multiactivation", okResult, &multi, false, false},
+		{"winner", okResult, nil, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			up := make(chan []byte, 8)
+			down := make(chan []byte, 8)
+			called := make(chan struct{}, 1)
+			n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, &electionResolver{route: "home", answer: "Свет включён.", called: called})
+			defer n.Close()
+			n.SpotterWait = time.Second
+			frame := spotterFrame("elect", tc.result, tc.multi)
+			if err := n.Client(ctx, websocket.MessageBinary, voiceRequest("elect")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readUpstream(ctx, up); err != nil {
+				t.Fatal(err)
+			}
+			if err := n.Server(ctx, websocket.MessageBinary, frame); err != nil {
+				t.Fatal(err)
+			}
+			if err := n.Server(ctx, websocket.MessageBinary, asrFinal("elect", "включи свет")); err != nil {
+				t.Fatal(err)
+			}
+			seenSpotter := false
+			spoken := false
+			silent := false
+			for !spoken && !silent {
+				select {
+				case b := <-down:
+					f := wire.Decode(b, wire.ServerToClient)
+					switch f.Kind() {
+					case "SpotterValidation":
+						seenSpotter = true
+					case "TtsSpeak":
+						t.Fatal("election started cloud playback")
+					case "AliceResponse":
+						voice := f.Server.GetEvent().GetAliceResponse().GetVoiceResponse()
+						text := voice.GetOutputSpeech().GetText()
+						if tc.speak {
+							if text != "Свет включён." || !voice.GetHasVoiceResponse() {
+								t.Fatalf("winner speech %q has_voice=%v", text, voice.GetHasVoiceResponse())
+							}
+							spoken = true
+						} else if voice.GetHasVoiceResponse() || voice.GetShouldListen() || text != "" {
+							t.Fatalf("loser spoke %q", text)
+						} else {
+							silent = true
+						}
+					}
+				case <-ctx.Done():
+					t.Fatal("no speaker completion")
+				}
+			}
+			if seenSpotter {
+				t.Fatal("local route forwarded SpotterValidation")
+			}
+			select {
+			case b := <-up:
+				cancel := wire.Decode(b, wire.ClientToServer).Client.GetEvent().GetCancelRequest()
+				if tc.speak {
+					if cancel.GetLocalExecution() == nil || cancel.GetUserStop() != nil {
+						t.Fatal("winner did not take local execution")
+					}
+				} else if cancel.GetUserStop() == nil || cancel.GetLocalExecution() != nil {
+					t.Fatal("loser did not send user stop")
+				}
+			case <-ctx.Done():
+				t.Fatal("no cloud cancel")
+			}
+			select {
+			case <-called:
+				if !tc.resolve {
+					t.Fatal("loser executed the command")
+				}
+			default:
+				if tc.resolve {
+					t.Fatal("winner did not execute the command")
+				}
+			}
+		})
+	}
+
+	t.Run("timeout speaks", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		defer cancel()
+		called := make(chan struct{}, 1)
+		up := make(chan []byte, 4)
+		down := make(chan []byte, 4)
+		n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, &electionResolver{route: "home", answer: "Свет включён.", called: called})
+		defer n.Close()
+		n.SpotterWait = 20 * time.Millisecond
+		if err := n.Client(ctx, websocket.MessageBinary, voiceRequest("solo")); err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Server(ctx, websocket.MessageBinary, asrFinal("solo", "включи свет")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-called:
+		case <-ctx.Done():
+			t.Fatal("single speaker did not answer without a verdict")
+		}
+	})
+
+	t.Run("text does not wait", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		called := make(chan struct{}, 1)
+		n := NewNative(ctx, func(context.Context, websocket.MessageType, []byte) error { return nil }, func(context.Context, websocket.MessageType, []byte) error { return nil }, &electionResolver{route: "home", answer: "Свет включён.", called: called})
+		defer n.Close()
+		n.SpotterWait = 400 * time.Millisecond
+		input := aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "typed"}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new("включи свет")}}}}}}})
+		start := time.Now()
+		if err := n.Client(ctx, websocket.MessageBinary, input); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-called:
+			if time.Since(start) > 150*time.Millisecond {
+				t.Fatal("text input waited for spotter validation")
+			}
+		case <-ctx.Done():
+			t.Fatal("text input was not handled")
+		}
+	})
+
+	t.Run("yandex forwards held frame", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		defer cancel()
+		up := make(chan []byte, 4)
+		down := make(chan []byte, 4)
+		n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, &electionResolver{route: "yandex"})
+		defer n.Close()
+		n.SpotterWait = time.Second
+		frame := spotterFrame("cloud", okResult, nil)
+		if err := n.Client(ctx, websocket.MessageBinary, voiceRequest("cloud")); err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Server(ctx, websocket.MessageBinary, frame); err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Server(ctx, websocket.MessageBinary, asrFinal("cloud", "какая погода")); err != nil {
+			t.Fatal(err)
+		}
+		continued := false
+		forwarded := false
+		deadline := time.After(time.Second)
+		for !continued || !forwarded {
+			select {
+			case b := <-up:
+				if wire.Decode(b, wire.ClientToServer).Kind() == "ContinueRequest" {
+					continued = true
+				}
+			case b := <-down:
+				if bytes.Equal(b, frame) {
+					forwarded = true
+				}
+			case <-deadline:
+				t.Fatalf("yandex route continued=%v forwarded=%v", continued, forwarded)
+			}
+		}
+	})
+
+	t.Run("late rejection cancels local work", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		defer cancel()
+		up := make(chan []byte, 4)
+		down := make(chan []byte, 4)
+		entered := make(chan struct{}, 1)
+		var canceledSend atomic.Bool
+		check := func(c context.Context, ch chan []byte, b []byte) error {
+			if c.Err() != nil {
+				canceledSend.Store(true)
+			}
+			ch <- b
+			return nil
+		}
+		n := NewNative(ctx, func(c context.Context, _ websocket.MessageType, b []byte) error { return check(c, up, b) }, func(c context.Context, _ websocket.MessageType, b []byte) error { return check(c, down, b) }, &electionResolver{route: "home", answer: "Свет включён.", entered: entered, block: true})
+		defer n.Close()
+		n.SpotterWait = 20 * time.Millisecond
+		if err := n.Client(ctx, websocket.MessageBinary, voiceRequest("late")); err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Server(ctx, websocket.MessageBinary, asrFinal("late", "включи свет")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("local work did not start")
+		}
+		if err := n.Server(ctx, websocket.MessageBinary, spotterFrame("late", rejected, nil)); err != nil {
+			t.Fatal(err)
+		}
+		silent := false
+		stopped := false
+		for !silent || !stopped {
+			select {
+			case b := <-up:
+				f := wire.Decode(b, wire.ClientToServer)
+				if f.Kind() == "CancelRequest" && f.Client.GetEvent().GetCancelRequest().GetUserStop() != nil {
+					stopped = true
+				}
+			case b := <-down:
+				f := wire.Decode(b, wire.ServerToClient)
+				if f.Kind() == "AliceResponse" {
+					voice := f.Server.GetEvent().GetAliceResponse().GetVoiceResponse()
+					if voice.GetOutputSpeech().GetText() != "" || voice.GetHasVoiceResponse() {
+						t.Fatal("late loser spoke")
+					}
+					silent = true
+				}
+			case <-ctx.Done():
+				t.Fatal("late rejection did not finish the dialog")
+			}
+		}
+		if canceledSend.Load() {
+			t.Fatal("closing messages used a canceled context")
+		}
+	})
+}
+
+func readUpstream(ctx context.Context, up <-chan []byte) ([]byte, error) {
+	select {
+	case b := <-up:
+		return b, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }

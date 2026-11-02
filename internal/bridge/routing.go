@@ -12,10 +12,11 @@ import (
 )
 
 type RoutingConfig struct {
-	Rules        []RoutingRule    `json:"rules"`
-	DefaultRoute string           `json:"default_route"`
-	Classifier   ClassifierConfig `json:"classifier"`
-	Refusal      RefusalConfig    `json:"refusal"`
+	Rules         []RoutingRule    `json:"rules"`
+	DefaultRoute  string           `json:"default_route"`
+	UnknownToHome bool             `json:"unknown_to_home"`
+	Classifier    ClassifierConfig `json:"classifier"`
+	Refusal       RefusalConfig    `json:"refusal"`
 }
 type RoutingRule struct {
 	Name     string       `json:"name"`
@@ -61,12 +62,34 @@ type compiledRule struct {
 type RoutingPolicy struct {
 	rules                           []compiledRule
 	defaultRoute                    string
+	unknownToHome                   bool
 	classifier                      ClassifierConfig
 	classifierEnabled               bool
 	refusalEnabled                  bool
 	refusalPrefixes, refusalPhrases []string
 	revision                        string
 }
+
+// unitConversionPattern matches a whole conversion request: a quantity, a unit
+// or currency, «в», and another unit or currency. A currency may be followed by
+// a country or code, as in «5 долларов США в рублях». A longer sentence does not match.
+const unitConversionPattern = `^\s*(?:алиса[,\s]+)?(?:пожалуйста[,\s]+)?(?:(?:сколько(?:\s+будет)?|переведи(?:те)?|конвертируй(?:те)?|пересчитай(?:те)?|посчитай(?:те)?)[,\s]+)?(?:\d+(?:[.,]\d+)?|полтора|полторы|одиннадцать|двенадцать|тринадцать|четырнадцать|пятнадцать|шестнадцать|семнадцать|восемнадцать|девятнадцать|двадцать|тридцать|сорок|пятьдесят|шестьдесят|семьдесят|восемьдесят|девяносто|двести|триста|четыреста|пятьсот|шестьсот|семьсот|восемьсот|девятьсот|тысячи|тысяча|сто|десять|девять|восемь|семь|шесть|четыре|пять|один|одна|одно|два|две|три)(?:\s+(?:одиннадцать|двенадцать|тринадцать|четырнадцать|пятнадцать|шестнадцать|семнадцать|восемнадцать|девятнадцать|двадцать|тридцать|сорок|пятьдесят|шестьдесят|семьдесят|восемьдесят|девяносто|сто|десять|девять|восемь|семь|шесть|четыре|пять|один|одна|одно|два|две|три)){0,2}(?:\s+(?:\p{L}{3,}\s+)?(?:(?:фунт(?:а|ов|ах|ы|у|ом|ами)?|рубл(?:ь|я|ей|ях|и|ю|ем|ями|е)|доллар(?:а|ов|ах|ы|у|ом|ами|е|ам)?|долл\.?|бакс(?:а|ов|ах|ы|у|ом|ами)?|евро|вон(?:а|ы|е|у|ах|ами|ам)?|юан(?:ь|я|ей|ях|и|ю|ем|ями|е)|[йи]ен(?:а|ы|е|у|ах|ами|ам)?|франк(?:а|ов|ах|ы|у|ом|ами)?|тенге|гривн(?:а|ы|у|е|ой|ах|ами)|лир(?:а|ы|у|е|ой|ах|ами)|рупи(?:я|и|й|ю|ей|ях|ями)|песо|крон(?:а|ы|у|е|ой|ах|ами)|злот(?:ый|ого|ых|ым|ыми)|шекел(?:ь|я|ей|ях|и|ю|ем|ями|е)|дирхам(?:а|ов|ах|ы|у|ом|ами)?|манат(?:а|ов|ах|ы|у|ом|ами)?|usd|eur|rub|gbp|cny|jpy)(?:(?:,\s*|\s+)(?:сша|с\.ш\.а\.?|usa|usd|рф|rub|eur|gbp|кнр|стерлингов|соедин[её]нных\s+штатов|японии|гонконга|канады|австралии|америки|казахстана|беларуси|турции|оаэ))?|килограмм(?:а|ов|ах|ы|у|ом|ами)?|грамм(?:а|ов|ах|ы|у|ом|ами)?|миллиграмм(?:а|ов|ах|ы|у|ом|ами)?|тонн(?:а|ы|у|е|ах|ами)?|центнер(?:а|ов|ах|ы|у|ом)?|унци(?:я|и|й|ю|ей|ях|ями)|километр(?:а|ов|ах|ы|у|ом|ами)?|сантиметр(?:а|ов|ах|ы|у|ом|ами)?|миллиметр(?:а|ов|ах|ы|у|ом|ами)?|дециметр(?:а|ов|ах|ы|у|ом|ами)?|метр(?:а|ов|ах|ы|у|ом|ами)?|мил(?:я|и|ь|ю|ей|ях|ями)|фут(?:а|ов|ах|ы|у|ом|ами)?|дюйм(?:а|ов|ах|ы|у|ом|ами)?|ярд(?:а|ов|ах|ы|у|ом|ами)?|верст(?:а|ы|у|е|ах|ами)?|миллилитр(?:а|ов|ах|ы|у|ом|ами)?|литр(?:а|ов|ах|ы|у|ом|ами)?|галлон(?:а|ов|ах|ы|у|ом|ами)?|градус(?:а|ов|ах|ы|у|ом|ами)?|цельси(?:й|я|ев|ях|ю|ем|ями)|фаренгейт(?:а|ов|ах|ы|у|ом|ами)?|кельвин(?:а|ов|ах|ы|у|ом|ами)?|час(?:а|ов|ах|ы|у|ом|ами)?|минут(?:а|ы|у|е|ой|ах|ами)|секунд(?:а|ы|у|е|ой|ах|ами)|сутк(?:и|ах|ами|ам)|недел(?:я|и|ю|е|ей|ях|ями|ь)|день|дня|дней|днях|кг|мг|км|см|мм|дм|мл|г|м|л|т)|\s*[\$€₽£¥](?:(?:,\s*|\s+)(?:сша|с\.ш\.а\.?|usa|usd|рф|rub|eur|gbp|кнр|стерлингов|соедин[её]нных\s+штатов|японии|гонконга|канады|австралии|америки|казахстана|беларуси|турции|оаэ))?)\s+в\s+(?:(?:\p{L}{3,}\s+)?(?:(?:фунт(?:а|ов|ах|ы|у|ом|ами)?|рубл(?:ь|я|ей|ях|и|ю|ем|ями|е)|доллар(?:а|ов|ах|ы|у|ом|ами|е|ам)?|долл\.?|бакс(?:а|ов|ах|ы|у|ом|ами)?|евро|вон(?:а|ы|е|у|ах|ами|ам)?|юан(?:ь|я|ей|ях|и|ю|ем|ями|е)|[йи]ен(?:а|ы|е|у|ах|ами|ам)?|франк(?:а|ов|ах|ы|у|ом|ами)?|тенге|гривн(?:а|ы|у|е|ой|ах|ами)|лир(?:а|ы|у|е|ой|ах|ами)|рупи(?:я|и|й|ю|ей|ях|ями)|песо|крон(?:а|ы|у|е|ой|ах|ами)|злот(?:ый|ого|ых|ым|ыми)|шекел(?:ь|я|ей|ях|и|ю|ем|ями|е)|дирхам(?:а|ов|ах|ы|у|ом|ами)?|манат(?:а|ов|ах|ы|у|ом|ами)?|usd|eur|rub|gbp|cny|jpy)(?:(?:,\s*|\s+)(?:сша|с\.ш\.а\.?|usa|usd|рф|rub|eur|gbp|кнр|стерлингов|соедин[её]нных\s+штатов|японии|гонконга|канады|австралии|америки|казахстана|беларуси|турции|оаэ))?|килограмм(?:а|ов|ах|ы|у|ом|ами)?|грамм(?:а|ов|ах|ы|у|ом|ами)?|миллиграмм(?:а|ов|ах|ы|у|ом|ами)?|тонн(?:а|ы|у|е|ах|ами)?|центнер(?:а|ов|ах|ы|у|ом)?|унци(?:я|и|й|ю|ей|ях|ями)|километр(?:а|ов|ах|ы|у|ом|ами)?|сантиметр(?:а|ов|ах|ы|у|ом|ами)?|миллиметр(?:а|ов|ах|ы|у|ом|ами)?|дециметр(?:а|ов|ах|ы|у|ом|ами)?|метр(?:а|ов|ах|ы|у|ом|ами)?|мил(?:я|и|ь|ю|ей|ях|ями)|фут(?:а|ов|ах|ы|у|ом|ами)?|дюйм(?:а|ов|ах|ы|у|ом|ами)?|ярд(?:а|ов|ах|ы|у|ом|ами)?|верст(?:а|ы|у|е|ах|ами)?|миллилитр(?:а|ов|ах|ы|у|ом|ами)?|литр(?:а|ов|ах|ы|у|ом|ами)?|галлон(?:а|ов|ах|ы|у|ом|ами)?|градус(?:а|ов|ах|ы|у|ом|ами)?|цельси(?:й|я|ев|ях|ю|ем|ями)|фаренгейт(?:а|ов|ах|ы|у|ом|ами)?|кельвин(?:а|ов|ах|ы|у|ом|ами)?|час(?:а|ов|ах|ы|у|ом|ами)?|минут(?:а|ы|у|е|ой|ах|ами)|секунд(?:а|ы|у|е|ой|ах|ами)|сутк(?:и|ах|ами|ам)|недел(?:я|и|ю|е|ей|ях|ями|ь)|день|дня|дней|днях|кг|мг|км|см|мм|дм|мл|г|м|л|т)|[\$€₽£¥](?:(?:,\s*|\s+)(?:сша|с\.ш\.а\.?|usa|usd|рф|rub|eur|gbp|кнр|стерлингов|соедин[её]нных\s+штатов|японии|гонконга|канады|австралии|америки|казахстана|беларуси|турции|оаэ))?)[,\s]*(?:пожалуйста)?[.!?]*\s*$`
+
+// timerRemainingPattern matches one short question about time left on the
+// timer, such as «сколько осталось». A longer sentence does not match.
+const timerRemainingPattern = `^\s*(?:алиса[,\s]+)?(?:пожалуйста[,\s]+)?(?:а[,\s]+|ну[,\s]+|и[,\s]+)?(?:скажи(?:те)?[,\s]+|подскажи(?:те)?[,\s]+)?(?:` +
+	`сколько(?:\s+там)?(?:\s+ещ[её])?(?:\s+времени)?(?:\s+(?:минут\p{L}*|секунд\p{L}*|час(?:а|ов)))?(?:\s+ещ[её])?(?:\s+таймер\p{L}*)?\s+осталось(?:\s+ещ[её])?(?:\s+времени)?(?:\s+(?:минут\p{L}*|секунд\p{L}*|час(?:а|ов)))?(?:\s+таймер\p{L}*)?(?:\s+на\s+таймер\p{L}*)?(?:\s+до\s+(?:конца(?:\s+таймер\p{L}*)?|таймер\p{L}*|звонка|сигнала|срабатывания))?` +
+	`|сколько(?:\s+ещ[её])?(?:\s+(?:времени|минут\p{L}*|секунд\p{L}*|час(?:а|ов)))?\s+на\s+таймер\p{L}*` +
+	`|сколько(?:\s+ещ[её])?\s+до\s+(?:конца(?:\s+таймер\p{L}*)?|таймер\p{L}*|звонка|сигнала|срабатывания)` +
+	`|сколько\s+ещ[её](?:\s+(?:времени|минут\p{L}*|секунд\p{L}*|час(?:а|ов)))?(?:\s+осталось(?:\s+(?:времени|минут\p{L}*|секунд\p{L}*|час(?:а|ов)))?)?(?:\s+(?:на\s+)?таймер\p{L}*)?` +
+	`|на\s+сколько(?:\s+(?:ещ[её]|осталось|времени))+(?:\s+(?:ещ[её]|осталось|времени|таймер\p{L}*))*(?:\s+на\s+таймер\p{L}*)?` +
+	`|(?:когда|через\s+сколько)(?:\s+(?:минут\p{L}*|секунд\p{L}*|час(?:а|ов)|времени))?\s+(?:сработает|прозвенит|зазвенит|зазвонит)(?:\s+таймер\p{L}*)?` +
+	`|(?:когда|через\s+сколько)(?:\s+(?:минут\p{L}*|секунд\p{L}*|час(?:а|ов)))?\s+таймер\p{L}*` +
+	`|осталось\s+сколько(?:\s+(?:ещ[её]|времени))?` +
+	`|таймер\p{L}*[,\s]+сколько(?:\s+ещ[её])?\s+осталось(?:\s+времени)?` +
+	`)[,\s]*(?:пожалуйста)?[.!?…]*\s*$`
+
+var timerRemainingRE = regexp.MustCompile("(?i)" + timerRemainingPattern)
 
 func (c RoutingConfig) ClassifierEnabled() bool {
 	if c.Classifier.Enabled != nil {
@@ -100,11 +123,13 @@ func DefaultRoutingConfig() RoutingConfig {
 			{Name: "assistant_readonly", Route: "llm", Match: RoutingMatch{ContainsAny: []string{"о чем мы", "о чём мы", "что мы обсуждали", "в истории", "истории сообщени", "истории диалога", "найди в истории", "что я спрашивал", "когда я спрашивал", "что я просил", "когда я просил", "что ты отвечал", "что ты ответил", "истории запросов", "историю запросов", "прочитай страницу", "открой страницу", "прочитай веб-страницу", "открой веб-страницу", "посмотри сайт", "открой сайт", "http://", "https://"}}},
 			{Name: "home_devices", Route: "home", Match: RoutingMatch{
 				ContainsAllGroups: [][]string{
-					{"свет", "ламп", "люстр", "розетк", "штор", "кондиционер", "термостат", "обогрев", "вентилятор", "пылесос", "телевизор", "датчик", "температур", "влажност"},
+					{"свет", "ламп", "люстр", "фонар", "светильник", "торшер", "ночник", "гирлянд", "розетк", "штор", "кондиционер", "термостат", "обогрев", "вентилятор", "пылесос", "телевизор", "датчик", "температур", "влажност"},
 					{"включ", "выключ", "открой", "закрой", "установ", "постав", "сделай", "прибав", "убав", "температур", "влажност", "состояни", "проверь", "горит", "работает"},
 				}, ContainsNone: []string{"песню", "песни", "музыку", "радио", "трек"},
 			}},
 			{Name: "complex_queries", Route: "llm", Match: RoutingMatch{ContainsAny: []string{"спроси нейросеть", "спроси свою модель", "напиши код", "напиши программу", "реши задачу", "проанализируй", "сравни варианты", "объясни подробно"}}},
+			{Name: "unit_conversion", Route: "yandex", Match: RoutingMatch{Regex: unitConversionPattern}},
+			{Name: "timer_remaining", Route: "yandex", Match: RoutingMatch{Regex: timerRemainingPattern}},
 			{Name: "yandex_services", Route: "yandex", Match: RoutingMatch{ContainsAny: []string{"погода", "погоду", "таймер", "будильник", "музыку", "радио", "песню", "трек", "который час", "день недели"}}},
 		},
 		DefaultRoute: "classify",
@@ -139,7 +164,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	if strings.TrimSpace(cfg.Classifier.Prompt) == "" {
 		return nil, errors.New("classifier prompt must not be empty")
 	}
-	p := &RoutingPolicy{defaultRoute: cfg.DefaultDestination(), classifier: cfg.Classifier, classifierEnabled: cfg.ClassifierEnabled(), refusalEnabled: cfg.Refusal.Enabled}
+	p := &RoutingPolicy{defaultRoute: cfg.DefaultDestination(), unknownToHome: cfg.UnknownToHome, classifier: cfg.Classifier, classifierEnabled: cfg.ClassifierEnabled(), refusalEnabled: cfg.Refusal.Enabled}
 	names := map[string]bool{}
 	for i, rule := range cfg.Rules {
 		fail := func(reason string) (*RoutingPolicy, error) { return nil, fmt.Errorf("routing rule %d: %s", i, reason) }
@@ -242,6 +267,74 @@ func (p *RoutingPolicy) match(text string) (RouteDecision, bool) {
 	return RouteDecision{}, false
 }
 
+// unknownHome redirects a matched rule when the house agent should own the phrase.
+// A rule that already chose home is left untouched. History, page reading,
+// alarms, «таймер на …», timer controls such as resume or delete, and one short
+// question about time left on the timer stay on Yandex. Other timer words are
+// redirected only from the Yandex rule.
+func (p *RoutingPolicy) unknownHome(text string, matched RouteDecision) (RouteDecision, bool) {
+	if !p.unknownToHome || matched.Route == "home" {
+		return RouteDecision{}, false
+	}
+	if asksModel(text) || (matched.Route == "yandex" && timerPhrase(text)) {
+		matched.Route = "home"
+		matched.Source = "unknown"
+		return matched, true
+	}
+	return RouteDecision{}, false
+}
+func foldedText(text string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.ReplaceAll(text, "ё", "е"))), " ")
+}
+func asksModel(text string) bool {
+	s := foldedText(text)
+	for _, phrase := range []string{"спроси у нейросети", "спроси нейросеть", "спроси у своей модели", "спроси свою модель"} {
+		if strings.Contains(s, phrase) {
+			return true
+		}
+	}
+	return false
+}
+func timerPhrase(text string) bool {
+	s := foldedText(text)
+	if !strings.Contains(s, "таймер") || strings.Contains(s, "таймер на") || timerControl(s) || timerRemaining(text) {
+		return false
+	}
+	return true
+}
+
+// timerRemaining reports one short question about time left on the timer.
+// A longer sentence, such as «сколько осталось молока», does not match.
+func timerRemaining(text string) bool {
+	return timerRemainingRE.MatchString(text)
+}
+
+// timerControl keeps Alice timer commands on Yandex: resume, pause, cancel, and delete.
+func timerControl(s string) bool {
+	for _, verb := range []string{"продолж", "возобнови", "удал", "отмен", "останов", "выключ", "убери", "убра", "сброс", "сбрось", "пауз"} {
+		if strings.Contains(s, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsStop reports a phrase that contains «алиса хватит».
+// Decide still lets a whole playback command through; this check stays broad.
+func IsStop(text string) bool {
+	return strings.Contains(foldedText(stripPunct(text)), "алиса хватит")
+}
+func stripPunct(text string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ',', '.', '!', '?', ':', ';', '«', '»', '"', '\'', '—', '–', '-':
+			return ' '
+		default:
+			return r
+		}
+	}, text)
+}
+
 func (p *RoutingPolicy) Revision() string { return p.revision }
 
 // Preview evaluates only static rules and the configured default. It never
@@ -249,7 +342,13 @@ func (p *RoutingPolicy) Revision() string { return p.revision }
 // Route=classify means that a real request would still need classification.
 func (p *RoutingPolicy) Preview(text string) RouteDecision {
 	if decision, ok := p.match(text); ok {
+		if redirected, yes := p.unknownHome(text, decision); yes {
+			return redirected
+		}
 		return decision
+	}
+	if p.unknownToHome {
+		return RouteDecision{Route: "home", Source: "unknown"}
 	}
 	if p.classifierEnabled {
 		return RouteDecision{Route: "classify", Source: "default"}

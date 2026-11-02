@@ -20,7 +20,10 @@ import (
 	"quasarbridge/internal/wire"
 )
 
-type delayedRoute struct{ release <-chan struct{} }
+type delayedRoute struct {
+	release <-chan struct{}
+	listen  *bool
+}
 
 func (d delayedRoute) Decide(context.Context, string) RouteDecision {
 	return RouteDecision{Route: "llm"}
@@ -33,7 +36,7 @@ func (d delayedRoute) ResolveDecision(ctx context.Context, s string, r RouteDeci
 	case <-ctx.Done():
 		return Resolution{}, ctx.Err()
 	case <-d.release:
-		return Resolution{Route: "llm", Answer: "Готовый ответ"}, nil
+		return Resolution{Route: "llm", Answer: "Готовый ответ", Listen: d.listen}, nil
 	}
 }
 func TestSlowLocalRequestUsesDeferredResponses(t *testing.T) {
@@ -45,6 +48,7 @@ func TestSlowLocalRequestUsesDeferredResponses(t *testing.T) {
 		}
 	}
 	t.Run("listening_disabled", func(t *testing.T) { testSlowLocalRequest(t, 72, false, true, false) })
+	t.Run("assist_closes_microphone", func(t *testing.T) { testSlowLocalRequestClosed(t) })
 }
 func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice, shouldListen bool) {
 	release := make(chan struct{})
@@ -56,7 +60,7 @@ func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice, shoul
 	}, func(ctx context.Context, k websocket.MessageType, b []byte) error {
 		down <- wire.Decode(b, wire.ServerToClient)
 		return nil
-	}, delayedRoute{release})
+	}, delayedRoute{release: release})
 	defer n.Close()
 	n.ShouldListen = shouldListen
 	n.ProgressAfter = 5 * time.Millisecond
@@ -175,6 +179,55 @@ func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice, shoul
 	}
 }
 
+func testSlowLocalRequestClosed(t *testing.T) {
+	release := make(chan struct{})
+	down := make(chan wire.Frame, 20)
+	up := make(chan wire.Frame, 20)
+	closed := false
+	n := NewNative(t.Context(), func(ctx context.Context, k websocket.MessageType, b []byte) error {
+		up <- wire.Decode(b, wire.ClientToServer)
+		return nil
+	}, func(ctx context.Context, k websocket.MessageType, b []byte) error {
+		down <- wire.Decode(b, wire.ServerToClient)
+		return nil
+	}, delayedRoute{release: release, listen: &closed})
+	defer n.Close()
+	n.ShouldListen = true
+	n.ProgressAfter = 5 * time.Millisecond
+	n.ProgressInterval = 10 * time.Millisecond
+	input := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "assist-closed"}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Header: &request.TAliceRequestProto_THeader{RequestId: new("application-request")}, Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new("включи свет")}}}}}}}
+	if err := n.Client(t.Context(), websocket.MessageBinary, aa(input)); err != nil {
+		t.Fatal(err)
+	}
+	var firstTTS wire.Frame
+	for {
+		select {
+		case firstTTS = <-up:
+		case <-time.After(time.Second):
+			t.Fatal("missing initial synthesis")
+		}
+		if firstTTS.Kind() == "TtsGenerate" {
+			break
+		}
+	}
+	feedSpeech(t, n, firstTTS.Client.GetEvent().GetHeader().GetMessageId(), 72, false)
+	close(release)
+	for {
+		select {
+		case f := <-down:
+			r := f.Server.GetEvent().GetDeferredAliceResponse()
+			if r != nil && r.GetIsLast() {
+				if r.GetBaseResponse().GetShouldListen() {
+					t.Fatal("assist answer reopened the microphone")
+				}
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("missing final answer")
+		}
+	}
+}
+
 func speechFixture(serial uint32) []byte {
 	return speechPacketFixture(serial, []byte{0xf8, 0xff, 0xfe})
 }
@@ -215,7 +268,7 @@ func TestProgressCancellationStopsWithoutFinalAnswer(t *testing.T) {
 	n := NewNative(t.Context(), func(context.Context, websocket.MessageType, []byte) error { return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error {
 		down <- wire.Decode(b, wire.ServerToClient)
 		return nil
-	}, delayedRoute{release})
+	}, delayedRoute{release: release})
 	n.ProgressAfter = time.Millisecond
 	n.ProgressInterval = time.Millisecond
 	input := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "cancel-test"}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new("история")}}}}}}}
