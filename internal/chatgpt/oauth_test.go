@@ -18,7 +18,99 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"uuid"
 )
+
+func validUUIDHostID(host string) bool {
+	value, ok := strings.CutPrefix(host, "urn:uuid:")
+	if !ok {
+		return false
+	}
+	id, err := uuid.Parse(value)
+	return err == nil && id.String() == value && id[6]>>4 == 4 && id[8]&0xc0 == 0x80
+}
+
+func TestPrepareHostPersistsUUIDv4URNAcrossRestarts(t *testing.T) {
+	s := fixtureStore(t)
+	first, err := s.prepareHost(t.Context())
+	if err != nil || !validUUIDHostID(first.HostID) {
+		t.Fatalf("host ID must be a canonical UUIDv4 URN: %q error=%v", first.HostID, err)
+	}
+	next, err := (&Store{Path: s.Path}).prepareHost(t.Context())
+	if err != nil || next.HostID != first.HostID {
+		t.Fatal("host ID changed after restart", err)
+	}
+}
+
+func TestPrepareHostMigratesOnlyUnregisteredLegacyHosts(t *testing.T) {
+	s := fixtureStore(t)
+	saveFixture(t, s, credentials{Version: 1, HostID: "quasar-bridge-old-random-value"})
+	first, err := s.prepareHost(t.Context())
+	if err != nil || !validUUIDHostID(first.HostID) {
+		t.Fatalf("pending pre-fix host was not repaired: %q error=%v", first.HostID, err)
+	}
+	next, err := (&Store{Path: s.Path}).prepareHost(t.Context())
+	if err != nil || next.HostID != first.HostID {
+		t.Fatal("repaired host ID did not remain stable", err)
+	}
+	for _, tc := range []struct {
+		name       string
+		registered func(*credentials)
+	}{
+		{"issued client", func(c *credentials) { c.ClientID = "issued-client" }},
+		{"verified subject", func(c *credentials) { c.Subject = "subject-fixture" }},
+		{"identity", func(c *credentials) { c.Issuer = issuer; c.Email = "user@example.invalid" }},
+		{"access token", func(c *credentials) { c.AccessToken = "access-secret" }},
+		{"refresh token", func(c *credentials) { c.RefreshToken = "refresh-secret" }},
+		{"ID token", func(c *credentials) { c.IDToken = "id-secret" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := fixtureStore(t)
+			c := credentials{Version: 1, HostID: "quasar-bridge-old-random-value"}
+			tc.registered(&c)
+			saveFixture(t, s, c)
+			before, err := os.ReadFile(s.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.prepareHost(t.Context()); err == nil || !strings.Contains(err.Error(), "credential file") {
+				t.Fatalf("registered legacy host needs an actionable error: %v", err)
+			}
+			after, err := os.ReadFile(s.Path)
+			if err != nil || string(after) != string(before) {
+				t.Fatal("registered host or credentials changed during migration", err)
+			}
+		})
+	}
+}
+
+func TestLoginMockAuthorizationRejectsMalformedHostID(t *testing.T) {
+	s := fixtureStore(t)
+	authorize := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if !validUUIDHostID(q.Get("ext_agent_host_id")) {
+			http.Error(w, "invalid_authorize_request: ext_agent_host_id", http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, q.Get("redirect_uri")+"?state="+q.Get("state")+"&error=access_denied", http.StatusFound)
+	}))
+	defer authorize.Close()
+	s.authorizeURL = authorize.URL
+	err := s.Login(t.Context(), "127.0.0.1:0", func(raw string) error {
+		resp, err := http.Get(raw)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return errors.New("authorization rejected invalid host ID")
+		}
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "denied") {
+		t.Fatalf("mock authorization did not accept the host ID: %v", err)
+	}
+}
 
 func signedToken(t *testing.T, key *rsa.PrivateKey, claims map[string]any) string {
 	t.Helper()
@@ -79,6 +171,9 @@ func TestLoginRegistersAndReauthorizesWithoutPrintingSecrets(t *testing.T) {
 				return err
 			}
 			q := u.Query()
+			if !validUUIDHostID(q.Get("ext_agent_host_id")) {
+				return errors.New("invalid_authorize_request: ext_agent_host_id")
+			}
 			if u.Scheme != "https" || u.Host != "auth.openai.com" || u.Path != "/api/accounts/authorize" || q.Get("response_type") != "code" || q.Get("resource") != resource || !hasPlanScope(q.Get("scope")) || q.Get("code_challenge_method") != "S256" || q.Get("state") == "" || q.Get("nonce") == "" {
 				t.Error("incorrect authorization URL")
 			}

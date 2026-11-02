@@ -13,7 +13,9 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+	"uuid"
 )
 
 type callbackResult struct {
@@ -186,12 +188,25 @@ func (s *Store) prepareHost(ctx context.Context) (credentials, error) {
 	}
 	defer unlock()
 	c, err := s.load()
-	if errors.Is(err, os.ErrNotExist) {
-		c = credentials{Version: 1, HostID: "quasar-bridge-" + rand.Text()}
-		if err := s.save(c); err != nil {
-			return credentials{}, err
-		}
-		return c, nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return credentials{}, err
 	}
-	return c, err
+	if err == nil {
+		if !strings.HasPrefix(c.HostID, "quasar-bridge-") {
+			return c, nil
+		}
+		// The initial implementation generated a format OpenAI rejects. Repair
+		// only an untouched pre-registration record; an issued registration or
+		// account identity must never acquire a new host lifecycle implicitly.
+		if c.ClientID != "" || c.Subject != "" || c.Issuer != "" || c.Email != "" || c.AccessToken != "" || c.RefreshToken != "" || c.IDToken != "" || c.Scope != "" || !c.ExpiresAt.IsZero() {
+			return credentials{}, errors.New("unsupported legacy ChatGPT host ID belongs to an existing registration; use a separate credential file to register this host again")
+		}
+	} else {
+		c = credentials{Version: 1}
+	}
+	c.HostID = "urn:uuid:" + uuid.NewV4().String()
+	if err := s.save(c); err != nil {
+		return credentials{}, err
+	}
+	return c, nil
 }
