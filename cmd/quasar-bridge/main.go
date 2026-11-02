@@ -170,6 +170,9 @@ func main() {
 	logs := new(journal.Writer)
 	lc := newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY"))
 	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
+	configuration := &configurationControl{path: *path, active: cfg, engine: engine, logs: logs}
+	configuration.restart = func(ctx context.Context) (any, error) { return update.New(*path).Restart(ctx) }
+	engine.Configuration = cfg.AssistantTools.Enabled && cfg.AssistantTools.Configuration
 	var airPlay *airPlayControl
 	cleanupAirPlay := sync.OnceFunc(func() { shutdownAirPlay(stop, airPlay) })
 	defer cleanupAirPlay()
@@ -215,7 +218,7 @@ func main() {
 			musicPlayback = assistant.NewMusicPlayback(musicQueue)
 			engine.Playback = musicPlayback
 		}
-		tools := &assistant.Tools{Updater: update.New(*path), Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback}
+		tools := &assistant.Tools{Updater: update.New(*path), Configuration: configuration, Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback}
 		if airPlay != nil {
 			tools.AirPlay = airPlay
 		}
@@ -345,7 +348,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-reloads:
-				if err := reloadRouting(*path, cfg, engine, logs); err != nil {
+				if _, err := configuration.Apply(ctx, "reload"); err != nil {
 					slog.Warn("routing_reload_rejected", "error", err)
 					continue
 				}

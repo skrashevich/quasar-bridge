@@ -162,6 +162,9 @@ func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[strin
 func mcpProcessTool(t *testing.T, tools []llm.Tool, airPlayDisabled bool) string {
 	t.Helper()
 	expected := map[string]bool{}
+	for _, name := range []string{"get_quasar_bridge_config", "set_quasar_bridge_config", "apply_quasar_bridge_config"} {
+		expected[name] = true
+	}
 	if !airPlayDisabled {
 		for _, name := range []string{"get_airplay_status", "control_airplay", "control_airplay_playback", "set_airplay_volume"} {
 			expected[name] = true

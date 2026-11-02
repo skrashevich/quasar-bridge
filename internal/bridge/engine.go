@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"quasarbridge/internal/configvoice"
 	"quasarbridge/internal/dialogue"
 	"strings"
 	"sync"
@@ -31,15 +32,16 @@ type MusicStarter interface {
 	StartMusic(context.Context, string) (string, error)
 }
 type Engine struct {
-	AirPlay      AirPlayController
-	LLM          Completer
-	Assistant    Completer
-	Home         HomeHandler
-	Playback     PlaybackController
-	Music        MusicStarter
-	Dialogue     *dialogue.Store
-	dialogueOnce sync.Once
-	routing      atomic.Pointer[RoutingPolicy]
+	Configuration bool
+	AirPlay       AirPlayController
+	LLM           Completer
+	Assistant     Completer
+	Home          HomeHandler
+	Playback      PlaybackController
+	Music         MusicStarter
+	Dialogue      *dialogue.Store
+	dialogueOnce  sync.Once
+	routing       atomic.Pointer[RoutingPolicy]
 }
 
 func (e *Engine) dialogue() *dialogue.Store {
@@ -243,6 +245,9 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.prepared = true
 	}()
 	p := e.policy()
+	if e.Configuration && configvoice.InConversation(text, snapshot.Messages) {
+		return RouteDecision{Route: "llm", Source: "bridge_configuration"}
+	}
 	if e.AirPlay != nil && airPlayCommand(text) != "" {
 		return RouteDecision{Route: "airplay", Source: "airplay"}
 	}

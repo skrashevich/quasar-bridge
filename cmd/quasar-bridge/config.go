@@ -56,11 +56,15 @@ func readConfig(path string) (config, error) {
 // Discovery and sign-in run before the installer has selected a model. Every
 // other setting still receives the same validation as the running service.
 func readConfigForCommand(path string, modelOptional bool) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return cfg, errors.New("cannot read configuration file")
+		return config{}, errors.New("cannot read configuration file")
 	}
+	return parseConfig(raw, modelOptional)
+}
+
+func parseConfig(raw []byte, modelOptional bool) (config, error) {
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true}
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
