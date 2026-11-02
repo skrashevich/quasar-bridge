@@ -35,12 +35,23 @@ class PackageTest(unittest.TestCase):
             binary = root / "binary"
             original = b"\x7fELF\x02\x01" + bytes(12) + b"\xb7\x00" + bytes(44)
             binary.write_bytes(original)
+            helpers = self.helpers(root)
+            uncompressed = root / "uncompressed.tar.gz"
+            subprocess.run([
+                "python3", str(ROOT / "scripts/build-speaker-package.py"),
+                "--binary", str(binary), "--output", str(uncompressed), *helpers,
+            ], check=True, capture_output=True)
+            # Repack an existing PCM bundle: UPX must see only the host ELF.
+            with tarfile.open(uncompressed) as archive:
+                supplied = archive.extractfile("bin/quasar-bridge").read()
+            binary.write_bytes(supplied)
             upx = root / "upx"
             upx.write_text(
                 '#!/usr/bin/env python3\n'
                 'from pathlib import Path\nimport sys\n'
                 'binary = Path(sys.argv[-1])\n'
-                'if sys.argv[1:-1] == ["--ultra-brute", "--no-lzma"]:\n'
+                'if sys.argv[1:-1] == ["-6", "--no-lzma"]:\n'
+                '    assert binary.read_bytes() == ' + repr(original) + '\n'
                 '    binary.write_bytes(binary.read_bytes() + b"packed")\n'
                 'elif sys.argv[1:-1] == ["-t"]:\n'
                 '    assert binary.read_bytes().endswith(b"packed")\n'
@@ -51,13 +62,16 @@ class PackageTest(unittest.TestCase):
             output = root / "packed.tar.gz"
             result = subprocess.run([
                 "python3", str(ROOT / "scripts/build-speaker-package.py"),
-                "--binary", str(binary), "--output", str(output), "--upx", *self.helpers(root),
+                "--binary", str(binary), "--output", str(output), "--upx", *helpers,
             ], env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"]),
                 capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(binary.read_bytes(), original)
+            self.assertEqual(binary.read_bytes(), supplied)
             with tarfile.open(output) as archive:
-                self.assertTrue(archive.extractfile("bin/quasar-bridge").read().startswith(original + b"packedtested"))
+                bundled = archive.extractfile("bin/quasar-bridge").read()
+                self.assertTrue(bundled.startswith(original + b"packedtested"))
+                with zipfile.ZipFile(io.BytesIO(bundled)) as pcm:
+                    self.assertIsNone(pcm.testzip())
                 self.assertEqual([n for n in archive.getnames() if n.startswith("bin/")], ["bin/quasar-bridge"])
             self.assertEqual(output.with_suffix(".gz.sha256").read_text(),
                              f"{hashlib.sha256(output.read_bytes()).hexdigest()}  {output.name}\n")

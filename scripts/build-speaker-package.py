@@ -6,6 +6,7 @@ import io
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -48,14 +49,33 @@ def build(arch="arm64", output=None, binary=None, tag=None, upx=False,
         tool = os.environ.get("STATION_PCM_PACKAGE_TOOL")
         command = [tool] if tool else ["go", "run", "github.com/skrashevich/station-airplay/cmd/station-pcm-package"]
         command += ["-arch", arch, "-binary", str(executable)]
+        env = dict(os.environ)
         if upx:
             # The producer strips any earlier payload, compresses and verifies
             # the ELF, then appends the new payload as the final build step.
             command += ["-upx"]
+            real_upx = shutil.which("upx")
+            if not real_upx:
+                raise FileNotFoundError("UPX executable is required for --upx")
+            # The producer currently hardcodes --ultra-brute. Adapt only that
+            # argument, retaining its payload handling and integrity check.
+            shim_dir = Path(tmp) / "upx-bin"
+            shim_dir.mkdir()
+            shim = shim_dir / "upx"
+            shim.write_text(
+                '#!/bin/sh\n'
+                'if [ "$1" = --ultra-brute ]; then\n'
+                '    shift\n'
+                '    set -- -6 "$@"\n'
+                'fi\n'
+                f'exec {shlex.quote(str(Path(real_upx).resolve()))} "$@"\n'
+            )
+            shim.chmod(0o755)
+            env["PATH"] = str(shim_dir) + os.pathsep + env.get("PATH", "")
         for helper_arch, supplied in (("armv7", pcm_armv7_binary), ("arm64", pcm_arm64_binary)):
             if supplied:
                 command += [f"-{helper_arch}-binary", str(Path(supplied).resolve())]
-        subprocess.run(command, cwd=ROOT, check=True)
+        subprocess.run(command, cwd=ROOT, env=env, check=True)
         files = [(name, (ROOT / "packaging/speaker" / name).read_bytes()) for name in PAYLOAD]
         files += [(name, (ROOT / name).read_bytes()) for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "SOURCE.md")]
         files += [(str(path.relative_to(ROOT)), path.read_bytes())
@@ -84,7 +104,7 @@ if __name__ == "__main__":
     parser.add_argument("--pcm-arm64-binary", help="prebuilt ARM64 PCM payload to embed; otherwise build it")
     parser.add_argument("--tag", help="stable release tag; otherwise build a dev archive")
     parser.add_argument("--upx", action="store_true",
-                        help="compress with UPX --ultra-brute --no-lzma and verify before packaging")
+                        help="compress with UPX -6 --no-lzma and verify before packaging")
     args = parser.parse_args()
     build(args.arch, args.output, args.binary, args.tag, args.upx,
           args.pcm_armv7_binary, args.pcm_arm64_binary)
