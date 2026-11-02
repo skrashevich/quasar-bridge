@@ -43,8 +43,8 @@ github.com/segmentio/encoding v0.5.4 h1:OW1VRern8Nw6ITAtwSZ7Idrl3MXCFwXHPgqESYfv
 github.com/segmentio/encoding v0.5.4/go.mod h1:HS1ZKa3kSN32ZHVZ7ZLPLXWvOVIiZtyJnO1gPH1sKt0=
 github.com/skrashevich/go-aac v0.1.1-0.20261014125626-800d9fa00267 h1:xtsCsIGWoQVsE9MUqj0/2PF191dhCE146rgYMU2i/ik=
 github.com/skrashevich/go-aac v0.1.1-0.20261014125626-800d9fa00267/go.mod h1:Mj7r//4LDL4FC0ezORj+MnmQ+nDEkJhTOy2aMC8dzww=
-github.com/skrashevich/station-airplay v0.1.2 h1:R8rNsx422V9ACs2EZ5SlLhVN24hIJ3MJgmXxkTwIoAo=
-github.com/skrashevich/station-airplay v0.1.2/go.mod h1:89Ukk3O3D4QoKN7L0dxCfsDrnrQ8D9KI8LUfD7n2bBg=
+github.com/skrashevich/station-airplay v0.2.2 h1:cTJmuxql3dDUOhWRqJf/ik5hMkZdGyHx6X2kOU2akSM=
+github.com/skrashevich/station-airplay v0.2.2/go.mod h1:89Ukk3O3D4QoKN7L0dxCfsDrnrQ8D9KI8LUfD7n2bBg=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
