@@ -1,4 +1,12 @@
 {
+  "tts": {
+    "enabled": false,
+    "base_url": "http://192.168.1.10:8880/v1",
+    "model": "",
+    "voice": "ru_RU-denis-medium",
+    "timeout_ms": 15000,
+    "revoice_yandex": false
+  },
   "listen": "localhost:8443",
   "upstream": "wss://uniproxy.alice.yandex.net/uni.ws",
   "mode": "hybrid",

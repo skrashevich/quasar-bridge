@@ -106,8 +106,11 @@ func (n *Native) beginDeferred(p *nativeRequest) error {
 	if err := n.deferredPart(p, "", false); err != nil {
 		return err
 	}
+	if n.Voice != nil {
+		return n.speakProgressHeaders(p)
+	}
 	// Obtain the provider's actual Opus headers; its speech payload is discarded.
-	return n.synthesize(p, "а")
+	return n.synthesizeYandex(p, "а")
 }
 func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	if err := p.ctx.Err(); err != nil {

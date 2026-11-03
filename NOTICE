@@ -3,3 +3,7 @@ Copyright 2026 Sergey Krashevich and contributors
 
 Licensed under the Apache License, Version 2.0.
 Third-party dependencies retain their own copyright notices and licenses.
+
+Custom voice changes (internal/voice, internal/bridge/custom_voice.go,
+tools/voice-server and related edits) were added in the fork
+EV-G3N-IY/quasar-bridge-voice.

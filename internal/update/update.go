@@ -25,8 +25,8 @@ import (
 // Version is set by the release build; unversioned binaries remain development builds.
 var Version = "dev"
 
-const repository = "https://github.com/skrashevich/quasar-bridge"
-const latestURL = "https://api.github.com/repos/skrashevich/quasar-bridge/releases/latest"
+const repository = "https://github.com/EV-G3N-IY/quasar-bridge-voice"
+const latestURL = "https://api.github.com/repos/EV-G3N-IY/quasar-bridge-voice/releases/latest"
 const maxArchive = 32 << 20
 const maxExtracted = 96 << 20
 
@@ -143,7 +143,7 @@ func (u *Updater) latestReleaseTag(ctx context.Context) (string, error) {
 	if err != nil || location.Scheme != "https" || location.Host != "github.com" || location.User != nil || location.RawQuery != "" || location.ForceQuery || location.Fragment != "" {
 		return "", errors.New("invalid GitHub latest release redirect")
 	}
-	tag, ok := strings.CutPrefix(location.Path, "/skrashevich/quasar-bridge/releases/tag/")
+	tag, ok := strings.CutPrefix(location.Path, "/EV-G3N-IY/quasar-bridge-voice/releases/tag/")
 	if !ok || !strings.HasPrefix(tag, "v") || !stableVersion.MatchString(tag) {
 		return "", errors.New("GitHub latest release redirect is not a stable bridge release")
 	}

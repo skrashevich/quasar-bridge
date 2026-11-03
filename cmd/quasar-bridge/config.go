@@ -16,6 +16,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/voice"
 )
 
 type progressConfig struct {
@@ -47,6 +48,7 @@ type config struct {
 	HomeWarmArea       string               `json:"home_warm_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
+	TTS                voice.Config         `json:"tts"`
 }
 
 func readConfig(path string) (config, error) {
@@ -64,7 +66,7 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 }
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true}
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, TTS: voice.DefaultConfig()}
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
@@ -192,6 +194,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	}
 	if cfg.LocalProgress.AfterMS < 100 || cfg.LocalProgress.AfterMS > 10000 || cfg.LocalProgress.IntervalMS < 1000 || cfg.LocalProgress.IntervalMS > 10000 {
 		return cfg, errors.New("invalid local_progress timing")
+	}
+	if err := cfg.TTS.Validate(); err != nil {
+		return cfg, err
 	}
 	if err := cfg.DialogueContext.Validate(); err != nil {
 		return cfg, err
