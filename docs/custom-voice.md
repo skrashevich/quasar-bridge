@@ -67,7 +67,7 @@ python3 tools/voice-server/server.py --command 'мой=/путь/к/команд
 ```json
 "tts": {
   "enabled": true,
-  "base_url": "http://192.168.1.10:8880/v1",
+  "base_url": "http://voice.example.invalid:8880/v1",
   "voice": "ru_RU-denis-medium",
   "revoice_yandex": true
 }

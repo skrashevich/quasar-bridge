@@ -1,7 +1,7 @@
 {
   "tts": {
     "enabled": false,
-    "base_url": "http://192.168.1.10:8880/v1",
+    "base_url": "http://voice.example.invalid:8880/v1",
     "model": "",
     "voice": "ru_RU-denis-medium",
     "timeout_ms": 15000,

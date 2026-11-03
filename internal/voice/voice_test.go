@@ -57,7 +57,7 @@ func TestOpenReportsStatusWithoutURL(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	good := Config{Enabled: true, BaseURL: "http://192.168.1.2:8880/v1", Voice: "denis", TimeoutMS: 15000}
+	good := Config{Enabled: true, BaseURL: "http://voice.example.invalid:8880/v1", Voice: "denis", TimeoutMS: 15000}
 	if err := good.Validate(); err != nil {
 		t.Fatal(err)
 	}
