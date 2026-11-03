@@ -72,7 +72,7 @@ func ValidateAnswer(text string) error {
 func ValidateChatParameters(parameters map[string]any) error {
 	for key := range parameters {
 		switch key {
-		case "temperature", "max_tokens", "max_completion_tokens", "response_format", "chat_template_kwargs", "reasoning_effort":
+		case "temperature", "max_tokens", "max_completion_tokens", "response_format", "chat_template_kwargs", "reasoning_effort", "thinking":
 		default:
 			return errors.New("unsupported LLM chat parameter")
 		}
