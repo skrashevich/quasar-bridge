@@ -257,7 +257,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
 
     def test_model_selection_rejects_invalid_numbers_without_refetching(self):
         result = subprocess.run(["sh", str(self.package / "setup.sh")],
-                                env=self.env, input="chatgpt\nname\n0\n3\n2\n\nn\n",
+                                env=self.env, input="chatgpt\nbad name\n0\n3\n2\n\nn\n",
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         output = subprocess.check_output([
