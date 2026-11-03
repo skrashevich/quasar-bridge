@@ -244,7 +244,7 @@ func main() {
 				slog.Error("LLM check failed")
 				os.Exit(1)
 			}
-			if cfg.TTS.Enabled {
+			if cfg.TTS.Enabled && cfg.TTS.BaseURL != "" {
 				if err := bridge.CheckSpeech(ctx, voice.New(cfg.TTS, os.Getenv("QUASAR_TTS_API_KEY")), "Проверка голоса."); err != nil {
 					slog.Error("voice check failed", "error", err)
 					os.Exit(1)
@@ -302,8 +302,13 @@ func main() {
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
 			if cfg.TTS.Enabled {
-				n.Voice = voice.New(cfg.TTS, os.Getenv("QUASAR_TTS_API_KEY"))
+				if cfg.TTS.BaseURL != "" {
+					n.Voice = voice.New(cfg.TTS, os.Getenv("QUASAR_TTS_API_KEY"))
+				}
 				n.RevoiceYandex = cfg.TTS.RevoiceYandex
+				n.YandexVoice = cfg.TTS.YandexVoice
+				n.YandexEmotion = cfg.TTS.YandexEmotion
+				n.YandexSpeed = cfg.TTS.YandexSpeed
 			}
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond

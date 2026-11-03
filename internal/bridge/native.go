@@ -100,6 +100,9 @@ type Native struct {
 	ProgressInterval time.Duration
 	Voice            Speech
 	RevoiceYandex    bool
+	YandexVoice      string
+	YandexEmotion    string
+	YandexSpeed      float64
 	voiceStreams     atomic.Uint32
 }
 
@@ -489,7 +492,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		// Only pure speech can move to another voice: directives must stay with the
 		// cloud response that carries them, and streaming answers arrive in parts.
-		if speech := voice.Clean(cloudResponseText(r)); n.Voice != nil && n.RevoiceYandex && speech != "" && !r.GetResponse().GetIsStreaming() {
+		if speech := voice.Clean(cloudResponseText(r)); (n.Voice != nil || n.YandexVoice != "") && n.RevoiceYandex && speech != "" && !r.GetResponse().GetIsStreaming() {
 			listen := r.GetVoiceResponse().GetShouldListen()
 			p.local = true
 			p.listenOverride = &listen
@@ -715,7 +718,17 @@ func (n *Native) synthesize(p *nativeRequest, text string) error {
 	return n.synthesizeYandex(p, text)
 }
 func (n *Native) synthesizeYandex(p *nativeRequest, text string) error {
-	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
+	generate := &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}
+	if n.YandexVoice != "" {
+		generate.Voice = new(n.YandexVoice)
+	}
+	if n.YandexEmotion != "" {
+		generate.Emotion = new(n.YandexEmotion)
+	}
+	if n.YandexSpeed != 0 {
+		generate.Speed = new(n.YandexSpeed)
+	}
+	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: generate}}}}
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err

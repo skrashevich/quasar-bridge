@@ -24,12 +24,22 @@ type Config struct {
 	Voice         string `json:"voice"`
 	TimeoutMS     int    `json:"timeout_ms"`
 	RevoiceYandex bool   `json:"revoice_yandex"`
+	// Yandex* select another voice of the cloud Yandex TTS; no service is needed.
+	YandexVoice   string  `json:"yandex_voice"`
+	YandexEmotion string  `json:"yandex_emotion"`
+	YandexSpeed   float64 `json:"yandex_speed"`
 }
 
 func DefaultConfig() Config { return Config{TimeoutMS: 15000} }
 
 func (c Config) Validate() error {
 	if !c.Enabled {
+		return nil
+	}
+	if c.YandexSpeed != 0 && (c.YandexSpeed < 0.1 || c.YandexSpeed > 3) {
+		return errors.New("tts.yandex_speed must be between 0.1 and 3")
+	}
+	if c.BaseURL == "" && c.YandexVoice != "" {
 		return nil
 	}
 	u, err := url.Parse(c.BaseURL)

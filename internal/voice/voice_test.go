@@ -66,6 +66,12 @@ func TestValidate(t *testing.T) {
 			t.Fatalf("accepted %+v", bad)
 		}
 	}
+	if (Config{Enabled: true, YandexVoice: "ermil"}).Validate() != nil {
+		t.Fatal("Yandex voice needs no service")
+	}
+	if (Config{Enabled: true, YandexVoice: "ermil", YandexSpeed: 9}).Validate() == nil {
+		t.Fatal("accepted speed")
+	}
 	if (Config{}).Validate() != nil {
 		t.Fatal("disabled config must be valid")
 	}

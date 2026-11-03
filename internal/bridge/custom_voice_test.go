@@ -330,3 +330,46 @@ func TestRevoiceIsOffByDefault(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+func TestYandexVoiceIsRequestedWithoutService(t *testing.T) {
+	h := newVoiceHarness(t, immediateRoute{route: "llm"}, nil)
+	h.n.YandexVoice, h.n.YandexEmotion, h.n.YandexSpeed = "ermil", "good", 1.1
+	h.ask(t, "local")
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case f := <-h.up:
+			if f.Kind() == "TtsGenerate" {
+				g := f.Client.GetEvent().GetTtsGenerate()
+				if g.GetVoice() != "ermil" || g.GetEmotion() != "good" || g.GetSpeed() != 1.1 || g.GetText() == "" {
+					t.Fatalf("generate=%v", g)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("no synthesis request")
+		}
+	}
+}
+func TestRevoiceWithYandexVoice(t *testing.T) {
+	h := newVoiceHarness(t, yandexRoute{}, nil)
+	h.n.YandexVoice, h.n.RevoiceYandex = "ermil", true
+	h.ask(t, "cloud")
+	waitCloud(t, h)
+	if err := h.n.Server(t.Context(), websocket.MessageBinary, cloudAnswer("cloud", "Завтра ясно", false)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case f := <-h.up:
+			if f.Kind() == "TtsGenerate" {
+				if f.Client.GetEvent().GetTtsGenerate().GetVoice() != "ermil" {
+					t.Fatal("wrong voice")
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("answer was not revoiced")
+		}
+	}
+}
