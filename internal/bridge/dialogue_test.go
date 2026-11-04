@@ -75,7 +75,7 @@ func TestClassifierReceivesRecentDialogue(t *testing.T) {
 	e := &Engine{LLM: completionFunc(func(_ context.Context, m []llm.Message, structured bool) (string, error) {
 		if structured {
 			classified = true
-			if len(m) != 4 || m[1].Content != "расскажи о звёздах" || m[2].Content != "Ответ о звёздах" {
+			if len(m) != 4 || m[1].Content != "спроси нейросеть: расскажи о звёздах" || m[2].Content != "Ответ о звёздах" {
 				t.Errorf("classifier lost context: %+v", m)
 			}
 			return `{"route":"llm"}`, nil
@@ -138,7 +138,7 @@ func TestSlowClassifierCannotUndoNewerDialogueTurn(t *testing.T) {
 					t.Fatal("old classifier resurrected reset context")
 				}
 			} else {
-				if len(got.Messages) != 2 || got.Messages[0].Content != "новый вопрос" {
+				if len(got.Messages) != 2 || got.Messages[0].Content != "спроси нейросеть: новый вопрос" {
 					t.Fatal("old classifier erased newer context")
 				}
 			}
