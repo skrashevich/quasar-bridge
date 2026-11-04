@@ -70,22 +70,28 @@ func TestResetDialogueHasNoModelCall(t *testing.T) {
 	}
 }
 
-func TestClassifierReceivesRecentDialogue(t *testing.T) {
-	classified := false
-	e := &Engine{LLM: completionFunc(func(_ context.Context, m []llm.Message, structured bool) (string, error) {
-		if structured {
-			classified = true
-			if len(m) != 4 || m[1].Content != "расскажи о звёздах" || m[2].Content != "Ответ о звёздах" {
-				t.Errorf("classifier lost context: %+v", m)
+func TestActiveDialogueSkipsClassifier(t *testing.T) {
+	for _, text := range []string{"Объясни проще", "Можно объяснить это иначе", "Приведи пример", "Как это работает?"} {
+		t.Run(text, func(t *testing.T) {
+			calls := 0
+			e := &Engine{LLM: completionFunc(func(_ context.Context, m []llm.Message, structured bool) (string, error) {
+				if structured {
+					t.Fatal("active LLM dialogue reached classifier")
+				}
+				calls++
+				if calls == 2 && (len(m) != 4 || m[1].Content != "расскажи о звёздах" || m[2].Content != "Ответ о звёздах" || m[3].Content != text) {
+					t.Errorf("followup lost context: %+v", m)
+				}
+				return "Ответ о звёздах", nil
+			})}
+			if _, err := e.Resolve(t.Context(), "спроси нейросеть: расскажи о звёздах"); err != nil {
+				t.Fatal(err)
 			}
-			return `{"route":"llm"}`, nil
-		}
-		return "Ответ о звёздах", nil
-	})}
-	e.Resolve(t.Context(), "спроси нейросеть: расскажи о звёздах")
-	e.Resolve(t.Context(), "Можно объяснить это иначе")
-	if !classified {
-		t.Fatal("classifier not exercised")
+			result, err := e.Resolve(t.Context(), text)
+			if err != nil || result.Route != "llm" || calls != 2 {
+				t.Fatalf("followup=%+v err=%v calls=%d", result, err, calls)
+			}
+		})
 	}
 }
 

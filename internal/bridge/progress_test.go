@@ -87,8 +87,8 @@ func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice, shoul
 	if initial.Kind() != "AliceResponse" || !initial.Server.GetEvent().GetAliceResponse().GetResponse().GetIsStreaming() {
 		t.Fatal("missing initial streaming response")
 	}
-	if initial.Server.GetEvent().GetAliceResponse().GetVoiceResponse().GetShouldListen() {
-		t.Fatal("initial streaming response reopened listening")
+	if got := initial.Server.GetEvent().GetAliceResponse().GetVoiceResponse().GetShouldListen(); got != shouldListen {
+		t.Fatalf("initial answer should_listen=%v, want %v", got, shouldListen)
 	}
 	part := next().Server.GetEvent().GetDeferredAliceResponse()
 	if part == nil || part.GetIsLast() || part.GetRequestId() != "application-request" || part.GetBaseResponse().GetText() != "" {
@@ -132,6 +132,9 @@ func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice, shoul
 	close(release)
 	for {
 		f := next()
+		if f.Kind() == "AliceResponse" {
+			t.Fatal("final answer restarted the streaming response")
+		}
 		r := f.Server.GetEvent().GetDeferredAliceResponse()
 		if r != nil && r.GetIsLast() {
 			if got := r.GetBaseResponse().GetShouldListen(); got != shouldListen {

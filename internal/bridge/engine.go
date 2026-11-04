@@ -272,7 +272,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		}
 		return d
 	}
-	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
+	if len(snapshot.Messages) > 0 {
 		return RouteDecision{Route: "llm", Source: "dialogue"}
 	}
 	if !p.classifierEnabled {

@@ -548,7 +548,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
 				decision := routed.Decide(p.ctx, text)
 				n.mu.Lock()
-				p.listenOnStreamStart = decision.Source == "dialogue_retry"
+				p.listenOnStreamStart = decision.Route == "llm"
 				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
 				stop := func() {}

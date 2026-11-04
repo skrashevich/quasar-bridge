@@ -93,8 +93,8 @@ func (p *nativeRequest) applicationID() string {
 func (n *Native) beginDeferred(p *nativeRequest) error {
 	r := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(p.applicationID()), ResponseId: new(p.responseID), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{HasVoiceResponse: true, OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new("")}}, Response: &response.TAliceResponseProto_TResponse{IsStreaming: true, Directives: []*directive.TDirective{{Type: "client_action", Name: "tts_play_placeholder"}}}}
 	// Station schedules post-speech listening from the initial stream envelope.
-	// Only retry is guaranteed informational; other routes may start silent media.
-	r.VoiceResponse.ShouldListen = n.ShouldListen && p.listenOnStreamStart && reply.ListeningAllowed(p.ctx)
+	// Enable it for LLM replies before the first audio segment is opened.
+	r.VoiceResponse.ShouldListen = n.ShouldListen && p.listenOnStreamStart && !n.hasSilentPlayback(p) && reply.ListeningAllowed(p.ctx)
 	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: r}}}}
 	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
