@@ -75,9 +75,8 @@ func (n *Native) captureCloud(p *nativeRequest, e *server.TServerMessage_TEvent)
 	}
 }
 
-// Presentation directives accompany ordinary spoken answers. They must not
-// discard the replay target; unknown directives still invalidate it. This is
-// deliberately separate from the stricter automatic refusal-replacement check.
+// Presentation-only directives do not invalidate an informational replay.
+// Keep this separate from automatic refusal replacement.
 func cloudReplayHasAction(ds []*directives.TDirective) bool {
 	for _, d := range ds {
 		if d.GetType() != "client_action" {

@@ -14,9 +14,8 @@ import (
 
 const maxStreamBytes = 2 << 20
 
-// readResponseStream releases output only after a terminal response.completed.
-// Some subscription responses omit final output, so retain completed items
-// from output_item.done; never turn unfinished deltas into executable actions.
+// readResponseStream releases completed items only after response.completed.
+// Unfinished deltas must never reach the tool runner.
 func readResponseStream(body io.Reader) ([]byte, error) {
 	limited := &io.LimitedReader{R: body, N: maxStreamBytes + 1}
 	scanner := bufio.NewScanner(limited)
@@ -104,8 +103,7 @@ func readResponseStream(body io.Reader) ([]byte, error) {
 	return nil, errors.New("LLM response stream not completed")
 }
 
-// Prefer authoritative terminal output. Restore completed items only when the
-// successful terminal response omits them, preserving reasoning and tool context.
+// restoreStreamOutput fills empty terminal output with completed stream items.
 func restoreStreamOutput(data []byte, items map[int]jsontext.Value) ([]byte, error) {
 	var response struct {
 		Status string           `json:"status"`
