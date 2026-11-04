@@ -31,7 +31,7 @@ func (e *Engine) RecordDelivered(ctx context.Context, question, answer string, f
 	if dialogue.IsReset(question) {
 		action = true
 	}
-	e.dialogue().CaptureReplay(ctx, ticket, question, answer, final, action, view.PrivateHistory, isRetryCommand(question))
+	e.dialogue().CaptureReplay(ctx, ticket, stripNeuralRequestPrefix(question), answer, final, action, view.PrivateHistory, isRetryCommand(question))
 }
 
 // EmptyInput is called only for a successful final ASR result with no words.

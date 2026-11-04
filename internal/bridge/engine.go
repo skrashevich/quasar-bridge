@@ -160,6 +160,7 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 }
 func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) {
+	text = stripNeuralRequestPrefix(text)
 	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
 		text = webaddress.Normalize(text)
 	}
