@@ -240,7 +240,7 @@ func main() {
 		if *check {
 			_, err := lc.Complete(ctx, []llm.Message{{Role: "user", Content: "Ответь одним словом: связь"}}, false)
 			if err != nil {
-				slog.Error("LLM check failed")
+				slog.Error("LLM check failed", "error", err)
 				os.Exit(1)
 			}
 			if hc == nil {

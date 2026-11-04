@@ -8,19 +8,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 )
 
 const maxStreamBytes = 2 << 20
 
-// readResponseStream accepts only the terminal response object. Deltas can
-// contain unfinished actions or text and must never reach the tool runner.
+// readResponseStream releases output only after a terminal response.completed.
+// Some subscription responses omit final output, so retain completed items
+// from output_item.done; never turn unfinished deltas into executable actions.
 func readResponseStream(body io.Reader) ([]byte, error) {
 	limited := &io.LimitedReader{R: body, N: maxStreamBytes + 1}
 	scanner := bufio.NewScanner(limited)
 	scanner.Buffer(make([]byte, 4096), maxStreamBytes+1)
 	var data strings.Builder
 	first := true
+	items := make(map[int]jsontext.Value)
 	consume := func() ([]byte, error) {
 		if data.Len() == 0 {
 			return nil, nil
@@ -31,18 +34,29 @@ func readResponseStream(body io.Reader) ([]byte, error) {
 			return nil, errors.New("LLM response stream not completed")
 		}
 		var event struct {
-			Type     string         `json:"type"`
-			Response jsontext.Value `json:"response"`
+			Type        string         `json:"type"`
+			Response    jsontext.Value `json:"response"`
+			OutputIndex *int           `json:"output_index"`
+			Item        jsontext.Value `json:"item"`
 		}
 		if json.Unmarshal([]byte(payload), &event) != nil || event.Type == "" {
 			return nil, errors.New("invalid LLM response stream")
 		}
 		switch event.Type {
+		case "response.output_item.done":
+			if event.OutputIndex == nil || *event.OutputIndex < 0 || len(event.Item) == 0 || string(event.Item) == "null" {
+				return nil, errors.New("invalid LLM response stream item")
+			}
+			if _, exists := items[*event.OutputIndex]; exists {
+				return nil, errors.New("duplicate LLM response stream item")
+			}
+			items[*event.OutputIndex] = event.Item
+			return nil, nil
 		case "response.completed":
 			if len(event.Response) == 0 || string(event.Response) == "null" {
 				return nil, errors.New("invalid LLM response stream")
 			}
-			return event.Response, nil
+			return restoreStreamOutput(event.Response, items)
 		case "response.failed", "error":
 			if err := chatGPTErrorCode([]byte(payload)); err != nil {
 				return nil, err
@@ -88,6 +102,43 @@ func readResponseStream(body io.Reader) ([]byte, error) {
 		return response, err
 	}
 	return nil, errors.New("LLM response stream not completed")
+}
+
+// Prefer authoritative terminal output. Restore completed items only when the
+// successful terminal response omits them, preserving reasoning and tool context.
+func restoreStreamOutput(data []byte, items map[int]jsontext.Value) ([]byte, error) {
+	var response struct {
+		Status string           `json:"status"`
+		Output []jsontext.Value `json:"output"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, errors.New("invalid LLM response stream")
+	}
+	if response.Status != "completed" || len(response.Output) > 0 || len(items) == 0 {
+		return data, nil
+	}
+	indices := make([]int, 0, len(items))
+	for index := range items {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	output := make([]jsontext.Value, 0, len(items))
+	for expected, index := range indices {
+		if index != expected {
+			return nil, errors.New("LLM response stream output missing items")
+		}
+		output = append(output, items[index])
+	}
+	var envelope map[string]jsontext.Value
+	if json.Unmarshal(data, &envelope) != nil {
+		return nil, errors.New("invalid LLM response stream")
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		return nil, errors.New("invalid LLM response stream output")
+	}
+	envelope["output"] = encoded
+	return json.Marshal(envelope)
 }
 
 // Only documented error codes are surfaced; upstream messages may contain
