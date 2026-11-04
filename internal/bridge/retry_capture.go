@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	directives "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
 	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
 	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -40,7 +41,7 @@ func cloudResponseText(r *response.TAliceResponseProto) string {
 }
 func (n *Native) captureCloud(p *nativeRequest, e *server.TServerMessage_TEvent) {
 	if r := e.GetAliceResponse(); r != nil {
-		n.captureDelivered(p, cloudResponseText(r), !r.GetResponse().GetIsStreaming(), !canReplaceResponse(r), false)
+		n.captureDelivered(p, cloudResponseText(r), !r.GetResponse().GetIsStreaming(), cloudReplayHasAction(r.GetResponse().GetDirectives()), false)
 	}
 	if r := e.GetDeferredAliceResponse(); r != nil {
 		base := r.GetBaseResponse()
@@ -70,12 +71,23 @@ func (n *Native) captureCloud(p *nativeRequest, e *server.TServerMessage_TEvent)
 				unknown = unknown[size:]
 			}
 		}
-		action := false
-		for _, d := range base.GetDirectives() {
-			if d.GetType() != "client_action" || d.GetName() != "tts_play_placeholder" {
-				action = true
-			}
-		}
-		n.captureDelivered(p, text, r.GetIsLast(), action, false)
+		n.captureDelivered(p, text, r.GetIsLast(), cloudReplayHasAction(base.GetDirectives()), false)
 	}
+}
+
+// Presentation directives accompany ordinary spoken answers. They must not
+// discard the replay target; unknown directives still invalidate it. This is
+// deliberately separate from the stricter automatic refusal-replacement check.
+func cloudReplayHasAction(ds []*directives.TDirective) bool {
+	for _, d := range ds {
+		if d.GetType() != "client_action" {
+			return true
+		}
+		switch d.GetName() {
+		case "tts_play_placeholder", "draw_animation_directive", "draw_scled_animations":
+		default:
+			return true
+		}
+	}
+	return false
 }
