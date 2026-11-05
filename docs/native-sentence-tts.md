@@ -1,70 +1,75 @@
-# Native sentence streaming TTS (opt-in)
+# Потоковая озвучка ответов нейросети по предложениям штатным голосом Алисы
 
-This proposal lets Quasar Bridge start speaking the first complete phrase of a plain LLM answer while the remaining answer is still being generated. It reuses Yandex Station's existing Alice speech synthesizer, microphone, ASR, UniProxy transport and Opus player. No firmware patches, custom voices, audio transcoding or new playback driver are needed.
+Эта доработка позволяет Quasar Bridge начинать произносить первое готовое предложение обычного ответа нейросети, **пока модель ещё генерирует продолжение**. Используются существующие механизмы Яндекс Станции: штатный синтезатор речи Алисы, микрофон, ASR, транспорт UniProxy и проигрыватель Opus. Изменять прошивку, устанавливать сторонний голос, перекодировать звук или создавать собственный аудиоплеер не требуется.
 
-## Why this is different from existing local_progress
+## Отличие от существующего режима `local_progress`
 
-The existing full-answer route uses Chat Completions with stream=false and eventually calls TtsGenerate once with the complete text. The local_progress option can keep a silent/placeholder audio stream alive until that answer is ready, but does not start speaking the text as the model generates it.
+Обычный маршрут Chat Completions использует `stream=false` и вызывает `TtsGenerate` с целиком готовым ответом. Режим `local_progress` умеет заранее открыть аудиопоток с беззвучной заглушкой, но **не начинает озвучивать текст по мере генерации нейросетью**.
 
-The optional sentence_tts mode is different:
-1. For a tool-free Chat Completions LLM route, read SSE text deltas as they arrive.
-2. Buffer until a real sentence end. For a long opening sentence, a natural clause pause (comma, colon or semicolon) after approximately 32 runes is permitted. Subsequent sentences are kept complete, with natural pauses for unusually long sentences.
-3. Open one initial TtsGenerate with IsStreaming=true and empty Text.
-4. Send the first spoken character and all later generated text through successive DeferredTtsGenerate messages, sharing RequestMessageId and incrementing ChunkNum.
-5. Finish once with IsLast=true, and forward the stock Opus/Ogg data unchanged to the firmware's own player.
+Новый необязательный режим `sentence_tts` работает иначе:
 
-The initial Text is deliberately empty. In controlled tests with IsStreaming=true, UniProxy **ignored the initial TtsGenerate.Text**. This previously caused the entire opening phrase to be missing when it was sent in the initial request rather than through DeferredTtsGenerate.
+1. Для маршрута Chat Completions без вызова инструментов Bridge получает текстовые фрагменты LLM через SSE по мере их появления.
+2. Накапливает текст до окончания предложения. Если первое предложение длинное, допускается ранняя отправка на естественной паузе — запятой, двоеточии или точке с запятой — примерно после 32 символов. Последующие предложения желательно сохранять целиком; исключительно длинные можно делить на естественных паузах.
+3. Открывает **одну** исходную сессию `TtsGenerate` с `IsStreaming=true` и пустым `Text`.
+4. Посылает первый произносимый символ и всё продолжение последовательными сообщениями `DeferredTtsGenerate` с одним `RequestMessageId` и возрастающими `ChunkNum`.
+5. Завершает текст единственным сообщением `IsLast=true` и передаёт полученные от Яндекса Ogg/Opus-данные штатному проигрывателю **без изменений**.
 
-The client-to-server event is DeferredTtsGenerate (event field 34). Its payload contains RequestMessageId (field 1), Text (field 2), IsLast (field 3), and ChunkNum (field 4). TtsGenerate.IsStreaming is field 12 of the TTS message. Current pinned Go proto definitions do not expose the deferred client event, so the implementation encodes its known fields via protobuf unknown-field support; ordinary non-streaming requests use the existing generated types.
+**Почему начальный `Text` пустой:** экспериментально установлено, что при `IsStreaming=true` UniProxy **игнорирует поле `TtsGenerate.Text`**. Когда туда отправляли начало ответа, первые слова пропадали. Поэтому все произносимые символы необходимо передавать через `DeferredTtsGenerate`.
 
-## Evidence from the stock Alice firmware and cloud (Station Lite 1)
+Событие клиента `DeferredTtsGenerate` — поле 34; его полезная нагрузка содержит `RequestMessageId` (поле 1), `Text` (поле 2), `IsLast` (поле 3) и `ChunkNum` (поле 4). `TtsGenerate.IsStreaming` — поле 12. В закреплённой версии Go protobuf-описаний нет готового типа для отложенного клиентского события. Поэтому известные поля кодируются через механизм неизвестных полей protobuf; обычные запросы по-прежнему используют существующие генерируемые типы.
 
-These are **separate** tests from the new Bridge implementation, captured using an unmodified stock Yandex response during a controlled long-story voice request on 2026-11-04.
+## Наблюдения за штатной Алисой на физической Станции Лайт 1
 
-| Observation | Measured result |
+Это **отдельные эксперименты**, не являющиеся тестами новой версии Bridge. 4 ноября 2026 года был записан технический порядок событий во время длинного голосового ответа штатной Алисы, без изменения её прошивки.
+
+| Наблюдение | Результат |
 | --- | --- |
-| ASR final | 16:38:39.272 UTC |
-| First partial text (DeferredAliceResponse) | 16:38:41.086 UTC |
-| TtsSpeak began | 16:38:41.093 UTC |
-| First encoded audio packet | 16:38:41.132 UTC |
-| Firmware began playback | 16:38:41.235 UTC |
-| Final partial text | 16:38:41.689 UTC |
-| Time from ASR final to player start | ~1.963 seconds |
-| Partial server-side text responses | 10 |
-| TtsSpeak network audio streams | 1 |
-| Logical Ogg/Opus sequences inside it | 9 |
-| Lazy TTS streaming flag in that capture | false |
+| Окончательное распознавание речи (ASR) | 16:38:39.272 UTC |
+| Первый частичный текст (`DeferredAliceResponse`) | 16:38:41.086 UTC |
+| Начало `TtsSpeak` | 16:38:41.093 UTC |
+| Первый пакет закодированного звука | 16:38:41.132 UTC |
+| Начало воспроизведения на колонке | 16:38:41.235 UTC |
+| Последний текстовый фрагмент | 16:38:41.689 UTC |
+| От завершения ASR до начала воспроизведения | ~1,963 с |
+| Частичных текстовых ответов сервера | 10 |
+| Сетевых аудиопотоков `TtsSpeak` | 1 |
+| Логических последовательностей Ogg/Opus внутри него | 9 |
+| Флаг `lazy_tts_streaming` | `false` |
 
-The final text arrived **after audible playback began**. Stock Alice therefore demonstrably supports incremental delivery of both text and audio. The nine Ogg logical sequences in a single network audio stream prove that one network stream does not imply one acoustic segment. The listener described that stock response as smooth.
+Последний текстовый фрагмент поступил **после начала звучания речи**. Следовательно, штатная Алиса действительно поддерживает поэтапную передачу текста и звука. Наличие девяти логических Ogg-последовательностей внутри одного сетевого потока показывает, что **один сетевой поток не означает один акустический сегмент**. Пользователь подтвердил, что этот штатный ответ звучал плавно.
 
-We also ran an **isolated synthetic UniProxy A/B experiment** (same Russian paragraph; different boundaries; one TtsGenerate with IsStreaming=true in each run):
+### Сравнение разных способов подачи текста в реальный UniProxy
 
-| Input segmentation | Logical Ogg/Opus sequences | Summed encoded audio duration | Encoded bytes |
+Провели **изолированный синтетический A/B-эксперимент**: один и тот же русский абзац подавался с разными границами фрагментов. Во всех трёх опытах был только один начальный `TtsGenerate(IsStreaming=true)`.
+
+| Как подавался текст | Логических Ogg/Opus-последовательностей | Суммарная длительность звука | Размер закодированных данных |
 | --- | ---: | ---: | ---: |
-| Whole paragraph as one DeferredTtsGenerate | 1 | 11.571 s | 107,871 |
-| 3 sentence-sized deferred inputs | 3 | 11.165 s | 108,736 |
-| 10 inputs of ~16 characters | 10 | 13.794 s | 133,877 |
+| Целый абзац одним `DeferredTtsGenerate` | 1 | 11,571 с | 107 871 байт |
+| Три фрагмента по предложениям | 3 | 11,165 с | 108 736 байт |
+| Десять коротких фрагментов (~16 символов) | 10 | 13,794 с | 133 877 байт |
 
-The 16-character strategy produced 10 separate logical audio sequences and about 2.22 seconds more encoded speech than the one-piece input for the same words. This is consistent with the audible resets of intonation reported for small arbitrary chunks.
+При разбиении по 16 символов синтезировались десять отдельных логических аудиопоследовательностей. Для тех же слов получилось примерно на **2,22 секунды больше звука**, чем при передаче целого абзаца. Это согласуется с субъективно замеченными перезапусками интонации на коротких произвольных границах.
 
-**Limits of the evidence:** It has not been proven that native Alice's internal cloud model always uses exactly one Ogg segment per sentence, or that the segments share neural/prosody state. The same network transport can contain many acoustic segments. The sentence boundary strategy is an empirically motivated latency-versus-naturalness compromise, not a claim to reproduce Yandex's undisclosed internal TTS synthesis algorithm. Stock Alice used server-generated DeferredAliceResponse; our local Bridge uses client-generated DeferredTtsGenerate. These are different protocol directions.
+**Ограничения выводов:** не доказано, что внутренняя облачная модель Яндекса всегда делит звук строго по одному Ogg-сегменту на предложение или сохраняет единое нейросетевое состояние интонации между сегментами. В одном сетевом потоке может находиться много отдельных акустических сегментов. Разбиение по предложениям — **практический компромисс между скоростью первого звука и естественностью речи**, а не полное воспроизведение закрытого алгоритма синтеза Яндекса. Штатное облако использует серверные `DeferredAliceResponse`, тогда как наша интеграция отправляет клиентские `DeferredTtsGenerate`; это разные направления протокола.
 
-## Enable and rollback
+## Включение и откат
 
-The feature defaults **off**, preserving existing behavior. For hybrid mode with a tool-free OpenAI-compatible Chat Completions LLM, add this JSON setting:
+По умолчанию возможность **выключена**, поэтому прежнее поведение сохраняется. Для гибридного режима с обычной моделью Chat Completions, не использующей инструменты, добавьте настройку:
 
-    "sentence_tts": { "enabled": true }
+```json
+"sentence_tts": { "enabled": true }
+```
 
-Keep all other existing configuration unchanged. Restart Bridge to apply settings. The option is intentionally bypassed for assistant tool calls, ChatGPT subscription Responses, Yandex-native routes and special dialogue retry/reset routes; those retain their current, full-response behavior. No extra TTS service is required.
+Остальные настройки менять не нужно. Для применения перезапустите Bridge. Новый режим не затрагивает вызовы инструментов, Responses API подписки ChatGPT, штатные маршруты Яндекса и специальные команды повтора/сброса диалога. Дополнительная TTS-служба не требуется.
 
-To roll back, change enabled to false and restart Bridge. The original full-answer and local_progress routes remain available.
+Для отката установите `enabled: false` и перезапустите Bridge. Обычная озвучка целого ответа и `local_progress` остаются доступны.
 
-## Verification and portability
+## Тесты и переносимость
 
-The regression tests verify a single opening TtsGenerate with empty text, one shared RequestMessageId, monotonically increasing ChunkNum, exactly one final IsLast, full preservation of leading and trailing words (including counting 1 to 30), and that the first deferred speech text goes out before the LLM has generated the remainder. Input boundary tests address numbers, punctuation, quotation marks, long clauses and partial model tokens.
+Регрессионные тесты проверяют единственный начальный `TtsGenerate` с пустым текстом, общий `RequestMessageId`, последовательные `ChunkNum`, единственный заключительный `IsLast`, сохранение всех слов и пунктуации (в том числе при счёте от одного до тридцати) и отправку первого текстового фрагмента для озвучки **до окончания генерации ответа LLM**. Отдельно проверяются числа, знаки препинания, кавычки, длинные фразы и токены, поступающие по частям.
 
-The protocol and synthetic experiments were performed with a rooted Yandex Station Lite 1. **Audible quality, barge-in, interruptions, and firmware support on other Station families still require device-side acceptance testing** before enabling this experimentally in production.
+Протокольные и синтетические эксперименты проведены на Яндекс Станции Лайт 1 с root-доступом. **Качество звучания, остановку/перебивание воспроизведения и поддержку на других семействах Станций ещё необходимо проверить на реальных устройствах** перед включением режима для всех пользователей.
 
-Related protocol information:
+Дополнительная документация по протоколу:
 - https://github.com/v3rt3p/quasar-protos
 - https://hackalice.me/internals/voice/
