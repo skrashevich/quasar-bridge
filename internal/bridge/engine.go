@@ -20,6 +20,10 @@ import (
 type Completer interface {
 	Complete(context.Context, []llm.Message, bool) (string, error)
 }
+type StreamingCompleter interface {
+	CompleteStream(context.Context, []llm.Message, bool, func(string) error) (string, error)
+	SupportsSentenceStreaming() bool
+}
 type HomeHandler interface {
 	Handle(context.Context, string) (string, error)
 }
@@ -199,6 +203,46 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	r.Answer = answer
 	return r, err
 }
+
+// SupportsSentenceStreaming is intentionally conservative: any configured
+// assistant/tool loop keeps its existing full-response behavior.
+func (e *Engine) SupportsSentenceStreaming() bool {
+	if e.Assistant != nil {
+		return false
+	}
+	streamer, ok := e.LLM.(StreamingCompleter)
+	return ok && streamer.SupportsSentenceStreaming()
+}
+
+// FallbackStream preserves the dialogue context and commits only the complete
+// answer to history. It never streams tool calls or structured classifications.
+func (e *Engine) FallbackStream(ctx context.Context, text string, onDelta func(string) error) (Resolution, error) {
+	if !e.SupportsSentenceStreaming() {
+		return e.Fallback(ctx, text)
+	}
+	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
+		text = webaddress.Normalize(text)
+	}
+	r := Resolution{Route: "llm"}
+	ctx, snapshot, ticket := e.dialogue().Start(ctx)
+	if !e.dialogue().Current(ctx, ticket) {
+		return r, context.Canceled
+	}
+	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
+	messages = append(messages, snapshot.Messages...)
+	messages = append(messages, llm.Message{Role: "user", Content: text})
+	streamer := e.LLM.(StreamingCompleter)
+	answer, err := streamer.CompleteStream(ctx, messages, false, onDelta)
+	if !e.dialogue().Current(ctx, ticket) {
+		return r, context.Canceled
+	}
+	if err == nil && !e.dialogue().Commit(ctx, ticket, text, answer, snapshot.PrivateHistory) {
+		return r, context.Canceled
+	}
+	r.Answer = answer
+	return r, err
+}
+
 func containsOne(text string, needles []string) bool {
 	for _, s := range needles {
 		if strings.Contains(text, s) {
