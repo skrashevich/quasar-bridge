@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"quasarbridge/internal/configvoice"
 	"quasarbridge/internal/dialogue"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/playback"
+	"quasarbridge/internal/reply"
 	"quasarbridge/internal/webaddress"
 )
 
@@ -30,22 +32,23 @@ type MusicStarter interface {
 	StartMusic(context.Context, string) (string, error)
 }
 type Engine struct {
-	LLM       Completer
-	Assistant Completer
-	Home      HomeHandler
-	Playback  PlaybackController
-	Music     MusicStarter
-	Dialogue  *dialogue.Store
-	// StripPrefixes — обращения к модели в начале фразы («спроси нейросеть»).
-	// Их срезают перед отправкой запроса, чтобы модель не приняла обращение за
-	// просьбу обратиться к другой нейросети. Пустой список отключает срезание.
+	Configuration bool
+	Recovery      func(context.Context, string) (string, error)
+	AirPlay       AirPlayController
+	LLM           Completer
+	Assistant     Completer
+	Home          HomeHandler
+	Playback      PlaybackController
+	Music         MusicStarter
+	Dialogue      *dialogue.Store
+	// StripPrefixes are model addresses removed only from outbound requests.
+	// An empty list disables stripping.
 	StripPrefixes []string
 	dialogueOnce  sync.Once
 	routing       atomic.Pointer[RoutingPolicy]
 }
 
-// stripModelPrefix убирает обращения из начала фразы. Регистр не важен,
-// разделители после обращения срезаются вместе с ним.
+// stripModelPrefix removes model addresses from the beginning of a request.
 func (e *Engine) stripModelPrefix(text string) string {
 	t := strings.TrimSpace(text)
 	for _, p := range e.StripPrefixes {
@@ -53,8 +56,6 @@ func (e *Engine) stripModelPrefix(text string) string {
 		if prefix == "" || !strings.HasPrefix(low, prefix) {
 			continue
 		}
-		// Дефис и короткое тире не разделители: в «: -2 в третьей степени»
-		// минус относится к вопросу.
 		cut := strings.TrimLeft(t[len(prefix):], " \t\r\n,.:;!—")
 		if cut != "" {
 			return cut
@@ -114,6 +115,44 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "recovery":
+		action := configvoice.RecoveryAction(text)
+		if action == "" || e.Recovery == nil {
+			return result, errors.New("emergency recovery is unavailable")
+		}
+		answer, err := e.Recovery(ctx, action)
+		if err == nil {
+			reply.SuppressListening(ctx)
+		}
+		result.Answer = answer
+		return result, err
+	case "airplay":
+		if e.AirPlay == nil {
+			return Resolution{Route: "yandex"}, nil
+		}
+		action := airPlayCommand(text)
+		if decision.Source == "airplay_media" {
+			controller, ok := e.AirPlay.(AirPlayMediaController)
+			if !ok || !controller.Active(ctx) {
+				return Resolution{Route: "yandex"}, nil
+			}
+			action = airPlayMediaCommand(text)
+			if action == "" {
+				return result, errors.New("unknown AirPlay media control")
+			}
+			answer, err := controller.ControlMedia(ctx, action)
+			result.Answer = answer
+			return result, err
+		}
+		if action == "" {
+			return result, errors.New("unknown AirPlay control")
+		}
+		answer, err := e.AirPlay.Control(ctx, action)
+		if err == nil && action == "start" {
+			reply.SuppressListening(ctx)
+		}
+		result.Answer = answer
+		return result, err
 	case "music":
 		if e.Music == nil {
 			return result, errors.New("music playback is unavailable")
@@ -215,13 +254,15 @@ func (e *Engine) policy() *RoutingPolicy {
 }
 
 type RoutingStatus struct {
-	Revision    string
-	ActiveRules int
+	Revision          string
+	ActiveRules       int
+	ClassifierEnabled bool
+	DefaultRoute      string
 }
 
 func (e *Engine) RoutingStatus() RoutingStatus {
 	p := e.policy()
-	return RoutingStatus{Revision: p.revision, ActiveRules: len(p.rules)}
+	return RoutingStatus{Revision: p.revision, ActiveRules: len(p.rules), ClassifierEnabled: p.classifierEnabled, DefaultRoute: p.defaultRoute}
 }
 func (e *Engine) IsRefusal(text string) bool { return e.policy().isRefusal(text) }
 func IsRefusal(text string) bool             { return builtInRouting.isRefusal(text) }
@@ -237,11 +278,23 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.prepared = true
 	}()
 	p := e.policy()
+	if configvoice.RecoveryAction(text) != "" {
+		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
+	}
+	if e.Configuration && configvoice.InConversation(text, snapshot.Messages) {
+		return RouteDecision{Route: "llm", Source: "bridge_configuration"}
+	}
+	if e.AirPlay != nil && airPlayCommand(text) != "" {
+		return RouteDecision{Route: "airplay", Source: "airplay"}
+	}
 	if isRetryCommand(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue_retry"}
 	}
 	if dialogue.IsReset(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue_reset"}
+	}
+	if controller, ok := e.AirPlay.(AirPlayMediaController); ok && airPlayMediaCommand(text) != "" && controller.Active(ctx) {
+		return RouteDecision{Route: "airplay", Source: "airplay_media"}
 	}
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}
@@ -255,7 +308,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue"}
 	}
-	if p.defaultRoute != "classify" {
+	if !p.classifierEnabled {
 		return RouteDecision{Route: p.defaultRoute, Source: "default"}
 	}
 	failed := RouteDecision{Route: p.classifier.OnError, Source: "classifier_error"}

@@ -1,0 +1,4 @@
+#!/bin/sh
+# quasar-bridge standalone init hook
+export QUASAR_DATA_DIR=@STATE@
+exec sh "$QUASAR_DATA_DIR/app/control.sh" "${1:-start}"

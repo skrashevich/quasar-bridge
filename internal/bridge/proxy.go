@@ -13,10 +13,11 @@ import (
 )
 
 type Proxy struct {
-	Journal    *journal.Writer
-	Upstream   string
-	Observer   func(direction string, kind websocket.MessageType, data []byte)
-	NewSession func(context.Context, Sender, Sender) Session
+	Journal       *journal.Writer
+	Subscriptions *SubscriptionMonitor
+	Upstream      string
+	Observer      func(direction string, kind websocket.MessageType, data []byte)
+	NewSession    func(context.Context, Sender, Sender) Session
 }
 
 type Sender func(context.Context, websocket.MessageType, []byte) error
@@ -90,6 +91,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if n, ok := session.(*Native); ok && trace != nil {
 			n.OnRoute = trace.route
 		}
+	}
+	if p.Subscriptions != nil {
+		session = p.Subscriptions.NewSession(up.Write, downSend, session)
+	}
+	if session != nil {
 		defer session.Close()
 	}
 	copyMessages := func(dst, src *websocket.Conn, direction string) {

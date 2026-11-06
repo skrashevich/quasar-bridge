@@ -21,8 +21,18 @@
   "llm_hosted_tools": [],
   "home_warm_area": "",
   "listen_after_reply": true,
+  "airplay": {
+    "disabled": false
+  },
   "routing": {
     "rules": [
+      {
+        "name": "bridge_updates",
+        "route": "llm",
+        "match": {
+          "regex": "^\\s*(?:алиса[,\\s]+)?(?:пожалуйста[,\\s]+)?(?:спроси\\s+(?:нейросеть|свою\\s+модель)[:,\\s]+)?(?:(?:проверь(?:те)?\\s+(?:наличие\\s+)?обновлени[яй]|есть\\s+ли\\s+(?:новые\\s+)?обновления|доступны\\s+ли\\s+(?:новые\\s+)?обновления)|установи(?:те)?\\s+(?:обновлени[ея]|новую\\s+версию))(?:\\s+(?:для\\s+)?(?:quasar[\\s-]+bridge|квазар[\\s-]+(?:бридж|мост)|(?:голосового\\s+)?моста))?(?:[,.\\s!?]+пожалуйста)?[,.\\s!?]*$"
+        }
+      },
       {
         "name": "speaker_playback",
         "route": "yandex",
@@ -243,6 +253,8 @@
     "history": true,
     "time": true,
     "play_sound": false,
+    "updates": true,
+    "configuration": true,
     "timezone": "UTC",
     "max_rounds": 3,
     "max_calls": 4,

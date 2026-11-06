@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Диагностика — Quasar Bridge</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <div><p class="product">Quasar Bridge</p><h1>Диагностика</h1></div>
+    <span id="version" class="version"></span>
+  </header>
+  <p class="intro">Повторите действие, с которым возникла проблема. Новые события появятся здесь автоматически.</p>
+  <dl class="state" aria-label="Состояние AirPlay">
+    <div><dt>Приёмник AirPlay</dt><dd id="receiver">Проверяем…</dd></div>
+    <div><dt>Отправитель</dt><dd id="sender">Проверяем…</dd></div>
+    <div><dt>Воспроизведение</dt><dd id="playing">Проверяем…</dd></div>
+  </dl>
+  <section aria-labelledby="log-title">
+    <div class="toolbar">
+      <h2 id="log-title">Журнал событий</h2>
+      <div class="actions">
+        <button id="pause" type="button" aria-pressed="false">Приостановить обновление</button>
+        <a class="download" href="download" download>Скачать журнал (.txt)</a>
+      </div>
+    </div>
+    <p id="connection" role="status">Подключаемся к Bridge…</p>
+    <pre id="log" tabindex="0" aria-label="Журнал событий Quasar Bridge">Загружаем журнал…</pre>
+    <p id="limit" class="note">Доступны события с запуска Bridge, до 1 МиБ. Файл содержит журнал, версию и текущее состояние AirPlay.</p>
+  </section>
+  <footer>Для разбора проблемы приложите скачанный файл к issue и укажите модель колонки, приложение и версию iOS. Статус воспроизведения сам по себе не подтверждает наличие звука.</footer>
+</main>
+</body>
+</html>

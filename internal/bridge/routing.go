@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"quasarbridge/internal/dialogue"
+	"quasarbridge/internal/update"
 	"regexp"
 	"strings"
 )
@@ -30,6 +31,8 @@ type RoutingMatch struct {
 	Regex             string     `json:"regex,omitempty"`
 }
 type ClassifierConfig struct {
+	// Nil preserves legacy default_route=classify / direct-route semantics.
+	Enabled   *bool  `json:"enabled,omitempty"`
 	Prompt    string `json:"prompt"`
 	TimeoutMS int    `json:"timeout_ms"`
 	OnError   string `json:"on_error"`
@@ -59,14 +62,32 @@ type RoutingPolicy struct {
 	rules                           []compiledRule
 	defaultRoute                    string
 	classifier                      ClassifierConfig
+	classifierEnabled               bool
 	refusalEnabled                  bool
 	refusalPrefixes, refusalPhrases []string
 	revision                        string
 }
 
+func (c RoutingConfig) ClassifierEnabled() bool {
+	if c.Classifier.Enabled != nil {
+		return *c.Classifier.Enabled
+	}
+	return c.DefaultRoute == "classify"
+}
+
+// DefaultDestination resolves the legacy classify marker to its configured
+// direct fallback. New voice settings store a direct default independently.
+func (c RoutingConfig) DefaultDestination() string {
+	if c.DefaultRoute == "classify" {
+		return c.Classifier.OnError
+	}
+	return c.DefaultRoute
+}
+
 func DefaultRoutingConfig() RoutingConfig {
 	return RoutingConfig{
 		Rules: []RoutingRule{
+			{Name: "bridge_updates", Route: "llm", Match: RoutingMatch{Regex: update.RequestPattern}},
 			{Name: "speaker_playback", Route: "yandex", Match: RoutingMatch{Regex: `^\s*(?:алиса[,\s]+)?(?:пожалуйста[,\s]+)?(?:хватит|стоп|пауза|останови(?:те)?|(?:останови(?:те)?|выключи(?:те)?|прекрати(?:те)?) (?:музыку|воспроизведение|песню|песни|трек|радио)|поставь(?:те)? на паузу|(?:продолжи(?:те)?|возобнови(?:те)?) (?:музыку|воспроизведение|песню|трек))[,\s]*(?:пожалуйста)?[.!?]*\s*$`}},
 			{Name: "music_from_site", Route: "llm", Match: RoutingMatch{
 				ContainsAllGroups: [][]string{
@@ -131,7 +152,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	if strings.TrimSpace(cfg.Classifier.Prompt) == "" {
 		return nil, errors.New("classifier prompt must not be empty")
 	}
-	p := &RoutingPolicy{defaultRoute: cfg.DefaultRoute, classifier: cfg.Classifier, refusalEnabled: cfg.Refusal.Enabled}
+	p := &RoutingPolicy{defaultRoute: cfg.DefaultDestination(), classifier: cfg.Classifier, classifierEnabled: cfg.ClassifierEnabled(), refusalEnabled: cfg.Refusal.Enabled}
 	names := map[string]bool{}
 	for i, rule := range cfg.Rules {
 		fail := func(reason string) (*RoutingPolicy, error) { return nil, fmt.Errorf("routing rule %d: %s", i, reason) }
@@ -232,6 +253,21 @@ func (p *RoutingPolicy) match(text string) (RouteDecision, bool) {
 		return RouteDecision{Route: r.route, Rule: r.name, Source: "rule"}, true
 	}
 	return RouteDecision{}, false
+}
+
+func (p *RoutingPolicy) Revision() string { return p.revision }
+
+// Preview evaluates only static rules and the configured default. It never
+// calls a classifier, touches dialogue state or executes the selected handler.
+// Route=classify means that a real request would still need classification.
+func (p *RoutingPolicy) Preview(text string) RouteDecision {
+	if decision, ok := p.match(text); ok {
+		return decision
+	}
+	if p.classifierEnabled {
+		return RouteDecision{Route: "classify", Source: "default"}
+	}
+	return RouteDecision{Route: p.defaultRoute, Source: "default"}
 }
 func (p *RoutingPolicy) isRefusal(text string) bool {
 	if !p.refusalEnabled {

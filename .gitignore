@@ -5,6 +5,7 @@
 /config*.json
 !/config*.example.json
 /runtime.env
+chatgpt-auth*.json
 *.env
 !*.env.example
 *.key
@@ -31,6 +32,5 @@ __pycache__/
 *.pyc
 
 /dist/
-*.yap
 *.jsonl
 *.jsonl.*

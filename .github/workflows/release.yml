@@ -1,4 +1,4 @@
-name: release
+name: standalone release
 
 on:
   push:
@@ -15,9 +15,10 @@ concurrency:
 
 jobs:
   build:
+    # Reuse CI's integrity-checked UPX archives, without rebuilding for publication.
     uses: ./.github/workflows/ci.yml
     with:
-      upload-yap: true
+      upload-speaker: true
 
   publish:
     if: github.event_name == 'push'
@@ -29,7 +30,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: yap-release
+          pattern: speaker-release-*
+          merge-multiple: true
           path: dist
       - name: Upload, verify and publish
         shell: bash
@@ -39,9 +41,11 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          package="quasar-bridge-${RELEASE_TAG#v}-linux-arm64.yap"
           cd dist
-          sha256sum --check "$package.sha256"
+          for arch in arm64 armv7; do
+            sha256sum --check "quasar-bridge-linux-$arch.tar.gz.sha256"
+          done
+          sha256sum --check quasar-bridge-source.tar.gz.sha256
 
           if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
             if [ "$draft" != true ]; then
@@ -53,11 +57,21 @@ jobs:
               --title "$RELEASE_TAG" --generate-notes
           fi
           # A failed upload leaves a draft that a rerun can complete.
-          gh release upload "$RELEASE_TAG" "$package" "$package.sha256" --clobber
+          gh release upload "$RELEASE_TAG" --clobber \
+            ./install.sh \
+            ./quasar-bridge-source.tar.gz ./quasar-bridge-source.tar.gz.sha256 \
+            ./quasar-bridge-linux-arm64.tar.gz ./quasar-bridge-linux-arm64.tar.gz.sha256 \
+            ./quasar-bridge-linux-armv7.tar.gz ./quasar-bridge-linux-armv7.tar.gz.sha256
           downloaded=$(mktemp -d)
           gh release download "$RELEASE_TAG" --dir "$downloaded" \
-            --pattern "$package" --pattern "$package.sha256"
-          cmp "$package" "$downloaded/$package"
-          cmp "$package.sha256" "$downloaded/$package.sha256"
+            --pattern '*.tar.gz' --pattern '*.tar.gz.sha256' --pattern install.sh
+          cmp install.sh "$downloaded/install.sh"
+          for arch in arm64 armv7; do
+            package="quasar-bridge-linux-$arch.tar.gz"
+            cmp "$package" "$downloaded/$package"
+            cmp "$package.sha256" "$downloaded/$package.sha256"
+          done
+          cmp quasar-bridge-source.tar.gz "$downloaded/quasar-bridge-source.tar.gz"
+          cmp quasar-bridge-source.tar.gz.sha256 "$downloaded/quasar-bridge-source.tar.gz.sha256"
           gh release edit "$RELEASE_TAG" --draft=false
           gh release view "$RELEASE_TAG" --json url --jq .url
