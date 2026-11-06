@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/coder/websocket"
 	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
@@ -23,9 +22,7 @@ import (
 	"quasarbridge/internal/wire"
 )
 
-const nativeSoundCloudPrefix = "quasar_soundcloud_"
-
-// Invalid reserved events are still consumed; no provider or cloud sees malformed payloads.
+// Decode bounded native event data without retaining raw callback payloads.
 func soundCloudPayloadObject(e *common.TEvent) map[string]any {
 	var payload map[string]any
 	if p := e.GetPayload(); p != nil {
@@ -42,21 +39,10 @@ func soundCloudPayloadObject(e *common.TEvent) map[string]any {
 	return payload
 }
 
-func soundCloudEventPayload(e *common.TEvent) map[string]any {
-	payload := soundCloudPayloadObject(e)
-	for _, key := range []string{"session_id", "stream_id", "token"} {
-		v, ok := payload[key].(string)
-		if !ok || len(v) == 0 || len(v) > 256 || strings.TrimSpace(v) != v || strings.ContainsFunc(v, unicode.IsControl) {
-			return nil
-		}
-	}
-	return payload
-}
-
-func (n *Native) soundCloudEvent(req *request.TAliceRequestProto, h *header.TEventHeader) error {
+func (n *Native) soundCloudEvent(req *request.TAliceRequestProto, h *header.TEventHeader, event soundCloudProtocolEvent) error {
 	logSoundCloudCallback(req)
 	id := h.GetMessageId()
-	if id == "" || len(id) > 256 || strings.TrimSpace(id) != id || strings.ContainsFunc(id, unicode.IsControl) {
+	if !validSoundCloudIdentityField(id) {
 		return nil
 	}
 	scope := "connection:" + n.connectionScope
@@ -67,7 +53,8 @@ func (n *Native) soundCloudEvent(req *request.TAliceRequestProto, h *header.TEve
 	}
 	ctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
 	ctx = sound.WithPlaybackState(ctx, nativePlaybackState(req))
-	p := &nativeRequest{id: id, header: proto.Clone(h).(*header.TEventHeader), request: proto.Clone(req).(*request.TAliceRequestProto), ctx: ctx, cancel: cancel, local: true, started: true, isText: true, silentEvent: true, route: "soundcloud"}
+	ctx = context.WithValue(ctx, soundCloudControlContextKey{}, true)
+	p := &nativeRequest{id: id, header: proto.Clone(h).(*header.TEventHeader), request: proto.Clone(req).(*request.TAliceRequestProto), ctx: ctx, cancel: cancel, local: true, started: true, isText: true, silentEvent: true, musicPrefetch: event.prefetch, route: "soundcloud"}
 	p.ctx = sound.WithPlayer(ctx, func(ctx context.Context, r sound.Request) error { return n.queueSound(ctx, p, r) })
 	n.mu.Lock()
 	if n.requests[id] != nil || len(n.requests) >= 128 || n.ctx.Err() != nil {
@@ -86,13 +73,28 @@ func (n *Native) soundCloudEvent(req *request.TAliceRequestProto, h *header.TEve
 	})
 	n.requests[id] = p
 	n.mu.Unlock()
-	payload := soundCloudEventPayload(req.GetRequest().GetEvent())
 	n.wg.Go(func() {
-		if handler, ok := n.resolver.(interface {
+		if event.prefetch {
+			if handler, ok := n.resolver.(interface {
+				PrefetchSoundCloud(context.Context, string, string, string) (bool, error)
+			}); ok && event.warmUp && event.payload != nil {
+				handled, err := handler.PrefetchSoundCloud(p.ctx, event.payload["session_id"].(string), event.payload["stream_id"].(string), event.payload["token"].(string))
+				if err != nil || !handled {
+					n.discardSound(p)
+				}
+			}
+		} else if handler, ok := n.resolver.(interface {
 			HandleEvent(context.Context, string, map[string]any) (bool, error)
-		}); ok && payload != nil {
-			handled, err := handler.HandleEvent(p.ctx, req.GetRequest().GetEvent().GetName(), payload)
-			if err != nil || !handled {
+		}); ok && event.payload != nil {
+			// A delivered prefetch must be committed before EOF can decide to
+			// fall back to Push. Do not hold this gate again while replying.
+			if err := n.dispatchSound(p, func() error {
+				handled, err := handler.HandleEvent(p.ctx, event.name, event.payload)
+				if err != nil || !handled {
+					n.discardSound(p)
+				}
+				return nil
+			}); err != nil {
 				n.discardSound(p)
 			}
 		}
@@ -104,14 +106,34 @@ func (n *Native) soundCloudEvent(req *request.TAliceRequestProto, h *header.TEve
 	return nil
 }
 
-// Complete lifecycle requests silently. Station may ignore their AliceResponse
-// directives, so next-track audio uses a separate unsolicited Push in the same
-// per-speaker dispatch batch, revalidated after the response write.
+// Lifecycle responses can be ignored by the player. Fallback audio therefore
+// uses Push, while queue warm-up must stage audio in its correlated response.
 func (n *Native) replySoundCloudEvent(p *nativeRequest) error {
 	if err := p.ctx.Err(); err != nil {
 		return err
 	}
 	if err := n.ack(p); err != nil {
+		return err
+	}
+	if err := n.writeSoundCloudResponse(p, nil); err != nil {
+		return err
+	}
+	directives := n.takeSound(p)
+	if len(directives) == 0 {
+		return nil
+	}
+	message := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}, Event: &server.TServerMessage_TEvent_Push{Push: &push.TPush{PushIds: []string{newID()}, Directives: directives}}}}}
+	b, err := (wire.Frame{Server: message, Prefix: []byte("AAPI")}).Marshal()
+	if err != nil {
+		return err
+	}
+	err = n.down(p.ctx, websocket.MessageBinary, b)
+	slog.Info("native_soundcloud_callback_push", "directives", len(directives), "sent", err == nil)
+	return err
+}
+
+func (n *Native) writeSoundCloudResponse(p *nativeRequest, directives []*soundDirective) error {
+	if err := p.ctx.Err(); err != nil {
 		return err
 	}
 	requestID := p.request.GetHeader().GetRequestId()
@@ -121,39 +143,57 @@ func (n *Native) replySoundCloudEvent(p *nativeRequest) error {
 	answer := &response.TAliceResponseProto{
 		Header:        &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())},
 		VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{},
-		Response:      &response.TAliceResponseProto_TResponse{},
+		Response:      &response.TAliceResponseProto_TResponse{Directives: directives},
 	}
 	b, err := (wire.Frame{Server: &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: answer}}}}, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err
 	}
 	err = n.down(p.ctx, websocket.MessageBinary, b)
-	slog.Info("native_soundcloud_callback_response", "directives", 0, "sent", err == nil)
-	if err != nil {
+	slog.Info("native_soundcloud_callback_response", "directives", len(directives), "sent", err == nil)
+	return err
+}
+
+func (n *Native) replySoundCloudPrefetch(p *nativeRequest) error {
+	if err := p.ctx.Err(); err != nil {
 		return err
 	}
-	// Both ACK and empty response can block. Validate only after these writes;
-	// the caller's dispatch gate prevents a newer music batch overtaking the Push.
+	if err := n.ack(p); err != nil {
+		return err
+	}
 	directives := n.takeSound(p)
+	if err := n.writeSoundCloudResponse(p, directives); err != nil {
+		return err
+	}
 	if len(directives) == 0 {
 		return nil
 	}
-	message := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}, Event: &server.TServerMessage_TEvent_Push{Push: &push.TPush{PushIds: []string{newID()}, Directives: directives}}}}}
-	b, err = (wire.Frame{Server: message, Prefix: []byte("AAPI")}).Marshal()
-	if err != nil {
-		return err
+	n.mu.Lock()
+	queued := *p.soundRequest
+	n.mu.Unlock()
+	if queued.Prefetch {
+		if handler, ok := n.resolver.(interface {
+			SoundCloudPrefetchDelivered(context.Context, sound.Request)
+		}); ok {
+			handler.SoundCloudPrefetchDelivered(p.ctx, queued)
+		}
 	}
-	err = n.down(p.ctx, websocket.MessageBinary, b)
-	slog.Info("native_soundcloud_callback_push", "directives", len(directives), "sent", err == nil)
-	return err
+	return nil
 }
 
 // Log structure and bounded numeric player state only, never opaque callback data.
 func logSoundCloudCallback(req *request.TAliceRequestProto) {
 	event := req.GetRequest().GetEvent()
-	action := strings.TrimPrefix(event.GetName(), nativeSoundCloudPrefix)
+	decoded := decodeSoundCloudProtocolEvent(event)
+	action := strings.TrimPrefix(decoded.name, nativeMusicCallbackPrefix)
+	if decoded.prefetch {
+		action = "queue"
+		if decoded.warmUp {
+			action = "warmup"
+		}
+	}
 	switch action {
-	case "started", "stopped", "finished", "failed":
+	case "started", "stopped", "finished", "failed", "queue", "warmup":
 	default:
 		action = "unknown"
 	}
@@ -197,5 +237,5 @@ func logSoundCloudCallback(req *request.TAliceRequestProto) {
 	} else if req.GetApplication().GetUuid() != "" {
 		scopeKind = "uuid"
 	}
-	slog.Info("native_soundcloud_callback", "scope_kind", scopeKind, "action", action, "ignore_answer", event.GetIgnoreAnswer(), "payload_keys", keys, "payload_valid", soundCloudEventPayload(event) != nil, "state_present", state != nil, "player_state", playerState, "has_stream", player.GetCurrentlyPlaying().GetStreamId() != "", "offset_known", player != nil && player.OffsetMs != nil, "offset_ms", max(0, player.GetOffsetMs()), "duration_known", player != nil && player.DurationMs != nil, "duration_ms", max(0, player.GetDurationMs()))
+	slog.Info("native_soundcloud_callback", "scope_kind", scopeKind, "action", action, "ignore_answer", event.GetIgnoreAnswer(), "payload_keys", keys, "payload_valid", decoded.payload != nil, "state_present", state != nil, "player_state", playerState, "has_stream", player.GetCurrentlyPlaying().GetStreamId() != "", "offset_known", player != nil && player.OffsetMs != nil, "offset_ms", max(0, player.GetOffsetMs()), "duration_known", player != nil && player.DurationMs != nil, "duration_ms", max(0, player.GetDurationMs()))
 }

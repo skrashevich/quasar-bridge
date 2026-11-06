@@ -18,6 +18,11 @@ import (
 
 type soundCloudControlContextKey struct{}
 
+type soundCloudControlProvider interface {
+	CanControl(context.Context, sound.Control) bool
+	HandleControl(context.Context, sound.Control) (string, error)
+}
+
 func (e *Engine) soundCloudControlAvailable(ctx context.Context) bool {
 	controller, ok := e.AirPlay.(AirPlayMediaController)
 	return !ok || !controller.Active(ctx)
@@ -25,7 +30,7 @@ func (e *Engine) soundCloudControlAvailable(ctx context.Context) bool {
 
 // Only semantic controls observed from Midi's local PlaybackControlCapability
 // are translated. Analytics labels are deliberately not used as commands.
-func soundCloudSemanticControl(event *common.TEvent) string {
+func soundCloudSemanticControl(event *common.TEvent) sound.Control {
 	if event.GetName() != "@@mm_semantic_frame" || strings.TrimSpace(event.GetText()) != "" {
 		return ""
 	}
@@ -42,13 +47,13 @@ func soundCloudSemanticControl(event *common.TEvent) string {
 		return ""
 	}
 	if c := frame.GetPlayerContinueSemanticFrame(); c != nil && c.PlayerType == nil {
-		return "продолжи музыку"
+		return sound.ControlResume
 	}
 	if c := frame.GetPlayerNextTrackSemanticFrame(); c != nil && !c.GetSetPause().GetBoolValue() {
-		return "следующий трек"
+		return sound.ControlNext
 	}
 	if c := frame.GetPlayerPrevTrackSemanticFrame(); c != nil && !c.GetSetPause().GetBoolValue() {
-		return "предыдущий трек"
+		return sound.ControlPrevious
 	}
 	return ""
 }
@@ -70,7 +75,7 @@ func knownSoundCloudSemanticFields(message protoreflect.Message) bool {
 }
 
 // Native controls reserve music ordering without starting a conversational turn.
-func (e *Engine) PrepareSoundCloudControl(ctx context.Context, text string) (context.Context, bool) {
+func (e *Engine) PrepareSoundCloudControl(ctx context.Context, control sound.Control) (context.Context, bool) {
 	// Reserve arrival order before provider ownership can wait on its state lock.
 	// Admission still uses the unsequenced observation so a stale sequence cannot
 	// turn the provider's stale-request guard into a claim on foreign playback.
@@ -79,32 +84,37 @@ func (e *Engine) PrepareSoundCloudControl(ctx context.Context, text string) (con
 	if ctx.Err() != nil || !state.Present || state.StreamID == "" || e.SoundCloud == nil {
 		return ctx, false
 	}
+	provider, ok := e.SoundCloud.(soundCloudControlProvider)
+	if !ok {
+		return ctx, false
+	}
 	if !e.soundCloudControlAvailable(ctx) {
 		return ctx, false
 	}
-	if !e.SoundCloud.CanHandle(ctx, text) {
+	if !provider.CanControl(ctx, control) {
 		return ctx, false
 	}
 	ctx = e.prepareComparisonInput(sequenced)
 	return context.WithValue(e.ComparisonContext(ctx), soundCloudControlContextKey{}, true), true
 }
 
-func (e *Engine) HandleSoundCloudControl(ctx context.Context, text string) error {
-	if e.SoundCloud == nil || ctx.Err() != nil {
+func (e *Engine) HandleSoundCloudControl(ctx context.Context, control sound.Control) error {
+	provider, ok := e.SoundCloud.(soundCloudControlProvider)
+	if !ok || ctx.Err() != nil {
 		return context.Canceled
 	}
 	if !e.soundCloudControlAvailable(ctx) {
 		return context.Canceled
 	}
-	_, err := e.SoundCloud.Handle(ctx, text)
+	_, err := provider.HandleControl(ctx, control)
 	return err
 }
 
 func (n *Native) soundCloudControl(req *request.TAliceRequestProto, h *header.TEventHeader) (bool, error) {
 	command := soundCloudSemanticControl(req.GetRequest().GetEvent())
 	handler, ok := n.resolver.(interface {
-		PrepareSoundCloudControl(context.Context, string) (context.Context, bool)
-		HandleSoundCloudControl(context.Context, string) error
+		PrepareSoundCloudControl(context.Context, sound.Control) (context.Context, bool)
+		HandleSoundCloudControl(context.Context, sound.Control) error
 	})
 	id := h.GetMessageId()
 	if !ok || command == "" || id == "" || len(id) > 256 || strings.TrimSpace(id) != id || strings.ContainsFunc(id, unicode.IsControl) {

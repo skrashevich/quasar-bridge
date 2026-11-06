@@ -25,22 +25,31 @@ import (
 // Captured from Midi's local PlaybackControlCapability PLAY request after pause.
 const midiContinueFrame = "0a07aa03041a020801121310031a0f706c617965725f636f6e74696e7565"
 
-type blockingSemanticControlProvider struct {
+type semanticControlProvider struct {
 	soundCloudStub
-	canHandle func(context.Context, string) bool
+	can        bool
+	canControl func(context.Context, sound.Control) bool
+	control    func(context.Context, sound.Control) (string, error)
 }
 
-func (p blockingSemanticControlProvider) CanHandle(ctx context.Context, command string) bool {
-	return p.canHandle(ctx, command)
+func (p semanticControlProvider) CanControl(ctx context.Context, control sound.Control) bool {
+	if p.canControl != nil {
+		return p.canControl(ctx, control)
+	}
+	return p.can
+}
+
+func (p semanticControlProvider) HandleControl(ctx context.Context, control sound.Control) (string, error) {
+	return p.control(ctx, control)
 }
 
 func TestNativeSoundCloudSemanticArrivalBeforeBlockedOwnership(t *testing.T) {
 	raw, _ := hex.DecodeString(midiContinueFrame)
 	entered, release := make(chan struct{}), make(chan struct{})
-	e := &Engine{SoundCloud: blockingSemanticControlProvider{soundCloudStub: soundCloudStub{handle: func(context.Context, string) (string, error) {
+	e := &Engine{SoundCloud: semanticControlProvider{control: func(context.Context, sound.Control) (string, error) {
 		t.Error("older native control executed after newer input")
 		return "", nil
-	}}, canHandle: func(ctx context.Context, _ string) bool {
+	}, canControl: func(ctx context.Context, _ sound.Control) bool {
 		if sound.RequestSequence(ctx) != 0 {
 			t.Error("ownership check used stale-request shortcut")
 		}
@@ -82,7 +91,7 @@ func TestNativeSoundCloudSemanticDuplicateDoesNotCancelControl(t *testing.T) {
 	raw, _ := hex.DecodeString(midiContinueFrame)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
-	e := &Engine{SoundCloud: soundCloudStub{can: true, handle: func(ctx context.Context, _ string) (string, error) {
+	e := &Engine{SoundCloud: semanticControlProvider{can: true, control: func(ctx context.Context, _ sound.Control) (string, error) {
 		calls.Add(1)
 		close(entered)
 		select {
@@ -120,10 +129,10 @@ func TestSoundCloudSemanticAllowedFrames(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		frame *common.TTypedSemanticFrame
-		want  string
+		want  sound.Control
 	}{
-		{"next", &common.TTypedSemanticFrame{Type: &common.TTypedSemanticFrame_PlayerNextTrackSemanticFrame{PlayerNextTrackSemanticFrame: &media.TPlayerNextTrackSemanticFrame{}}}, "следующий трек"},
-		{"previous", &common.TTypedSemanticFrame{Type: &common.TTypedSemanticFrame_PlayerPrevTrackSemanticFrame{PlayerPrevTrackSemanticFrame: &media.TPlayerPrevTrackSemanticFrame{}}}, "предыдущий трек"},
+		{"next", &common.TTypedSemanticFrame{Type: &common.TTypedSemanticFrame_PlayerNextTrackSemanticFrame{PlayerNextTrackSemanticFrame: &media.TPlayerNextTrackSemanticFrame{}}}, sound.ControlNext},
+		{"previous", &common.TTypedSemanticFrame{Type: &common.TTypedSemanticFrame_PlayerPrevTrackSemanticFrame{PlayerPrevTrackSemanticFrame: &media.TPlayerPrevTrackSemanticFrame{}}}, sound.ControlPrevious},
 		{"next-paused", &common.TTypedSemanticFrame{Type: &common.TTypedSemanticFrame_PlayerNextTrackSemanticFrame{PlayerNextTrackSemanticFrame: &media.TPlayerNextTrackSemanticFrame{SetPause: &slot.TBoolSlot{Value: &slot.TBoolSlot_BoolValue{BoolValue: true}}}}}, ""},
 		{"unsupported-shuffle", &common.TTypedSemanticFrame{Type: &common.TTypedSemanticFrame_PlayerShuffleSemanticFrame{PlayerShuffleSemanticFrame: &media.TPlayerShuffleSemanticFrame{}}}, ""},
 		{"video-target", &common.TTypedSemanticFrame{Type: &common.TTypedSemanticFrame_PlayerContinueSemanticFrame{PlayerContinueSemanticFrame: &media.TPlayerContinueSemanticFrame{PlayerType: &media.TPlayerTypeSlot{Value: &media.TPlayerTypeSlot_PlayerTypeValue{PlayerTypeValue: media.TPlayerTypeSlot_video}}}}}, ""},
@@ -144,9 +153,9 @@ func TestSoundCloudSemanticAllowedFrames(t *testing.T) {
 func TestNativeSoundCloudSemanticContinueSilentLocal(t *testing.T) {
 	raw, _ := hex.DecodeString(midiContinueFrame)
 	var calls atomic.Int32
-	e := &Engine{SoundCloud: soundCloudStub{can: true, handle: func(ctx context.Context, text string) (string, error) {
+	e := &Engine{SoundCloud: semanticControlProvider{can: true, control: func(ctx context.Context, control sound.Control) (string, error) {
 		calls.Add(1)
-		if text != "продолжи музыку" || dialogue.SpeakerKey(ctx) != dialogue.SpeakerKey(dialogue.WithSpeaker(t.Context(), "device:control-speaker")) || sound.CurrentPlayback(ctx).StreamID != "control-stream" || sound.RequestSequence(ctx) == 0 {
+		if control != sound.ControlResume || dialogue.SpeakerKey(ctx) != dialogue.SpeakerKey(dialogue.WithSpeaker(t.Context(), "device:control-speaker")) || sound.CurrentPlayback(ctx).StreamID != "control-stream" || sound.RequestSequence(ctx) == 0 {
 			t.Error("native control lost its command, speaker, observation or ordering")
 		}
 		return "Must not be spoken", sound.Play(ctx, sound.Request{URL: "https://audio.example/resumed.m3u8"})
@@ -177,7 +186,7 @@ func TestNativeSoundCloudSemanticControlSupersessionAndAirPlay(t *testing.T) {
 			raw, _ := hex.DecodeString(midiContinueFrame)
 			entered, release := make(chan struct{}), make(chan struct{})
 			airplay := &airPlayMediaFake{}
-			e := &Engine{AirPlay: airplay, SoundCloud: soundCloudStub{can: true, handle: func(ctx context.Context, _ string) (string, error) {
+			e := &Engine{AirPlay: airplay, SoundCloud: semanticControlProvider{can: true, control: func(ctx context.Context, _ sound.Control) (string, error) {
 				close(entered)
 				<-release
 				return "", sound.Play(ctx, sound.Request{URL: "https://audio.example/resumed.m3u8", Provider: "SoundCloud", SessionID: "session", StreamID: "stream", CallbackToken: "token", Generation: 1})
@@ -223,7 +232,7 @@ func TestNativeSoundCloudSemanticControlPassThrough(t *testing.T) {
 		{"unknown-envelope", protowire.AppendVarint(protowire.AppendTag(append([]byte(nil), valid...), 1000, protowire.VarintType), 1), true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &Engine{SoundCloud: soundCloudStub{can: tc.owned, handle: func(context.Context, string) (string, error) {
+			e := &Engine{SoundCloud: semanticControlProvider{can: tc.owned, control: func(context.Context, sound.Control) (string, error) {
 				t.Fatal("unclaimed semantic control reached SoundCloud")
 				return "", nil
 			}}}
@@ -247,7 +256,7 @@ func TestNativeSoundCloudSemanticRequiresPlaybackObservation(t *testing.T) {
 	raw, _ := hex.DecodeString(midiContinueFrame)
 	for _, missing := range []string{"state", "stream"} {
 		t.Run(missing, func(t *testing.T) {
-			e := &Engine{SoundCloud: soundCloudStub{can: true, handle: func(context.Context, string) (string, error) {
+			e := &Engine{SoundCloud: semanticControlProvider{can: true, control: func(context.Context, sound.Control) (string, error) {
 				t.Fatal("missing playback observation was claimed")
 				return "", nil
 			}}}
@@ -304,7 +313,7 @@ func TestNativeSoundCloudSemanticRealProviderScope(t *testing.T) {
 			}
 			silentSoundCloudResponse(t, down)
 			ds := soundCloudPushDirectives(t, down)
-			if len(ds) != 1 || ds[0].GetPayload().GetFields()["provider_name"].GetStringValue() != "SoundCloud" || ds[0].GetPayload().GetFields()["stream"].GetStructValue().GetFields()["offset_ms"].GetNumberValue() != 12000 {
+			if len(ds) != 2 || ds[1].GetName() != nativeMusicGetNext || ds[0].GetPayload().GetFields()["provider_name"].GetStringValue() != "SoundCloud" || ds[0].GetPayload().GetFields()["stream"].GetStructValue().GetFields()["offset_ms"].GetNumberValue() != 12000 {
 				t.Fatal("owned control did not resume exact SoundCloud position")
 			}
 			n.wg.Wait()
@@ -312,5 +321,31 @@ func TestNativeSoundCloudSemanticRealProviderScope(t *testing.T) {
 				t.Fatal("owned control escaped to Yandex")
 			}
 		})
+	}
+}
+
+func TestNativeSoundCloudSemanticDoesNotUseTextOnlyProvider(t *testing.T) {
+	raw, _ := hex.DecodeString(midiContinueFrame)
+	var textCalls atomic.Int32
+	e := &Engine{SoundCloud: soundCloudStub{can: true, handle: func(context.Context, string) (string, error) {
+		textCalls.Add(1)
+		return "", nil
+	}}}
+	n, up, down := soundSession(t, e)
+	input := semanticControlInput("unsupported-provider", raw)
+	if err := n.Client(t.Context(), websocket.MessageBinary, input); err != nil {
+		t.Fatal(err)
+	}
+	n.wg.Wait()
+	select {
+	case frame := <-up:
+		if string(frame.Raw) != string(input) {
+			t.Fatal("unsupported provider changed native control")
+		}
+	default:
+		t.Fatal("text-only provider claimed native control")
+	}
+	if textCalls.Load() != 0 || len(down) != 0 {
+		t.Fatal("native control fell back to a text handler")
 	}
 }

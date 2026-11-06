@@ -384,7 +384,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 
 // HandleEvent bypasses dialogue generations: playback lifecycle is not a conversation turn.
 func (e *Engine) HandleEvent(ctx context.Context, name string, payload map[string]any) (bool, error) {
-	if !strings.HasPrefix(name, nativeSoundCloudPrefix) {
+	if !strings.HasPrefix(name, nativeMusicCallbackPrefix) {
 		return false, nil
 	}
 	if e.SoundCloud == nil {

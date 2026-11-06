@@ -38,6 +38,13 @@ func (n *Native) queueSound(ctx context.Context, p *nativeRequest, request sound
 	if err != nil {
 		return err
 	}
+	if request.Provider == "SoundCloud" && request.URL != "" {
+		continuation, err := makeSoundCloudContinuation(request)
+		if err != nil {
+			return err
+		}
+		p.soundContinuation = continuation
+	}
 	p.soundRequest = new(request)
 	p.soundDirective = directive
 	return nil
@@ -57,7 +64,7 @@ func (n *Native) takeSound(p *nativeRequest) []*directives.TDirective {
 		n.mu.Unlock()
 		return nil
 	}
-	directive, request := p.soundDirective, *p.soundRequest
+	directive, continuation, request := p.soundDirective, p.soundContinuation, *p.soundRequest
 	p.soundDirective = nil
 	comparison := p.comparison != nil
 	n.mu.Unlock()
@@ -77,7 +84,11 @@ func (n *Native) takeSound(p *nativeRequest) []*directives.TDirective {
 		n.mu.Unlock()
 		return nil
 	}
-	return []*directives.TDirective{directive}
+	result := []*directives.TDirective{directive}
+	if continuation != nil {
+		result = append(result, continuation)
+	}
+	return result
 }
 
 func (n *Native) hasSilentPlayback(p *nativeRequest) bool {
@@ -130,7 +141,7 @@ func makeSoundDirective(request sound.Request) (*directives.TDirective, error) {
 		metadata := map[string]any{"title": request.Title}
 		data := map[string]any{"stream": stream, "metadata": metadata, "screen_type": "Default", "set_pause": false}
 		if request.Provider == "SoundCloud" {
-			if request.SessionID == "" || request.CallbackToken == "" || request.StreamID == "" {
+			if !validSoundCloudIdentityField(request.SessionID) || !validSoundCloudIdentityField(request.CallbackToken) || !validSoundCloudIdentityField(request.StreamID) {
 				return nil, errors.New("incomplete SoundCloud session")
 			}
 			metadata["subtitle"] = request.Subtitle
@@ -147,11 +158,8 @@ func makeSoundDirective(request sound.Request) (*directives.TDirective, error) {
 			data["screen_type"] = "Music"
 			data["provider_name"] = "SoundCloud"
 			data["scenario_meta"] = map[string]any{"@scenario_name": "SoundCloud", "owner": "quasar_bridge", "content_id": request.TrackID, "session_id": request.SessionID}
-			callbacks := make(map[string]any, 4)
-			for _, name := range []string{"started", "stopped", "finished", "failed"} {
-				callbacks["on_"+name] = map[string]any{"name": nativeSoundCloudPrefix + name, "type": "server_action", "is_led_silent": true, "ignore_answer": false, "payload": map[string]any{"session_id": request.SessionID, "stream_id": id, "token": request.CallbackToken}}
-			}
-			data["callbacks"] = callbacks
+			data["callbacks"] = makeSoundCloudCallbacks(request)
+			data["background_mode"], data["playback_opts"], data["playback_speed"] = "Ducking", "Undefined", 1
 		}
 		payload, err := structpb.NewStruct(data)
 		if err != nil {

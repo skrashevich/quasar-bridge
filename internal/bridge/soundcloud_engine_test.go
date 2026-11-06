@@ -72,7 +72,7 @@ func TestEngineSoundCloudPrecedenceAndEventIsolation(t *testing.T) {
 	}
 	ctx := e.Prepare(t.Context())
 	_, _, ticket := e.dialogue().Start(ctx)
-	if handled, err := e.HandleEvent(t.Context(), "quasar_soundcloud_started", soundCloudPayload()); !handled || err != nil {
+	if handled, err := e.HandleEvent(t.Context(), "music_thin_client_on_started", soundCloudPayload()); !handled || err != nil {
 		t.Fatal("event not handled")
 	}
 	if !e.dialogue().Current(ctx, ticket) {

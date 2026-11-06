@@ -47,6 +47,7 @@ type FallbackResolver interface {
 
 type nativeRequest struct {
 	silentEvent                     bool
+	musicPrefetch                   bool
 	comparison                      *nativeComparison
 	streaming                       bool
 	listenOnStreamStart             bool
@@ -76,6 +77,7 @@ type nativeRequest struct {
 	progressAudioDone               chan struct{}
 	soundRequest                    *sound.Request
 	soundDirective                  *soundDirective
+	soundContinuation               *soundDirective
 	soundSealed                     bool
 	soundSuperseded                 bool
 	expires                         *time.Timer
@@ -150,8 +152,10 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 	case "SpeechInput":
 		req = e.GetSpeechInput()
 	}
-	if req != nil && strings.HasPrefix(req.GetRequest().GetEvent().GetName(), nativeSoundCloudPrefix) {
-		return n.soundCloudEvent(req, e.GetHeader())
+	if req != nil {
+		if event := decodeSoundCloudProtocolEvent(req.GetRequest().GetEvent()); event.owned {
+			return n.soundCloudEvent(req, e.GetHeader(), event)
+		}
 	}
 	if req != nil && f.Kind() == "TextInput" {
 		if handled, err := n.soundCloudControl(req, e.GetHeader()); handled || err != nil {
@@ -686,7 +690,12 @@ func (n *Native) sendCancel(ctx context.Context, id string) error {
 }
 func (n *Native) reply(p *nativeRequest, text string) error {
 	if p.silentEvent {
-		return n.dispatchSound(p, func() error { return n.replySoundCloudEvent(p) })
+		return n.dispatchSound(p, func() error {
+			if p.musicPrefetch {
+				return n.replySoundCloudPrefetch(p)
+			}
+			return n.replySoundCloudEvent(p)
+		})
 	}
 	if p.streaming {
 		return n.finishDeferred(p, text)

@@ -9,6 +9,8 @@ import (
 )
 
 type Request struct {
+	Prefetch        bool   `json:"prefetch,omitzero"`
+	AfterStreamID   string `json:"after_stream_id,omitempty"`
 	Sound           string `json:"sound,omitempty"`
 	URL             string `json:"url,omitempty"`
 	Command         string `json:"command,omitempty"`

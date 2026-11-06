@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json/v2"
 	"errors"
@@ -48,6 +49,14 @@ func (r *soundCloudEventResolver) HandleEvent(ctx context.Context, name string, 
 
 func soundCloudEventInput(id, name string, raw bool, payload map[string]any) []byte {
 	e := &common.TEvent{Name: new(name)}
+	if strings.HasPrefix(name, nativeMusicCallbackPrefix) && payload["events"] == nil {
+		_, session := payload["session_id"]
+		_, stream := payload["stream_id"]
+		_, token := payload["token"]
+		if session || stream || token {
+			payload = soundCloudCallbackFixture(payload)
+		}
+	}
 	if raw {
 		b, _ := json.Marshal(payload)
 		e.PayloadType = &common.TEvent_PayloadRaw{PayloadRaw: b}
@@ -57,6 +66,26 @@ func soundCloudEventInput(id, name string, raw bool, payload map[string]any) []b
 	}
 	return aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: id}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: e}}}}}})
 }
+
+// Fixture identities travel through the real native callback envelope and its
+// opaque context decoder. Already-native payloads are passed through unchanged.
+func soundCloudCallbackFixture(identity map[string]any) map[string]any {
+	context := make(map[string]any)
+	for _, key := range []string{"session_id", "stream_id", "token"} {
+		if value, ok := identity[key]; ok {
+			context[key] = value
+		}
+	}
+	b, _ := json.Marshal(context)
+	result := map[string]any{"@scenario_name": "HollywoodMusic", "@request_id": "fixture-issued", "callback_flow_type": "Old", "events": []any{map[string]any{"playAudioEvent": map[string]any{"context": nativeSoundCloudContextPrefix + base64.RawURLEncoding.EncodeToString(b), "contextItem": "soundcloud:tracks:1", "playId": identity["stream_id"], "trackId": "soundcloud:tracks:1", "aliceRequestId": "fixture-issued"}}}}
+	for key, value := range identity {
+		if key != "session_id" && key != "stream_id" && key != "token" {
+			result[key] = value
+		}
+	}
+	return result
+}
+
 func soundCloudPayload() map[string]any {
 	return map[string]any{"session_id": "session", "stream_id": "stream", "token": "token"}
 }
@@ -83,7 +112,7 @@ func TestNativeSoundCloudCallbackFreshRequest(t *testing.T) {
 			}}
 			r.handle = func(ctx context.Context, name string, payload map[string]any) (bool, error) {
 				calls.Add(1)
-				if name != "quasar_soundcloud_finished" || payload["session_id"] != "session" {
+				if name != "music_thin_client_on_finished" || payload["session_id"] != "session" {
 					t.Error("event normalization failed")
 				}
 				if dialogue.SpeakerKey(ctx) != dialogue.SpeakerKey(original) {
@@ -109,7 +138,7 @@ func TestNativeSoundCloudCallbackFreshRequest(t *testing.T) {
 			if err := sound.Play(original, sound.Request{URL: "https://audio.example/forbidden.mp3"}); err == nil {
 				t.Fatal("expired original player accepted sound")
 			}
-			b := soundCloudEventInput("callback", "quasar_soundcloud_finished", raw, soundCloudPayload())
+			b := soundCloudEventInput("callback", "music_thin_client_on_finished", raw, soundCloudPayload())
 			if err := n.Client(t.Context(), websocket.MessageBinary, b); err != nil {
 				t.Fatal(err)
 			}
@@ -138,7 +167,7 @@ func TestNativeSoundCloudSilentMalformedStaleAndFailure(t *testing.T) {
 		raw, fail bool
 		malformed string
 	}{
-		{name: "state", payload: soundCloudPayload()}, {name: "stale", payload: soundCloudPayload(), raw: true}, {name: "failure", payload: soundCloudPayload(), fail: true}, {name: "missing", payload: map[string]any{}}, {name: "wrong-type", payload: map[string]any{"session_id": 12, "stream_id": "x", "token": "y"}}, {name: "nonobject", malformed: `[]`, raw: true}, {name: "invalid-json", malformed: `{`, raw: true}, {name: "oversize", malformed: strings.Repeat(" ", 65537), raw: true},
+		{name: "state", payload: soundCloudPayload()}, {name: "stale", payload: soundCloudPayload(), raw: true}, {name: "failure", payload: soundCloudPayload(), fail: true}, {name: "missing", payload: soundCloudCallbackFixture(map[string]any{})}, {name: "wrong-type", payload: map[string]any{"session_id": 12, "stream_id": "x", "token": "y"}}, {name: "nonobject", malformed: `["quasar-bridge/soundcloud/v1.invalid"]`, raw: true}, {name: "invalid-json", malformed: `{"context":"quasar-bridge/soundcloud/v1.invalid"`, raw: true}, {name: "oversize", malformed: `{"context":"quasar-bridge/soundcloud/v1.invalid","padding":"` + strings.Repeat("x", 65537) + `"}`, raw: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := new(atomic.Int32)
@@ -157,7 +186,7 @@ func TestNativeSoundCloudSilentMalformedStaleAndFailure(t *testing.T) {
 			}}
 			n, up, down := soundSession(t, r)
 			n.GateText = true
-			b := soundCloudEventInput("event", "quasar_soundcloud_started", tc.raw, tc.payload)
+			b := soundCloudEventInput("event", "music_thin_client_on_started", tc.raw, tc.payload)
 			if tc.malformed != "" {
 				f := wire.Decode(b, wire.ClientToServer)
 				f.Client.GetEvent().GetTextInput().GetRequest().GetEvent().PayloadType = &common.TEvent_PayloadRaw{PayloadRaw: []byte(tc.malformed)}
@@ -186,8 +215,12 @@ func TestNativeSoundCloudMissingIDAndUnrelatedEvent(t *testing.T) {
 		return true, nil
 	}}
 	n, up, down := soundSession(t, r)
-	for _, tc := range []struct{ id, name string }{{"", "quasar_soundcloud_finished"}, {" ", "quasar_soundcloud_finished"}, {strings.Repeat("x", 257), "quasar_soundcloud_finished"}, {"ordinary", "music_thin_client_on_finished"}} {
-		if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput(tc.id, tc.name, false, soundCloudPayload())); err != nil {
+	for _, tc := range []struct{ id, name string }{{"", "music_thin_client_on_finished"}, {" ", "music_thin_client_on_finished"}, {strings.Repeat("x", 257), "music_thin_client_on_finished"}, {"ordinary", "music_thin_client_on_finished"}} {
+		payload := soundCloudPayload()
+		if tc.id == "ordinary" {
+			payload = soundCloudProtocolTestCallback("opaque-yandex-context")
+		}
+		if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput(tc.id, tc.name, false, payload)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -207,7 +240,7 @@ func TestNativeSoundCloudCanceledCallback(t *testing.T) {
 		return true, ctx.Err()
 	}}
 	n, up, down := soundSession(t, r)
-	if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput("event", "quasar_soundcloud_finished", false, soundCloudPayload())); err != nil {
+	if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput("event", "music_thin_client_on_finished", false, soundCloudPayload())); err != nil {
 		t.Fatal(err)
 	}
 	<-entered
@@ -261,11 +294,13 @@ func TestSoundCloudDirectiveMetadataRoundTrip(t *testing.T) {
 	}
 	for _, name := range []string{"started", "stopped", "finished", "failed"} {
 		cb := p["callbacks"].(map[string]any)["on_"+name].(map[string]any)
-		if cb["name"] != "quasar_soundcloud_"+name || cb["type"] != "server_action" || cb["ignore_answer"] != false || cb["is_led_silent"] != true {
+		if cb["name"] != nativeMusicCallbackPrefix+name || cb["type"] != "server_action" || cb["ignore_answer"] != true || cb["is_led_silent"] != true {
 			t.Errorf("callback response disabled or shape wrong: %v", cb)
 		}
+		play := cb["payload"].(map[string]any)["events"].([]any)[0].(map[string]any)["playAudioEvent"].(map[string]any)
+		identity := decodeSoundCloudNativeContext(play["context"].(string))
 		for k, v := range soundCloudPayload() {
-			if cb["payload"].(map[string]any)[k] != v {
+			if identity[k] != v {
 				t.Errorf("callback %s mismatch", k)
 			}
 		}
@@ -292,7 +327,7 @@ func TestNativeSoundCloudIdentityAndPlaybackState(t *testing.T) {
 			}}
 			n, up, down := soundSession(t, r)
 			scope = "connection:" + n.connectionScope
-			frame := wire.Decode(soundCloudEventInput("event", "quasar_soundcloud_started", false, soundCloudPayload()), wire.ClientToServer)
+			frame := wire.Decode(soundCloudEventInput("event", "music_thin_client_on_started", false, soundCloudPayload()), wire.ClientToServer)
 			req := frame.Client.GetEvent().GetTextInput()
 			req.Application = &app.TClientInfoProto{DeviceId: new(tc.device), Uuid: new(tc.uuid)}
 			req.Request.DeviceStateType = &request.TAliceRequestProto_TRequest_DeviceState{DeviceState: &device.TDeviceState{AudioPlayer: &device.TDeviceState_TAudioPlayer{OffsetMs: new(int32(12345)), CurrentlyPlaying: &device.TDeviceState_TAudioPlayer_TCurrentlyPlaying{StreamId: new("reported")}}}}
@@ -381,7 +416,7 @@ func TestNativeSoundCloudVoiceASRDeferredAndCallbackCycle(t *testing.T) {
 				t.Fatal("focus not released before music")
 			}
 			ds := r.GetBaseResponse().GetDirectives()
-			if len(ds) != 1 || ds[0].GetPayload().GetFields()["screen_type"].GetStringValue() != "Music" {
+			if len(ds) != 2 || ds[1].GetName() != nativeMusicGetNext || ds[0].GetPayload().GetFields()["screen_type"].GetStringValue() != "Music" {
 				t.Fatal("deferred SoundCloud metadata lost")
 			}
 			break
@@ -404,13 +439,13 @@ func TestNativeSoundCloudVoiceASRDeferredAndCallbackCycle(t *testing.T) {
 			t.Fatalf("extra upstream frame: %s", f.Kind())
 		}
 	}
-	if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput("next", "quasar_soundcloud_finished", true, soundCloudPayload())); err != nil {
+	if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput("next", "music_thin_client_on_finished", true, soundCloudPayload())); err != nil {
 		t.Fatal(err)
 	}
 	next := silentSoundCloudResponse(t, down)
 	push := soundCloudPushDirectives(t, down)
 	n.wg.Wait()
-	if len(next.GetResponse().GetDirectives()) != 0 || len(push) != 1 || len(up) != 0 || handled.Load() != 1 {
+	if len(next.GetResponse().GetDirectives()) != 0 || len(push) != 2 || push[1].GetName() != nativeMusicGetNext || len(up) != 0 || handled.Load() != 1 {
 		t.Fatal("callback next cycle failed")
 	}
 }
@@ -477,7 +512,7 @@ func TestNativeSoundCloudRequestTrackingIsBounded(t *testing.T) {
 	n := NewNative(t.Context(), sender, sender, r)
 	t.Cleanup(n.Close)
 	for range 130 {
-		if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput(newID(), "quasar_soundcloud_started", false, soundCloudPayload())); err != nil {
+		if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput(newID(), "music_thin_client_on_started", false, soundCloudPayload())); err != nil {
 			t.Fatal(err)
 		}
 	}

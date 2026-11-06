@@ -17,7 +17,7 @@ import (
 	"quasarbridge/internal/sound"
 )
 
-const EventPrefix = "quasar_soundcloud_"
+const EventPrefix = "music_thin_client_on_"
 const providerTTL = 2 * time.Hour
 const providerMaxSpeakers = 128
 const providerMaxPendingStreams = 32
@@ -36,6 +36,9 @@ type Provider struct {
 	now             func() time.Time
 }
 type providerSession struct {
+	media                                            Media
+	prefetch                                         *providerPrefetch
+	prefetchRevision                                 uint64
 	at, activeUntil                                  time.Time
 	generation, committed, latestSequence            uint64
 	id, stream, token, status, repeat                string
@@ -72,10 +75,29 @@ func (p *Provider) SetDefault(value bool) { p.defaultProvider.Store(value) }
 func (p *Provider) IsDefault() bool       { return p != nil && p.defaultProvider.Load() }
 
 func (p *Provider) CanHandle(ctx context.Context, text string) bool {
+	return p.canHandleCommand(ctx, parseProviderCommand(text))
+}
+
+// CanControl admits native controls only while this speaker owns the queue.
+func (p *Provider) CanControl(ctx context.Context, control sound.Control) bool {
+	return p.canHandleCommand(ctx, providerControlCommand(control))
+}
+
+func providerControlCommand(control sound.Control) providerCommand {
+	switch control {
+	case sound.ControlNext, sound.ControlPrevious:
+		return providerCommand{action: string(control), native: true}
+	case sound.ControlResume:
+		return providerCommand{action: string(control)}
+	default:
+		return providerCommand{}
+	}
+}
+
+func (p *Provider) canHandleCommand(ctx context.Context, c providerCommand) bool {
 	if p == nil || !p.cfg.Enabled || ctx.Err() != nil || dialogue.SpeakerKey(ctx) == "" {
 		return false
 	}
-	c := parseProviderCommand(text)
 	if c.action == "" || isCatalogCommand(c.action) && !c.explicit && !p.IsDefault() {
 		return false
 	}
@@ -97,7 +119,7 @@ func (p *Provider) CanHandle(ctx context.Context, text string) bool {
 	if c.explicit {
 		return true
 	}
-	return p.ownsLocked(ctx, s)
+	return p.ownsCommandLocked(ctx, s, c)
 }
 
 // CanDeliver validates queued audio at the final native delivery boundary.
@@ -114,6 +136,9 @@ func (p *Provider) CanDeliver(ctx context.Context, request sound.Request) bool {
 	s := p.sessionLocked(dialogue.SpeakerKey(ctx), false)
 	if s == nil || s.revoked || request.Generation == 0 || request.SessionID != s.id || request.Generation != s.generation || request.Generation != s.committed {
 		return false
+	}
+	if request.Prefetch {
+		return !p.revokeForeignLocked(ctx, s) && p.canDeliverPrefetchLocked(s, request)
 	}
 	if request.Command != "" {
 		return (request.Command == "pause" || request.Command == "stop") && request.StreamID == ""
@@ -181,17 +206,19 @@ func (p *Provider) revokeForeignLocked(ctx context.Context, s *providerSession) 
 		return false
 	}
 	state := sound.CurrentPlayback(ctx)
+	p.promoteObservedPrefetchLocked(s, state)
 	if !state.Present || state.StreamID == "" || state.StreamID == s.stream || s.pendingPrevious(state.StreamID) {
 		return false
 	}
 	if !s.revoked {
+		s.invalidatePrefetch()
 		s.generation++
 		s.committed, s.status, s.terminal, s.revoked = s.generation, "stopped", true, true
 	}
 	return true
 }
 func (s *providerSession) pendingPrevious(stream string) bool {
-	return s.status == "pending" && slices.Contains(s.previousStreams, stream)
+	return (s.status == "pending" || s.generation != s.committed) && slices.Contains(s.previousStreams, stream)
 }
 func (p *Provider) ownsLocked(ctx context.Context, s *providerSession) bool {
 	if s == nil || s.stream == "" || s.status == "stopped" || s.revoked || ctx.Err() != nil {
@@ -236,7 +263,35 @@ func (p *Provider) ownsLocked(ctx context.Context, s *providerSession) bool {
 	}
 	return s.status == "playing" || s.status == "paused"
 }
+
+// A native skip during loading still belongs to the issued queue, even
+// before its started callback. Require an explicit own current/transition stream;
+// absent state and unqualified text keep the stricter confirmed-playback rules.
+func (p *Provider) ownsCommandLocked(ctx context.Context, s *providerSession, c providerCommand) bool {
+	if p.ownsLocked(ctx, s) {
+		return true
+	}
+	if !c.native || (c.action != "next" && c.action != "previous") || s == nil || s.revoked || ctx.Err() != nil || s.stream == "" || s.index < 0 || s.index >= len(s.queue) {
+		return false
+	}
+	if s.status != "pending" && s.generation == s.committed {
+		return false
+	}
+	state := sound.CurrentPlayback(ctx)
+	return state.Present && state.StreamID != "" && (state.StreamID == s.stream || s.pendingPrevious(state.StreamID))
+}
+
 func (p *Provider) reserveLocked(key string, s *providerSession) playbackOperation {
+	if s.status != "pending" && s.generation == s.committed {
+		s.previousStreams = nil
+	}
+	if next := p.currentPrefetchLocked(s); next != nil {
+		s.previousStreams = append(s.previousStreams, next.request.StreamID)
+		if len(s.previousStreams) > providerMaxPendingStreams {
+			s.previousStreams = slices.Clone(s.previousStreams[len(s.previousStreams)-providerMaxPendingStreams:])
+		}
+	}
+	s.invalidatePrefetch()
 	s.generation++
 	s.at = p.now()
 	failed := make(map[string]bool, len(s.failed))
@@ -259,6 +314,19 @@ func (p *Provider) operationFailed(op playbackOperation) {
 }
 
 func (p *Provider) Handle(ctx context.Context, text string) (string, error) {
+	return p.handleCommand(ctx, parseProviderCommand(text))
+}
+
+// HandleControl uses the same queue and ordering rules as spoken commands.
+func (p *Provider) HandleControl(ctx context.Context, control sound.Control) (string, error) {
+	c := providerControlCommand(control)
+	if c.action == "" {
+		return "", nil
+	}
+	return p.handleCommand(ctx, c)
+}
+
+func (p *Provider) handleCommand(ctx context.Context, c providerCommand) (string, error) {
 	if p == nil || !p.cfg.Enabled {
 		return "", nil
 	}
@@ -269,7 +337,6 @@ func (p *Provider) Handle(ctx context.Context, text string) (string, error) {
 	if key == "" {
 		return "Для SoundCloud нужна текущая колонка.", nil
 	}
-	c := parseProviderCommand(text)
 	if c.action == "" {
 		return "", nil
 	}
@@ -285,7 +352,7 @@ func (p *Provider) Handle(ctx context.Context, text string) (string, error) {
 		p.mu.Unlock()
 		return "", context.Canceled
 	}
-	owned := p.ownsLocked(ctx, s)
+	owned := p.ownsCommandLocked(ctx, s, c)
 	if c.action == "select" {
 		if s == nil || c.number > len(s.results) {
 			p.mu.Unlock()
@@ -362,8 +429,23 @@ func (p *Provider) Handle(ctx context.Context, text string) (string, error) {
 		p.mu.Unlock()
 		return "Музыка SoundCloud остановлена.", nil
 	case "repeat_one", "repeat_all", "repeat_off", "shuffle_on", "shuffle_off":
-		// Mode changes are synchronous queue edits; they do not cancel an in-flight
-		// catalog operation or claim that a fresh stream has already started.
+		refresh := p.currentPrefetchLocked(s) != nil
+		state := sound.CurrentPlayback(ctx)
+		if refresh && (!sound.HasPlayer(ctx) || !state.Present || state.StreamID != s.stream || !state.OffsetKnown || state.OffsetMS < 0 || !strings.EqualFold(state.PlayerState, "Playing") || s.media.URL == "") {
+			p.mu.Unlock()
+			return "Не удалось определить текущую позицию трека для смены режима. Повторите команду во время воспроизведения.", nil
+		}
+		previous := *s
+		if refresh {
+			previous.queue = slices.Clone(s.queue)
+		}
+		if !refresh {
+			s.invalidatePrefetch()
+		}
+		// An already staged native continuation must be replaced together with
+		// the current stream. Reuse its relay lease to avoid an HTTP gap between
+		// invalidating the staged item and enqueueing the replacement. Otherwise
+		// modes remain synchronous edits without canceling an in-flight search.
 		switch c.action {
 		case "repeat_one":
 			s.repeat = "one"
@@ -382,6 +464,15 @@ func (p *Provider) Handle(ctx context.Context, text string) (string, error) {
 				s.queue = slices.Clone(s.original)
 				s.index = slices.IndexFunc(s.queue, func(t Track) bool { return t.URN == urn })
 				s.shuffle = false
+			}
+		}
+		if refresh {
+			op := p.reserveLocked(key, s)
+			op.offset = state.OffsetMS
+			if err := p.enqueuePreparedLocked(ctx, op, op.queue[op.index], s.media); err != nil {
+				*s = previous
+				p.mu.Unlock()
+				return providerError(ctx, err)
 			}
 		}
 		p.mu.Unlock()
@@ -576,13 +667,7 @@ func (p *Provider) enqueuePreparedLocked(ctx context.Context, op playbackOperati
 		})
 	}
 	op.repeat, op.shuffle = s.repeat, s.shuffle
-	request := sound.Request{URL: media.URL, StreamID: sound.NewStreamID(), Title: track.Title, OffsetMS: op.offset, Format: "HLS", Kind: "Track", Provider: "SoundCloud", Subtitle: track.Artist, ArtworkURL: media.ArtworkURL, TrackID: track.URN, PermalinkURL: track.PermalinkURL, SessionID: op.id, Generation: op.generation, CallbackToken: rand.Text(), DurationMS: track.DurationMS, RepeatMode: op.repeat, Shuffle: op.shuffle}
-	if prev := providerNext(op, -1, false); prev >= 0 {
-		request.PreviousTrackID = op.queue[prev].URN
-	}
-	if next := providerNext(op, 1, false); next >= 0 {
-		request.NextTrackID = op.queue[next].URN
-	}
+	request := preparedSoundRequest(op, track, media)
 	// Serialize the final generation check, native enqueue, and commit. Play is
 	// the current request's local enqueue hook; all catalog HTTP stays outside.
 	if err := sound.Play(ctx, request); err != nil {
@@ -590,7 +675,7 @@ func (p *Provider) enqueuePreparedLocked(ctx context.Context, op playbackOperati
 	}
 	// The speaker can still report an earlier own stream until it applies
 	// this directive. Retain bounded transition identities until confirmation.
-	if s.status != "pending" {
+	if s.status != "pending" && s.generation == s.committed {
 		s.previousStreams = nil
 	}
 	if s.stream != "" {
@@ -600,6 +685,7 @@ func (p *Provider) enqueuePreparedLocked(ctx context.Context, op playbackOperati
 		s.previousStreams = append(s.previousStreams[:1:1], s.previousStreams[len(s.previousStreams)-providerMaxPendingStreams+1:]...)
 	}
 	s.queue, s.original, s.index = op.queue, op.original, op.index
+	s.media = media
 	s.id, s.stream, s.token, s.status = op.id, request.StreamID, request.CallbackToken, "pending"
 	s.offset, s.offsetKnown = op.offset, true
 	s.repeat, s.shuffle, s.failed = op.repeat, op.shuffle, op.failed
@@ -671,6 +757,14 @@ func (p *Provider) HandleEvent(ctx context.Context, name string, payload map[str
 	}
 	p.mu.Lock()
 	s := p.sessionLocked(key, false)
+	// A retired track callback can already carry the following track in the
+	// device state. Apply that matching prepared-stream observation before
+	// matching the callback, so its old action can never run against the new item.
+	p.promoteObservedPrefetchLocked(s, sound.CurrentPlayback(ctx))
+	if p.handlePreparedLifecycleLocked(ctx, s, sid, stream, token, action) {
+		p.mu.Unlock()
+		return true, nil
+	}
 	sessionPresent = s != nil
 	if s != nil {
 		sessionMatch, streamMatch, tokenMatch = s.id == sid, s.stream == stream, s.token == token
@@ -731,6 +825,11 @@ func (p *Provider) HandleEvent(ctx context.Context, name string, payload map[str
 		p.mu.Unlock()
 		return true, nil
 	}
+	if action == "finished" && p.awaitDeliveredPrefetchLocked(s) {
+		outcome = "prefetched_next_staged"
+		p.mu.Unlock()
+		return true, nil
+	}
 	// Claim terminal delivery atomically before any HTTP request or queue change.
 	s.terminal = true
 	op := p.reserveLocked(key, s)
@@ -778,4 +877,15 @@ func (p *Provider) HandleEvent(ctx context.Context, name string, payload map[str
 	}
 	p.mu.Unlock()
 	return true, nil
+}
+
+func preparedSoundRequest(op playbackOperation, track Track, media Media) sound.Request {
+	request := sound.Request{URL: media.URL, StreamID: sound.NewStreamID(), Title: track.Title, OffsetMS: op.offset, Format: "HLS", Kind: "Track", Provider: "SoundCloud", Subtitle: track.Artist, ArtworkURL: media.ArtworkURL, TrackID: track.URN, PermalinkURL: track.PermalinkURL, SessionID: op.id, Generation: op.generation, CallbackToken: rand.Text(), DurationMS: track.DurationMS, RepeatMode: op.repeat, Shuffle: op.shuffle}
+	if prev := providerNext(op, -1, false); prev >= 0 {
+		request.PreviousTrackID = op.queue[prev].URN
+	}
+	if next := providerNext(op, 1, false); next >= 0 {
+		request.NextTrackID = op.queue[next].URN
+	}
+	return request
 }

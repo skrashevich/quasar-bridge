@@ -91,7 +91,7 @@ func (c *conversation) client(data []byte) {
 		req = e.GetSpeechInput()
 	}
 	if req != nil {
-		if strings.HasPrefix(req.GetRequest().GetEvent().GetName(), nativeSoundCloudPrefix) {
+		if decodeSoundCloudProtocolEvent(req.GetRequest().GetEvent()).owned {
 			return
 		}
 		id := e.GetHeader().GetMessageId()

@@ -22,7 +22,7 @@ func TestNativeSoundCloudCallbackSafeDiagnostics(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
 			defer slog.SetDefault(previous)
 			payload := map[string]any{"session_id": "private-session", "stream_id": "private-stream", "token": "private-token", "reason": "private-untrusted-reason", "position_ms": 140625, "duration_ms": 141000, "finished": true, "url": "https://private.invalid/signed", "https://private.invalid/key": "private-value"}
-			f := wire.Decode(soundCloudEventInput("private-message", "quasar_soundcloud_stopped", raw, payload), wire.ClientToServer)
+			f := wire.Decode(soundCloudEventInput("private-message", "music_thin_client_on_stopped", raw, payload), wire.ClientToServer)
 			req := f.Client.GetEvent().GetTextInput()
 			req.Request.Event.IgnoreAnswer = new(true)
 			state := &device.TDeviceState{AudioPlayer: &device.TDeviceState_TAudioPlayer{PlayerState: device.TDeviceState_TAudioPlayer_Stopped.Enum(), OffsetMs: new(int32(140625)), DurationMs: new(int32(141000)), CurrentlyPlaying: &device.TDeviceState_TAudioPlayer_TCurrentlyPlaying{StreamId: new("private-stream")}}}

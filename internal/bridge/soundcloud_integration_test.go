@@ -133,7 +133,7 @@ func TestNativeSoundCloudInformationDoesNotDiscardPlayback(t *testing.T) {
 			}
 			close(release)
 			ds := finalSoundDirectives(t, down)
-			if len(ds) != 1 || ds[0].GetName() != "audio_play" {
+			if len(ds) != 2 || ds[0].GetName() != "audio_play" || ds[1].GetName() != nativeMusicGetNext {
 				t.Fatal("valid playback was discarded after information")
 			}
 			n.wg.Wait()
@@ -167,7 +167,7 @@ func TestProxySoundCloudCallbacksDoNotJournalConversations(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 	engine := &Engine{SoundCloud: soundCloudStub{can: true, handle: func(context.Context, string) (string, error) { return "", nil }, event: func(ctx context.Context, name string, _ map[string]any) (bool, error) {
-		if name == "quasar_soundcloud_finished" {
+		if name == "music_thin_client_on_finished" {
 			return true, sound.Play(ctx, sound.Request{URL: "https://audio.example/next.m3u8"})
 		}
 		return true, nil
@@ -195,11 +195,11 @@ func TestProxySoundCloudCallbacksDoNotJournalConversations(t *testing.T) {
 	for i := range 4 {
 		payload := soundCloudPayload()
 		if i == 2 {
-			payload = map[string]any{}
+			payload = soundCloudCallbackFixture(map[string]any{})
 		}
-		name := "quasar_soundcloud_started"
+		name := "music_thin_client_on_started"
 		if i == 3 {
-			name = "quasar_soundcloud_finished"
+			name = "music_thin_client_on_finished"
 		}
 		b := soundCloudEventInput(fmt.Sprintf("callback-%d", i), name, i == 1, payload)
 		if err := c.Write(ctx, websocket.MessageBinary, b); err != nil {
@@ -300,7 +300,7 @@ func TestNativeSoundCloudObsoleteASRDoesNotReplaceNewPlayback(t *testing.T) {
 	if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudTextInput("new-play", "включи New SoundCloud")); err != nil {
 		t.Fatal(err)
 	}
-	if ds := finalSoundDirectives(t, down); len(ds) != 1 {
+	if ds := finalSoundDirectives(t, down); len(ds) != 2 || ds[1].GetName() != nativeMusicGetNext {
 		t.Fatal("new playback not delivered")
 	}
 	n.wg.Wait()
@@ -388,11 +388,11 @@ func TestNativeSoundCloudSupersededQueuedDirectiveIsDiscardedAfterFocusRelease(t
 				t.Fatal(err)
 			}
 			ds := finalSoundDirectives(t, down)
-			if len(ds) != 1 {
+			if len(ds) != 2 || ds[1].GetName() != nativeMusicGetNext {
 				t.Fatal("bootstrap missing")
 			}
 			payload := ds[0].GetPayload().AsMap()["callbacks"].(map[string]any)["on_started"].(map[string]any)["payload"].(map[string]any)
-			if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput("started", "quasar_soundcloud_started", false, payload)); err != nil {
+			if err := n.Client(t.Context(), websocket.MessageBinary, soundCloudEventInput("started", "music_thin_client_on_started", false, payload)); err != nil {
 				t.Fatal(err)
 			}
 			silentSoundCloudResponse(t, down)
@@ -427,7 +427,7 @@ func TestNativeSoundCloudSupersededQueuedDirectiveIsDiscardedAfterFocusRelease(t
 			for {
 				f := nextSoundFrame(t, down)
 				if r := f.Server.GetEvent().GetAliceResponse(); r != nil && !r.GetResponse().GetIsStreaming() {
-					if f.Server.GetEvent().GetHeader().GetRefMessageId() != "B" || len(r.GetResponse().GetDirectives()) != 1 {
+					if f.Server.GetEvent().GetHeader().GetRefMessageId() != "B" || len(r.GetResponse().GetDirectives()) != 2 || r.GetResponse().GetDirectives()[1].GetName() != nativeMusicGetNext {
 						t.Fatal("newer playback missing")
 					}
 					break
@@ -496,7 +496,7 @@ func TestNativeSoundCloudDispatchOrdersAckAndResponseAcrossConnections(t *testin
 			}
 			ds := finalSoundDirectives(t, aDown)
 			payload := ds[0].GetPayload().AsMap()["callbacks"].(map[string]any)["on_started"].(map[string]any)["payload"].(map[string]any)
-			if err := a.Client(t.Context(), websocket.MessageBinary, soundCloudDeviceFrame(soundCloudEventInput("started", "quasar_soundcloud_started", false, payload))); err != nil {
+			if err := a.Client(t.Context(), websocket.MessageBinary, soundCloudDeviceFrame(soundCloudEventInput("started", "music_thin_client_on_started", false, payload))); err != nil {
 				t.Fatal(err)
 			}
 			silentSoundCloudResponse(t, aDown)
@@ -520,7 +520,7 @@ func TestNativeSoundCloudDispatchOrdersAckAndResponseAcrossConnections(t *testin
 			}
 			input := soundCloudTextInput("A", action)
 			if action == "callback" || action == "callback_response" {
-				input = soundCloudEventInput("A", "quasar_soundcloud_finished", false, payload)
+				input = soundCloudEventInput("A", "music_thin_client_on_finished", false, payload)
 			}
 			if err := a.Client(t.Context(), websocket.MessageBinary, soundCloudDeviceFrame(input)); err != nil {
 				t.Fatal(err)
@@ -547,7 +547,7 @@ func TestNativeSoundCloudDispatchOrdersAckAndResponseAcrossConnections(t *testin
 			if ds := finalSoundDirectives(t, aDown); len(ds) != 0 {
 				t.Error("A dispatched stale directive after its blocked ACK")
 			}
-			if ds := finalSoundDirectives(t, bDown); len(ds) != 1 || ds[0].GetName() != "audio_play" {
+			if ds := finalSoundDirectives(t, bDown); len(ds) != 2 || ds[0].GetName() != "audio_play" || ds[1].GetName() != nativeMusicGetNext {
 				t.Fatal("B playback not delivered")
 			}
 			a.wg.Wait()

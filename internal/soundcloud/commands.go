@@ -14,6 +14,7 @@ type providerCommand struct {
 	number         int
 	offset         int64
 	relative       bool
+	native         bool
 }
 
 var providerName = regexp.MustCompile(`(?i)\b(?:sound\s*cloud)\b|саунд\s*клауд(?:е|e|а)?|саунд\s*клоуд(?:е|а)?`)
