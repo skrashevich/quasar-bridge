@@ -1,7 +1,7 @@
 name: checks
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_call:
     inputs:
@@ -11,6 +11,9 @@ on:
         default: false
 permissions:
   contents: read
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.upload-speaker || false }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && !inputs.upload-speaker }}
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -49,6 +52,42 @@ jobs:
             -e QUASAR_TEST_BINARY=/test-binary -e STATION_PCM_PACKAGE_TOOL=/pcm-package-tool \
             -w /src python:3.13-alpine \
             python3 scripts/test-speaker-package.py
+      - name: Build source archive
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            python3 scripts/build-source-package.py --tag "$GITHUB_REF_NAME"
+          else
+            python3 scripts/build-source-package.py
+          fi
+          cp install.sh dist/install.sh
+      - name: Keep common release assets
+        if: inputs.upload-speaker
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: speaker-release-common
+          path: |
+            dist/install.sh
+            dist/quasar-bridge-source.tar.gz
+            dist/quasar-bridge-source.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  speaker:
+    name: speaker (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, armv7]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
       - name: Install UPX 5.2.1
         shell: bash
         run: |
@@ -59,34 +98,23 @@ jobs:
           echo "402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657  $archive" | sha256sum --check --strict
           tar -xJf "$archive" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/upx-5.2.1-amd64_linux" >> "$GITHUB_PATH"
-      - name: Build UPX-compressed standalone speaker archives
+      - name: Build UPX-compressed standalone speaker archive
         shell: bash
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
         run: |
-          for arch in arm64 armv7; do
-            if [ "$GITHUB_REF_TYPE" = tag ]; then
-              python3 scripts/build-speaker-package.py --arch "$arch" --upx --tag "$GITHUB_REF_NAME"
-            else
-              python3 scripts/build-speaker-package.py --arch "$arch" --upx
-            fi
-          done
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            python3 scripts/build-source-package.py --tag "$GITHUB_REF_NAME"
+            python3 scripts/build-speaker-package.py --arch "$PACKAGE_ARCH" --upx --tag "$GITHUB_REF_NAME"
           else
-            python3 scripts/build-source-package.py
+            python3 scripts/build-speaker-package.py --arch "$PACKAGE_ARCH" --upx
           fi
-          cp install.sh dist/install.sh
-      - name: Keep release assets
+      - name: Keep speaker release assets
         if: inputs.upload-speaker
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: speaker-release
+          name: speaker-release-${{ matrix.arch }}
           path: |
-            dist/install.sh
-            dist/quasar-bridge-source.tar.gz
-            dist/quasar-bridge-source.tar.gz.sha256
-            dist/quasar-bridge-linux-arm64.tar.gz
-            dist/quasar-bridge-linux-arm64.tar.gz.sha256
-            dist/quasar-bridge-linux-armv7.tar.gz
-            dist/quasar-bridge-linux-armv7.tar.gz.sha256
+            dist/quasar-bridge-linux-${{ matrix.arch }}.tar.gz
+            dist/quasar-bridge-linux-${{ matrix.arch }}.tar.gz.sha256
           if-no-files-found: error
           retention-days: 7

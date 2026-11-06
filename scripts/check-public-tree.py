@@ -19,7 +19,7 @@ PATTERNS = {
 }
 
 
-def findings(data):
+def findings(data, *, allow_qemu_host=False):
     result = []
     for reason, pattern in PATTERNS.items():
         for match in pattern.finditer(data):
@@ -28,6 +28,10 @@ def findings(data):
         try:
             address = ipaddress.ip_address(match.group().decode())
         except ValueError:
+            continue
+        # QEMU's standard host alias is part of these recorded guest commands,
+        # not a deployment address. Keep the exception local to the VHS sources.
+        if allow_qemu_host and address == ipaddress.ip_address(0x0A000202):
             continue
         if any(address in network for network in PRIVATE_NETS):
             result.append((data[:match.start()].count(b"\n") + 1, "private network address"))
@@ -41,7 +45,8 @@ def main():
         name = raw.decode()
         # Scan the actual index, which is what the next commit will contain.
         data = subprocess.check_output(["git", "show", ":" + name], cwd=ROOT)
-        for line, reason in findings(data):
+        allow_qemu_host = name in ("scripts/vhs/install-api.tape", "scripts/vhs/README.md")
+        for line, reason in findings(data, allow_qemu_host=allow_qemu_host):
             print(f"{name}:{line}: {reason}")
             failed = True
     if failed:

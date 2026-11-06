@@ -351,12 +351,17 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				sc.StreamId = int64(p.audioStream)
 			}
 			sc.MessageId = p.id
+			finalSpeech := sc.GetClose() != nil && (!p.streaming || !p.audioIsProgress)
 			n.mu.Unlock()
 			out, err := f.Marshal()
 			if err != nil {
 				return err
 			}
-			return n.down(ctx, k, out)
+			err = n.down(ctx, k, out)
+			if err == nil && finalSpeech {
+				reply.Delivered(p.ctx)
+			}
+			return err
 		}
 		drop := original != nil && original.local && (original.header.StreamId == nil || sc.GetStreamId() != original.header.GetStreamId())
 		n.mu.Unlock()
@@ -565,7 +570,10 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		if err != nil {
 			n.discardSound(p)
-			if result.Route == "home" {
+			if result.Route == "recovery" {
+				slog.Warn("native_recovery_failed", "request", requestTag(p.id), "error", err)
+				result.Answer = "Не удалось запланировать аварийное восстановление. Проверьте журнал Quasar Bridge и выполните восстановление по SSH."
+			} else if result.Route == "home" {
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
 			} else if result.Route == "airplay" {
 				result.Answer = "Не удалось изменить состояние AirPlay. Проверьте журнал Quasar Bridge."

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"quasarbridge/internal/configvoice"
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
@@ -27,6 +28,7 @@ type Tools struct {
 	WebReader     *WebReader
 	Playback      *MusicPlayback
 	AirPlay       AirPlayController
+	Configuration BridgeConfiguration
 	Now           func() time.Time
 }
 
@@ -35,6 +37,12 @@ func definition(name, description string, properties map[string]any, required []
 }
 func (t *Tools) Definitions() []llm.Tool {
 	var tools []llm.Tool
+	if t.Config.Configuration && t.Configuration != nil {
+		tools = append(tools, configurationDefinitions()...)
+		if _, ok := t.Configuration.(BridgeRouting); ok {
+			tools = append(tools, routingDefinitions()...)
+		}
+	}
 	if t.AirPlay != nil {
 		tools = append(tools, airPlayDefinitions()...)
 	}
@@ -68,6 +76,10 @@ func (t *Tools) Call(ctx context.Context, name, args string) (any, error) {
 		return nil, errors.New("tool arguments exceed limit")
 	}
 	switch {
+	case (name == "get_quasar_bridge_routing" || name == "set_quasar_bridge_routing_rule" || name == "control_quasar_bridge_routing_rule" || name == "test_quasar_bridge_routing" || name == "configure_quasar_bridge_routing") && t.Config.Configuration && t.Configuration != nil:
+		return t.callRouting(ctx, name, args)
+	case (name == "get_quasar_bridge_config" || name == "set_quasar_bridge_config" || name == "apply_quasar_bridge_config") && t.Config.Configuration && t.Configuration != nil:
+		return t.callConfiguration(ctx, name, args)
 	case (name == "get_airplay_status" || name == "control_airplay" || name == "control_airplay_playback" || name == "set_airplay_volume") && t.AirPlay != nil:
 		return t.callAirPlay(ctx, name, args)
 	case (name == "check_quasar_bridge_update" || name == "install_quasar_bridge_update") && t.Config.Updates && t.Updater != nil:
@@ -141,7 +153,9 @@ func historyQuestion(text string) bool {
 	}
 	return false
 }
-func (t *Tools) InitialCalls(text string) []llm.FunctionCall { return t.initialCalls(text, false) }
+func (t *Tools) InitialCalls(text string) []llm.FunctionCall {
+	return t.initialCalls(text, false, t.configurationContextTool(text, nil))
+}
 
 // Followups inherit the topic, but temporal filters always come from this turn.
 func (t *Tools) InitialCallsForConversation(messages []llm.Message) []llm.FunctionCall {
@@ -165,9 +179,23 @@ func (t *Tools) InitialCallsForConversation(messages []llm.Message) []llm.Functi
 			}
 		}
 	}
-	return t.initialCalls(text, history)
+	return t.initialCalls(text, history, t.configurationContextTool(text, messages[:last]))
 }
-func (t *Tools) initialCalls(text string, history bool) []llm.FunctionCall {
+func (t *Tools) configurationContextTool(text string, earlier []llm.Message) string {
+	if !t.Config.Configuration || t.Configuration == nil {
+		return ""
+	}
+	if configvoice.RoutingInConversation(text, earlier) {
+		if _, ok := t.Configuration.(BridgeRouting); ok {
+			return "get_quasar_bridge_routing"
+		}
+	}
+	if configvoice.InConversation(text, earlier) {
+		return "get_quasar_bridge_config"
+	}
+	return ""
+}
+func (t *Tools) initialCalls(text string, history bool, configurationTool string) []llm.FunctionCall {
 	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
 		text = webaddress.Normalize(text)
 	}
@@ -178,6 +206,10 @@ func (t *Tools) initialCalls(text string, history bool) []llm.FunctionCall {
 	}
 	if t.Config.Updates && t.Updater != nil && update.IsCheckRequest(text) {
 		calls = append(calls, llm.FunctionCall{Name: "check_quasar_bridge_update", Arguments: "{}"})
+		return calls
+	}
+	if configurationTool != "" {
+		calls = append(calls, llm.FunctionCall{Name: configurationTool, Arguments: "{}"})
 		return calls
 	}
 	history = history || historyQuestion(text)

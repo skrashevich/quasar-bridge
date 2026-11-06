@@ -10,6 +10,13 @@
   "llm_system_prompt": "",
   "llm_api": "chat_completions",
   "llm_chat_parameters": {},
+  "llm_strip_prefixes": [
+    "спроси у нейросети",
+    "спроси нейросеть",
+    "спроси у своей модели",
+    "спроси свою модель",
+    "спроси модель"
+  ],
   "llm_reasoning_effort": "",
   "llm_max_output_tokens": 4096,
   "llm_hosted_tools": [],
@@ -158,8 +165,11 @@
         "route": "llm",
         "match": {
           "contains_any": [
+            "спроси у нейросети",
             "спроси нейросеть",
+            "спроси у своей модели",
             "спроси свою модель",
+            "спроси модель",
             "напиши код",
             "напиши программу",
             "реши задачу",
@@ -246,6 +256,7 @@
     "time": true,
     "play_sound": false,
     "updates": true,
+    "configuration": true,
     "timezone": "UTC",
     "max_rounds": 3,
     "max_calls": 4,

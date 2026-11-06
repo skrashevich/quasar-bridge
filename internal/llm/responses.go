@@ -17,6 +17,14 @@ func WithoutHostedTools(ctx context.Context) context.Context {
 }
 
 func (c *Client) responses(ctx context.Context, messages []Message, structured bool, tools []Tool) (Message, error) {
+	subscription := c.API == "chatgpt"
+	if subscription {
+		for _, tool := range c.HostedTools {
+			if tool != "web_search" {
+				return Message{}, errors.New("ChatGPT supports only the web_search hosted tool")
+			}
+		}
+	}
 	input := make([]any, 0, len(messages))
 	for _, message := range messages {
 		if len(message.responseOutput) > 0 {
@@ -30,10 +38,17 @@ func (c *Client) responses(ctx context.Context, messages []Message, structured b
 			continue
 		}
 		if message.Content != "" || len(message.ToolCalls) == 0 {
+			if subscription && message.Role == "system" {
+				message.Role = "developer"
+			}
 			input = append(input, map[string]any{"role": message.Role, "content": message.Content})
 		}
 		for _, call := range message.ToolCalls {
-			input = append(input, map[string]any{"type": "function_call", "call_id": call.ID, "name": call.Function.Name, "arguments": call.Function.Arguments})
+			item := map[string]any{"type": "function_call", "call_id": call.ID, "name": call.Function.Name, "arguments": call.Function.Arguments}
+			if subscription {
+				item["namespace"] = "quasar"
+			}
+			input = append(input, item)
 		}
 	}
 	budget := c.MaxOutputTokens
@@ -51,7 +66,11 @@ func (c *Client) responses(ctx context.Context, messages []Message, structured b
 	if c.ReasoningEffort != "" {
 		request["reasoning"] = map[string]string{"effort": c.ReasoningEffort}
 	}
-	if structured {
+	if subscription {
+		request["stream"] = true
+		delete(request, "max_output_tokens")
+	}
+	if structured && !subscription {
 		request["text"] = map[string]any{"format": map[string]string{"type": "json_object"}}
 	}
 	definitions := make([]any, 0, len(tools)+len(c.HostedTools))
@@ -64,6 +83,12 @@ func (c *Client) responses(ctx context.Context, messages []Message, structured b
 			"description": tool.Function.Description, "parameters": tool.Function.Parameters,
 			"strict": false,
 		})
+	}
+	if subscription && len(definitions) > 0 {
+		definitions = []any{map[string]any{
+			"type": "namespace", "name": "quasar",
+			"description": "Quasar Bridge assistant tools", "tools": definitions,
+		}}
 	}
 	if !structured && ctx.Value(withoutHostedToolsKey{}) != true {
 		for _, tool := range c.HostedTools {
