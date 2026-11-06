@@ -86,7 +86,7 @@ Quasar Bridge учит Яндекс Станцию отвечать с помо�
 **На компьютере** выполните команду, подставив адрес колонки вместо `SPEAKER_IP`:
 
 ```sh
-curl -fL -o /tmp/install-quasar-bridge.sh https://github.com/skrashevich/quasar-bridge/releases/latest/download/install.sh && sh /tmp/install-quasar-bridge.sh root@SPEAKER_IP -p 2222
+curl -fsSL -o /tmp/install-quasar-bridge.sh https://github.com/skrashevich/quasar-bridge/releases/latest/download/install.sh && sh /tmp/install-quasar-bridge.sh root@SPEAKER_IP -p 2222
 ```
 
 Если SSH на колонке слушает другой порт, замените `2222`.
@@ -99,7 +99,7 @@ curl -fL -o /tmp/install-quasar-bridge.sh https://github.com/skrashevich/quasar-
 3. Тип API: Chat Completions (подходит почти всем) или Responses. Для `chatgpt` он выбирается автоматически.
 4. Номер модели из списка, загруженного через API. Для `chatgpt` перед этим потребуется вход в браузере.
 5. Секретная ссылка на Home Assistant MCP — Enter, если умный дом не нужен.
-   Ввод тоже скрыт.
+   Ввод виден, чтобы можно было проверить и исправить адрес.
 
 Затем он проверит, что нейросеть отвечает, предложит переключить Алису
 на Quasar Bridge и перезагрузить колонку. Если что-то введено с ошибкой,
@@ -107,7 +107,8 @@ curl -fL -o /tmp/install-quasar-bridge.sh https://github.com/skrashevich/quasar-
 автоматически.
 
 Для `chatgpt` установщик предложит войти в браузере. На компьютере нужно
-открыть SSH-туннель для обратного вызова входа; команды и ограничения режима
+открыть SSH-туннель для обратного вызова входа — готовую команду с адресом
+колонки и портом установщик покажет сам. Дополнительные команды и ограничения режима
 описаны в [инструкции подключения подписки](docs/guide.md#подписка-chatgptcodex).
 Если список моделей получить не удалось или он пуст, установщик предложит
 повторить настройку подключения либо отменить установку.
@@ -132,6 +133,8 @@ curl -fL -o /tmp/install-quasar-bridge.sh https://github.com/skrashevich/quasar-
 нажмите Enter — всё сохранится. Установщик заменит программу, проверит,
 что новая версия запустилась, а при ошибке вернёт прежнюю. Если Алиса уже
 подключена к Quasar Bridge, перезагружать колонку не нужно.
+При изменении подключения к нейросети URL Home Assistant сохраняется
+и повторно не запрашивается.
 
 <details>
 <summary>Демонстрация обновления с сохранением настроек</summary>

@@ -4,13 +4,17 @@ import hashlib
 import io
 import http.server
 import os
+import pty
 from pathlib import Path
 import json
+import select
+import shlex
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import termios
 import threading
 import unittest
 import time
@@ -188,6 +192,20 @@ printf '%s\\n' "$*" >> "$QUASAR_TEST_TRACE"
 if [ "$1" = -chatgpt-auth ] && [ "$2" = login ]; then
  test "${QUASAR_TEST_FAIL_LOGIN:-}" != yes || exit 1
  if [ -n "${QUASAR_LLM_CHATGPT_AUTH_FILE:-}" ]; then printf '{}' > "$QUASAR_LLM_CHATGPT_AUTH_FILE"; fi
+ printf 'Continue with ChatGPT: open this URL in your browser.\nhttps://auth.example.invalid/authorize?state=fixture\nWaiting for browser sign-in (10 minutes)…\n'
+ if [ -n "${QUASAR_TEST_AUTH_WAIT_FILE:-}" ]; then
+  while [ ! -e "$QUASAR_TEST_AUTH_WAIT_FILE" ]; do sleep 0.1; done
+ fi
+ printf 'ChatGPT sign-in completed.\n{"signed_in":true,"email":"fixture@example.invalid"}\n'
+fi
+if [ -n "${QUASAR_TEST_HOME_TRACE:-}" ]; then
+ printf '%s\n' "${QUASAR_HOME_MCP_URL:-}" >> "$QUASAR_TEST_HOME_TRACE"
+fi
+if [ "$1" = -check-backends ] && [ "${QUASAR_TEST_FAIL_BACKEND_ONCE:-}" = yes ] &&
+   [ ! -e "$QUASAR_DATA_DIR/backend-attempted" ]; then
+ touch "$QUASAR_DATA_DIR/backend-attempted"
+ printf 'backend temporarily unavailable\n' >&2
+ exit 1
 fi
 if [ "$1" = -list-models ]; then
  if [ "${QUASAR_TEST_FAIL_MODELS:-}" = yes ]; then
@@ -295,6 +313,227 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
         self.assertEqual((self.state / "config.json").read_text(), config)
         self.assertEqual((self.state / "runtime.env").read_text(), runtime)
 
+    def test_changing_llm_keeps_home_url_without_asking_again(self):
+        self.state.mkdir()
+        (self.state / "config.json").write_text('{"mode":"observe"}')
+        (self.state / "endpoint-backup.json").write_text("existing Alice connection")
+        home_url = "https://home.example.invalid/mcp/fixture'\"\\$`secret"
+        escaped = home_url.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+        runtime = ('KEEP_FIXTURE=yes\n# BEGIN QUASAR SETUP\n'
+                   'QUASAR_LLM_MODEL="old-model"\n'
+                   f'QUASAR_HOME_MCP_URL="{escaped}"\n'
+                   '# END QUASAR SETUP\n')
+        (self.state / "runtime.env").write_text(runtime)
+        home_trace = self.root / "home-values"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_HOME_TRACE=str(home_trace)),
+                                input="y\nhttps://llm.example.invalid/v1\n\n1\n2\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("URL Home Assistant MCP", result.stdout)
+        output = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_HOME_MCP_URL" "$QUASAR_LLM_MODEL" "$KEEP_FIXTURE"',
+            "sh", str(self.state / "runtime.env"),
+        ], text=True)
+        self.assertEqual(output.splitlines(), [home_url, "fixture-model", "yes"])
+        self.assertTrue(all(value == home_url for value in home_trace.read_text().splitlines()))
+
+    def test_changing_llm_keeps_external_and_inherited_home_settings(self):
+        cases = (
+            ('QUASAR_HOME_MCP_URL="https://home.example.invalid/outside"\n', "", "https://home.example.invalid/outside"),
+            ('# BEGIN QUASAR SETUP\nQUASAR_HOME_MCP_URL="https://home.example.invalid/old"\n'
+             '# END QUASAR SETUP\nQUASAR_HOME_MCP_URL="https://home.example.invalid/current"\n',
+             "", "https://home.example.invalid/current"),
+            ("KEEP_FIXTURE=yes\n", "https://home.example.invalid/inherited", "https://home.example.invalid/inherited"),
+            ("", "", ""),
+        )
+        for runtime, inherited, expected in cases:
+            with self.subTest(runtime=runtime, inherited=inherited):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.state.mkdir()
+                (self.state / "config.json").write_text('{"mode":"observe"}')
+                (self.state / "endpoint-backup.json").write_text("existing Alice connection")
+                if runtime:
+                    (self.state / "runtime.env").write_text(runtime)
+                home_trace = self.root / "home-values"
+                home_trace.unlink(missing_ok=True)
+                env = dict(self.env, QUASAR_HOME_MCP_URL=inherited,
+                           QUASAR_TEST_HOME_TRACE=str(home_trace))
+                result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                        env=env,
+                                        input="y\nhttps://llm.example.invalid/v1\n\n1\n2\n",
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("URL Home Assistant MCP", result.stdout)
+                self.assertTrue(all(value == expected for value in home_trace.read_text().splitlines()))
+                saved = (self.state / "runtime.env").read_text()
+                if "QUASAR_HOME_MCP_URL=" not in runtime:
+                    self.assertNotIn("QUASAR_HOME_MCP_URL=", saved)
+                output = subprocess.check_output([
+                    "sh", "-c", '. "$1"; printf "%s" "$QUASAR_HOME_MCP_URL"',
+                    "sh", str(self.state / "runtime.env"),
+                ], env=env, text=True)
+                self.assertEqual(output, expected)
+
+    def test_backend_retry_keeps_home_url_without_asking_again(self):
+        home_url = "https://home.example.invalid/first-input"
+        home_trace = self.root / "home-values"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_BACKEND_ONCE="yes",
+                                         QUASAR_TEST_HOME_TRACE=str(home_trace)),
+                                input=(f"https://llm.example.invalid/v1\n\n1\n2\n{home_url}\ny\n"
+                                       "https://llm.example.invalid/v1\n\n1\n2\nn\n"),
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.count("URL Home Assistant MCP"), 1)
+        self.assertIn("backend temporarily unavailable", result.stdout + result.stderr)
+        values = home_trace.read_text().splitlines()
+        self.assertTrue(all(value == home_url for value in values[1:]))
+
+    def test_failed_backend_can_correct_only_home_url(self):
+        wrong_url = "https://home.example.invalid/typo"
+        corrected_url = "https://home.example.invalid/corrected"
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.trace.unlink(missing_ok=True)
+                home_trace = self.root / "home-values"
+                home_trace.unlink(missing_ok=True)
+                if existing:
+                    self.state.mkdir()
+                    (self.state / "config.json").write_text('{"mode":"observe"}')
+                    (self.state / "endpoint-backup.json").write_text("existing Alice connection")
+                    (self.state / "runtime.env").write_text(
+                        f'# BEGIN QUASAR SETUP\nQUASAR_HOME_MCP_URL="{wrong_url}"\n# END QUASAR SETUP\n')
+                answers = ("y\n" if existing else "") + "https://llm.example.invalid/v1\n\n1\n2\n"
+                if not existing:
+                    answers += wrong_url + "\n"
+                answers += f"2\n{corrected_url}\n" + ("" if existing else "n\n")
+                result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                        env=dict(self.env, QUASAR_TEST_FAIL_BACKEND_ONCE="yes",
+                                                 QUASAR_TEST_HOME_TRACE=str(home_trace)),
+                                        input=answers, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = self.trace.read_text().splitlines()
+                self.assertEqual(calls.count("-list-models"), 1)
+                self.assertEqual(calls.count("-check-backends"), 2)
+                self.assertEqual(result.stdout.count("URL Home Assistant MCP"), 1 if existing else 2)
+                values = home_trace.read_text().splitlines()
+                self.assertIn(wrong_url, values)
+                self.assertEqual(values[-1], corrected_url)
+                output = subprocess.check_output([
+                    "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_HOME_MCP_URL" "$QUASAR_LLM_MODEL"',
+                    "sh", str(self.state / "runtime.env"),
+                ], text=True)
+                self.assertEqual(output.splitlines(), [corrected_url, "fixture-model"])
+
+    def test_subscription_setup_shows_concrete_tunnel_and_hides_status_json(self):
+        tunnel = "ssh -N -L 1455:127.0.0.1:1455 -p 2222 root@192.0.2.24"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_SSH_TUNNEL=tunnel),
+                                input="chatgpt\n2\n\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(tunnel, result.stdout)
+        self.assertNotIn("SSH_PORT", result.stdout)
+        self.assertNotIn("SPEAKER_IP", result.stdout)
+        self.assertIn("https://auth.example.invalid/authorize?state=fixture", result.stdout)
+        self.assertNotIn('"signed_in"', result.stdout)
+        self.assertNotIn("fixture@example.invalid", result.stdout)
+        self.assertNotIn("\x1b[", result.stdout)
+
+    def test_subscription_url_arrives_before_sign_in_completes_when_piped(self):
+        marker = self.root / "complete-login"
+        process = subprocess.Popen(["sh", str(self.package / "setup.sh")],
+                                   env=dict(self.env, QUASAR_TEST_AUTH_WAIT_FILE=str(marker)),
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT)
+        process.stdin.write(b"chatgpt\n2\n\nn\n")
+        process.stdin.close()
+        process.stdin = None
+        output = bytearray()
+        url = b"https://auth.example.invalid/authorize?state=fixture"
+        deadline = time.monotonic() + 3
+        try:
+            while url not in output and time.monotonic() < deadline:
+                if select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))[0]:
+                    chunk = os.read(process.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+            self.assertIn(url, output, output.decode(errors="replace"))
+            self.assertIsNone(process.poll())
+            self.assertNotIn(b'"signed_in"', output)
+        finally:
+            # Release the auth fixture even if the URL was buffered or an assertion failed.
+            marker.touch()
+            try:
+                remaining, _ = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+                raise
+            output.extend(remaining)
+        self.assertEqual(process.returncode, 0, output.decode(errors="replace"))
+        self.assertNotIn(b'"signed_in"', output)
+
+    def test_terminal_echoes_home_url_but_hides_api_key(self):
+        master, slave = pty.openpty()
+        process = subprocess.Popen(["sh", str(self.package / "setup.sh")],
+                                   env=dict(self.env, TERM="xterm", NO_COLOR="1"),
+                                   stdin=slave, stdout=slave, stderr=slave)
+        os.close(slave)
+        output = bytearray()
+        cursor = 0
+
+        def reply_after(fragment, answer, echo=None):
+            nonlocal cursor
+            deadline = time.monotonic() + 5
+            needle = fragment.encode()
+            while needle not in output[cursor:]:
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0, bytes(output).decode(errors="replace"))
+                if select.select([master], [], [], remaining)[0]:
+                    output.extend(os.read(master, 65536))
+            # Drain the prompt before sending input, including its styling suffix.
+            while select.select([master], [], [], 0.05)[0]:
+                output.extend(os.read(master, 65536))
+            cursor = len(output)
+            if echo is not None:
+                self.assertEqual(bool(termios.tcgetattr(master)[3] & termios.ECHO), echo,
+                                 bytes(output).decode(errors="replace"))
+            os.write(master, (answer + "\n").encode())
+
+        try:
+            reply_after("Адрес API", "https://llm.example.invalid/v1")
+            reply_after("Ключ API", "fixture-api-key-hidden", echo=False)
+            reply_after("Chat Completions", "1")
+            reply_after("Номер модели", "2")
+            home_url = "https://home.example.invalid/visible-input"
+            reply_after("URL Home Assistant MCP", home_url, echo=True)
+            reply_after("Подключить Алису", "n")
+            deadline = time.monotonic() + 5
+            while process.poll() is None or select.select([master], [], [], 0)[0]:
+                self.assertLess(time.monotonic(), deadline, output.decode(errors="replace"))
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+            self.assertEqual(process.wait(timeout=5), 0, output.decode(errors="replace"))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            os.close(master)
+        text = output.decode()
+        self.assertIn(home_url, text)
+        self.assertNotIn("fixture-api-key-hidden", text)
+        self.assertNotIn("\x1b[", text)
+
     def test_control_forwards_authentication_actions(self):
         self.state.mkdir()
         for action in ("login", "status", "models", "logout"):
@@ -304,6 +543,67 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.trace.read_text().splitlines(),
                          ["-chatgpt-auth " + action for action in ("login", "status", "models", "logout")])
+
+
+class HostBootstrapTest(unittest.TestCase):
+    def test_tunnel_command_keeps_target_and_user_ssh_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = root / "release"
+            release.mkdir()
+            setup = root / "setup.sh"
+            setup.write_text('#!/bin/sh\nprintf "%s" "${QUASAR_SSH_TUNNEL:-}" > "$QUASAR_TEST_TUNNEL"\n')
+            archive = release / "quasar-bridge-linux-arm64.tar.gz"
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(setup, arcname="setup.sh")
+            archive.with_suffix(".gz.sha256").write_text(
+                f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
+
+            class Handler(http.server.SimpleHTTPRequestHandler):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, directory=str(release), **kwargs)
+
+                def log_message(self, *args):
+                    pass
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            shim = root / "shim"
+            shim.mkdir()
+            ssh = shim / "ssh"
+            ssh.write_text('''#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+if "-O" in sys.argv:
+    sys.exit(0)
+command = sys.argv[-1]
+if command == "uname -m":
+    print("aarch64")
+    sys.exit(0)
+sys.exit(subprocess.call(["sh", "-c", command], env=os.environ))
+''')
+            ssh.chmod(0o755)
+            tunnel_file = root / "tunnel-command"
+            options = ["-p", "2222", "-i", "/tmp/identity 'with spaces'", "-o", "ServerAliveInterval=30"]
+            try:
+                result = subprocess.run(["sh", str(ROOT / "install.sh"), "root@fixture", *options],
+                                        env=dict(os.environ,
+                                                 PATH=str(shim) + os.pathsep + os.environ["PATH"],
+                                                 QUASAR_RELEASE_URL=f"http://127.0.0.1:{server.server_port}",
+                                                 QUASAR_TEST_TUNNEL=str(tunnel_file)),
+                                        input="", capture_output=True, text=True, timeout=10)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            tunnel = shlex.split(tunnel_file.read_text())
+            self.assertEqual(tunnel, ["ssh", "-N", "-L", "1455:127.0.0.1:1455", *options, "root@fixture"])
+            self.assertNotIn("ControlPath", tunnel_file.read_text())
+            self.assertNotIn("ControlMaster", tunnel_file.read_text())
+            self.assertNotIn("\x1b[", result.stdout)
 
 
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0,
@@ -647,7 +947,7 @@ exec sh -c "$*"
         runtime.write_text("KEEP_FIXTURE=yes\n")
         url = self.serve(Handler) + "/v1"
         self.run_script(self.package / "setup.sh",
-                        input_text=f"y\n{url}\nfixture-key\n1\n1\n\nn\n", ok=False)
+                        input_text=f"y\n{url}\nfixture-key\n1\n1\nn\n", ok=False)
         self.assertEqual(config.read_bytes(), original)
         self.assertEqual(runtime.read_text(), "KEEP_FIXTURE=yes\n")
         self.control("status")

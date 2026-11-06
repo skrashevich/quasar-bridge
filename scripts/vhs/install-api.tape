@@ -7,7 +7,7 @@ Enter
 Sleep 500ms
 Show
 Sleep 2s
-Type "curl -fL -o install.sh https://github.com/skrashevich/quasar-bridge/releases/latest/download/install.sh"
+Type "curl -fsSL -o install.sh https://github.com/skrashevich/quasar-bridge/releases/latest/download/install.sh"
 Enter
 Wait /^\$$/
 Sleep 1s
