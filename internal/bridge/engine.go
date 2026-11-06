@@ -41,6 +41,9 @@ type Engine struct {
 	Playback      PlaybackController
 	Music         MusicStarter
 	Dialogue      *dialogue.Store
+	// StripPrefixes are model addresses removed only from outbound requests.
+	// An empty list disables stripping.
+	StripPrefixes []string
 	dialogueOnce  sync.Once
 	routing       atomic.Pointer[RoutingPolicy]
 }
@@ -162,7 +165,7 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
-		answer, err := e.Home.Handle(ctx, text)
+		answer, err := e.Home.Handle(ctx, e.stripModelPrefix(text))
 		result.Answer = answer
 		return result, err
 	case "llm":
@@ -190,6 +193,7 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
+	messages = e.modelMessages(messages)
 	private := snapshot.PrivateHistory
 	var answer string
 	var err error
