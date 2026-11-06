@@ -13,13 +13,14 @@ import (
 
 const maxStreamBytes = 2 << 20
 
-// readResponseStream accepts only the terminal response object. Deltas can
-// contain unfinished actions or text and must never reach the tool runner.
+// readResponseStream releases output only after the terminal response. Some
+// providers omit its output array, so retain completed items, never deltas.
 func readResponseStream(body io.Reader) ([]byte, error) {
 	limited := &io.LimitedReader{R: body, N: maxStreamBytes + 1}
 	scanner := bufio.NewScanner(limited)
 	scanner.Buffer(make([]byte, 4096), maxStreamBytes+1)
 	var data strings.Builder
+	items := make(map[int]jsontext.Value)
 	first := true
 	consume := func() ([]byte, error) {
 		if data.Len() == 0 {
@@ -31,16 +32,56 @@ func readResponseStream(body io.Reader) ([]byte, error) {
 			return nil, errors.New("LLM response stream not completed")
 		}
 		var event struct {
-			Type     string         `json:"type"`
-			Response jsontext.Value `json:"response"`
+			Type        string         `json:"type"`
+			Response    jsontext.Value `json:"response"`
+			OutputIndex *int           `json:"output_index"`
+			Item        jsontext.Value `json:"item"`
 		}
 		if json.Unmarshal([]byte(payload), &event) != nil || event.Type == "" {
 			return nil, errors.New("invalid LLM response stream")
 		}
 		switch event.Type {
+		case "response.output_item.done":
+			var item struct {
+				Type string `json:"type"`
+			}
+			if event.OutputIndex == nil || *event.OutputIndex < 0 || json.Unmarshal(event.Item, &item) != nil || item.Type == "" {
+				return nil, errors.New("invalid LLM response stream")
+			}
+			if _, duplicate := items[*event.OutputIndex]; duplicate {
+				return nil, errors.New("invalid LLM response stream")
+			}
+			items[*event.OutputIndex] = event.Item
+			return nil, nil
 		case "response.completed":
 			if len(event.Response) == 0 || string(event.Response) == "null" {
 				return nil, errors.New("invalid LLM response stream")
+			}
+			if len(items) > 0 {
+				var response map[string]jsontext.Value
+				var output []jsontext.Value
+				if json.Unmarshal(event.Response, &response) != nil {
+					return nil, errors.New("invalid LLM response stream")
+				}
+				if raw, ok := response["output"]; ok && json.Unmarshal(raw, &output) != nil {
+					return nil, errors.New("invalid LLM response stream")
+				}
+				if len(output) == 0 {
+					// Allocate by item count, never by an untrusted output index.
+					output = make([]jsontext.Value, len(items))
+					for index, item := range items {
+						if index >= len(output) {
+							return nil, errors.New("invalid LLM response stream")
+						}
+						output[index] = item
+					}
+					var err error
+					response["output"], err = json.Marshal(output)
+					if err != nil {
+						return nil, errors.New("invalid LLM response stream")
+					}
+					return json.Marshal(response)
+				}
 			}
 			return event.Response, nil
 		case "response.failed", "error":
