@@ -40,6 +40,10 @@ func (c *Client) loadTokens() error {
 	if len(b) > 64<<10 {
 		return errors.New("soundcloud: token_file too large")
 	}
+	var document map[string]any
+	if json.Unmarshal(b, &document) != nil || document["kind"] == webSessionKind {
+		return errors.New("soundcloud: invalid official token_file")
+	}
 	var t tokenData
 	if json.Unmarshal(b, &t) != nil {
 		return errors.New("soundcloud: invalid token_file")
@@ -145,15 +149,44 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 func (c *Client) authorizedUser() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.mode == "official" && c.userAuth
+	return c.mode == "official" && c.userAuth || c.mode == "web" && c.webToken != ""
 }
 func (c *Client) Likes(ctx context.Context, limit int) ([]Track, error) {
 	if !c.authorizedUser() {
 		return nil, ErrAuthorization
 	}
 	limit = c.limit(limit)
-	items, e := c.pages(ctx, c.base()+"/me/likes/tracks", url.Values{"limit": {itoa(limit)}, "linked_partitioning": {"1"}}, limit, true)
-	return tracksFrom(items, limit), e
+	if c.mode == "web" {
+		account, err := c.Account(ctx)
+		if err != nil {
+			return nil, err
+		}
+		items, err := c.pages(ctx, c.base()+"/users/"+itoa64(account.ID)+"/track_likes", url.Values{"limit": {itoa(limit)}, "linked_partitioning": {"1"}}, inspectionLimit(limit), false)
+		if err != nil {
+			return nil, err
+		}
+		tracks, err := c.personalTracks(ctx, items, limit)
+		if err == nil && len(items) != 0 && len(tracks) == 0 {
+			err = ErrNoPlayableLikes
+		}
+		return tracks, err
+	}
+	var tracks []Track
+	rawSeen := false
+	err := c.visitPages(ctx, c.base()+"/me/likes/tracks", url.Values{"limit": {itoa(limit)}, "linked_partitioning": {"1"}}, func(item catalogItem) (bool, error) {
+		rawSeen = true
+		if track, ok := item.track(); ok {
+			tracks = append(tracks, track)
+		}
+		return len(tracks) >= limit, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if rawSeen && len(tracks) == 0 {
+		return nil, ErrNoPlayableLikes
+	}
+	return tracks, nil
 }
 func (c *Client) Like(ctx context.Context, t Track, like bool) error {
 	if !c.authorizedUser() {
@@ -164,9 +197,18 @@ func (c *Client) Like(ctx context.Context, t Track, like bool) error {
 		return e
 	}
 	method := http.MethodPost
+	path := c.base() + "/likes/tracks/" + id
+	if c.mode == "web" {
+		account, err := c.Account(ctx)
+		if err != nil {
+			return err
+		}
+		method = http.MethodPut
+		path = c.base() + "/users/" + itoa64(account.ID) + "/track_likes/" + id
+	}
 	if !like {
 		method = http.MethodDelete
 	}
-	_, e = c.api(ctx, method, c.base()+"/likes/tracks/"+id, nil)
+	_, e = c.api(ctx, method, path, nil)
 	return e
 }

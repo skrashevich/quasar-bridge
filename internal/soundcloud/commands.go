@@ -106,6 +106,34 @@ func parseProviderCommand(text string) providerCommand {
 	if c.action != "" {
 		return c
 	}
+	personalText := text
+	personalRead := false
+	for _, prefix := range []string{"включи ", "поставь ", "покажи ", "перечисли ", "назови ", "play ", "list "} {
+		if rest, ok := strings.CutPrefix(personalText, prefix); ok {
+			personalText = rest
+			personalRead = prefix == "покажи " || prefix == "перечисли " || prefix == "назови " || prefix == "list "
+			break
+		}
+	}
+	switch personalText {
+	case "моя библиотека", "мою библиотеку", "мои плейлисты", "мой плейлист", "my library", "my playlists":
+		c.action = "library"
+		return c
+	}
+	if personalRead {
+		return providerCommand{}
+	}
+	switch personalText {
+	case "мои треки", "мои песни", "мои загрузки", "my tracks", "my uploads":
+		c.action = "uploads"
+		return c
+	}
+	for _, prefix := range []string{"мой плейлист ", "мою подборку ", "my playlist "} {
+		if name, ok := strings.CutPrefix(personalText, prefix); ok {
+			c.action, c.query = "personal_playlist", strings.Trim(strings.TrimSpace(name), `"«»`)
+			return c
+		}
+	}
 	if m := seekCommand.FindStringSubmatch(text); m != nil {
 		n, err := strconv.ParseInt(m[2], 10, 32)
 		if err != nil {

@@ -6,18 +6,20 @@ import (
 )
 
 type Config struct {
-	Enabled       bool   `json:"enabled,omitzero"`
-	Default       bool   `json:"default,omitzero"`
-	CompareYandex bool   `json:"compare_yandex,omitzero"`
-	API           string `json:"api,omitempty"`
-	ClientID      string `json:"client_id,omitempty"`
-	ClientSecret  string `json:"client_secret,omitempty"`
-	AccessToken   string `json:"access_token,omitempty"`
-	RefreshToken  string `json:"refresh_token,omitempty"`
-	TokenFile     string `json:"token_file,omitempty"`
-	BaseURL       string `json:"base_url,omitempty"`
-	ProxyURL      string `json:"proxy_url,omitempty"`
-	QueueLimit    int    `json:"queue_limit,omitzero"`
+	Enabled        bool   `json:"enabled,omitzero"`
+	Default        bool   `json:"default,omitzero"`
+	CompareYandex  bool   `json:"compare_yandex,omitzero"`
+	API            string `json:"api,omitempty"`
+	ClientID       string `json:"client_id,omitempty"`
+	ClientSecret   string `json:"client_secret,omitempty"`
+	AccessToken    string `json:"access_token,omitempty"`
+	RefreshToken   string `json:"refresh_token,omitempty"`
+	TokenFile      string `json:"token_file,omitempty"`
+	WebAccessToken string `json:"web_access_token,omitempty"`
+	WebTokenFile   string `json:"web_token_file,omitempty"`
+	BaseURL        string `json:"base_url,omitempty"`
+	ProxyURL       string `json:"proxy_url,omitempty"`
+	QueueLimit     int    `json:"queue_limit,omitzero"`
 }
 
 func (c *Config) Defaults() {

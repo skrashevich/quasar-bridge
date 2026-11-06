@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"time"
+	"unicode"
 
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/musicmatch"
@@ -43,6 +46,125 @@ func (p *Provider) ComparisonEnabled(ctx context.Context, text string) bool {
 	return true
 }
 
+var implicitComparisonPlay = regexp.MustCompile(`(?i)^(?:алиса[,\s]+)?(?:включи|поставь|запусти)\s+(.+)$`)
+
+// ImplicitComparisonEnabled admits only a separate, exact-metadata comparison.
+// It never changes the strict/default-provider command parser or claims playback.
+func (p *Provider) ImplicitComparisonEnabled(ctx context.Context, text string) bool {
+	if p == nil || !p.cfg.Enabled || !p.cfg.CompareYandex || ctx.Err() != nil || dialogue.SpeakerKey(ctx) == "" {
+		return false
+	}
+	return parseImplicitComparisonCommand(text).action != ""
+}
+
+func parseImplicitComparisonCommand(text string) providerCommand {
+	if parseProviderCommand(text).action != "" || providerName.MatchString(text) {
+		return providerCommand{}
+	}
+	match := implicitComparisonPlay.FindStringSubmatch(strings.TrimSpace(text))
+	if match == nil {
+		return providerCommand{}
+	}
+	for word := range strings.FieldsSeq(text) {
+		word = strings.Trim(word, "()[]{}<>,.!?\"'")
+		if strings.Contains(word, "://") || strings.HasPrefix(strings.ToLower(word), "www.") || providerWebsite.MatchString(strings.ToLower(word)) {
+			return providerCommand{}
+		}
+	}
+	query := musicmatch.Query(text)
+	if query == "" {
+		return providerCommand{}
+	}
+	for _, prefix := range []string{"что нибудь", "что то", "что угодно", "чтонибудь", "какую нибудь", "какой нибудь", "любую", "любой", "something", "anything", "some", "random"} {
+		if query == prefix || strings.HasPrefix(query, prefix+" ") {
+			return providerCommand{}
+		}
+	}
+	for word := range strings.FieldsSeq(query) {
+		// Numeric device names and time units remain controls; digits inside
+		// an otherwise literal title are valid catalog metadata.
+		guardWord := strings.TrimFunc(word, unicode.IsDigit)
+		switch guardWord {
+		case "музыку", "музыка", "музыки", "музыке", "music", "радио", "radio", "волну", "волна", "волне", "трек", "треки", "песни", "песню", "альбом", "плейлист", "исполнителя",
+			"свет", "света", "бра", "люстру", "подсветку", "чайник", "кофеварку", "кондиционер", "пылесос", "телевизор", "телек", "шторы", "жалюзи", "вентилятор", "отопление", "обогреватель", "увлажнитель", "сцену", "сценарий", "режим", "яркость", "громкость", "громче", "тише", "потише", "погромче", "уборку", "обновление",
+			"будильник", "таймер", "напоминание", "напоминалку", "сигнализацию", "камеру", "видео", "кино", "фильм", "мультик", "сериал", "канал", "минут", "минуту", "минуты", "секунд", "секунду", "секунды", "час", "часа", "часов",
+			"bluetooth", "блютуз", "блютус", "airplay", "эйрплей", "яндекс", "яндексе", "яндекса", "yandex", "spotify", "youtube", "ютуб", "сначала", "потом", "включи", "поставь", "запусти":
+			return providerCommand{}
+		}
+		for _, prefix := range []string{"радиостанц", "светиль", "ламп", "розет", "устройств", "спокойн", "расслаб", "бодрящ", "грустн", "весел", "танцевальн", "романтич", "фонов", "детск", "классическ", "новогодн", "relax", "calm", "happy", "sad", "chill", "sleep", "mood", "soothing"} {
+			if strings.HasPrefix(guardWord, prefix) {
+				return providerCommand{}
+			}
+		}
+	}
+	return providerCommand{action: "search", kind: TrackKind, query: query}
+}
+
+// The hint is scoped to a currently observed own stream. Reading it must not
+// revive an ended session, reserve an operation, or revoke another source.
+func (p *Provider) implicitArtistContext(ctx context.Context) (string, []Track) {
+	state := sound.CurrentPlayback(ctx)
+	if !state.Present || state.StreamID == "" {
+		return "", nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.sessions[dialogue.SpeakerKey(ctx)]
+	if s == nil || s.revoked || s.expired(p.now()) || s.stream != state.StreamID || s.index < 0 || s.index >= len(s.queue) {
+		return "", nil
+	}
+	return strings.TrimSpace(s.queue[s.index].Artist), slices.Clone(s.queue[:min(len(s.queue), p.cfg.QueueLimit)])
+}
+
+type comparisonSearchResult struct {
+	tracks []Track
+	err    error
+}
+
+func (p *Provider) comparisonSearch(ctx context.Context, query, artistHint string, cached bool) ([]Track, bool, error) {
+	if artistHint == "" {
+		tracks, err := p.client.Search(ctx, query, TrackKind, p.cfg.QueueLimit)
+		return tracks, true, err
+	}
+	// The artist lookup is optional: leave time for a usable global result
+	// to resolve its stream before the enclosing comparison deadline.
+	budget := 1500 * time.Millisecond
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = min(budget, time.Until(deadline)/2)
+	}
+	scopedCtx, cancelScoped := context.WithTimeout(ctx, budget)
+	globalCtx, cancelGlobal := ctx, func() {}
+	if cached {
+		globalCtx, cancelGlobal = context.WithTimeout(ctx, budget)
+	}
+	var global, scoped comparisonSearchResult
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer cancelGlobal()
+		global.tracks, global.err = p.client.Search(globalCtx, query, TrackKind, p.cfg.QueueLimit)
+	})
+	wg.Go(func() {
+		defer cancelScoped()
+		scoped.tracks, scoped.err = p.client.Search(scopedCtx, query+" "+artistHint, TrackKind, min(p.cfg.QueueLimit, 10))
+	})
+	wg.Wait()
+	slog.Info("soundcloud_artist_comparison_search", "global_tracks", len(global.tracks), "artist_tracks", len(scoped.tracks), "global_ok", global.err == nil, "artist_ok", scoped.err == nil, "artist_timeout", errors.Is(scoped.err, context.DeadlineExceeded))
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	if global.err != nil && scoped.err != nil {
+		return nil, false, global.err
+	}
+	var tracks []Track
+	if global.err == nil {
+		tracks = append(tracks, global.tracks[:min(len(global.tracks), p.cfg.QueueLimit)]...)
+	}
+	if scoped.err == nil {
+		tracks = append(tracks, scoped.tracks[:min(len(scoped.tracks), p.cfg.QueueLimit)]...)
+	}
+	return tracks, scoped.err == nil, nil
+}
+
 func candidate(track Track) musicmatch.Candidate {
 	return musicmatch.Candidate{Title: track.Title, Artist: track.Artist, DurationMS: track.DurationMS}
 }
@@ -62,20 +184,68 @@ func (p *Provider) Prepare(ctx context.Context, text string) (musicmatch.Prepare
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !p.ComparisonEnabled(ctx, text) {
+	implicit := !p.ComparisonEnabled(ctx, text)
+	if implicit && !p.ImplicitComparisonEnabled(ctx, text) {
 		return nil, errors.New("soundcloud: comparison is unavailable")
 	}
 	if p.client == nil || p.relay == nil {
 		return nil, ErrUnavailable
 	}
 	c := parseProviderCommand(text)
-	tracks, err := p.client.Search(ctx, c.query, TrackKind, p.cfg.QueueLimit)
-	if err != nil {
+	artistHint := ""
+	var cached []Track
+	if implicit {
+		c = parseImplicitComparisonCommand(text)
+		artistHint, cached = p.implicitArtistContext(ctx)
+		cached = slices.DeleteFunc(cached, func(t Track) bool {
+			return !musicmatch.SameArtist(t.Artist, artistHint) || !musicmatch.ExactMatch(text, candidate(t))
+		})
+		slog.Info("soundcloud_implicit_comparison", "artist_hint_present", artistHint != "", "playback_present", sound.CurrentPlayback(ctx).Present)
+	}
+	tracks, artistComplete, err := p.comparisonSearch(ctx, c.query, artistHint, len(cached) > 0)
+	if err != nil && (len(cached) == 0 || ctx.Err() != nil) {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if implicit {
+		tracks = append(tracks, cached...)
+		tracks = slices.DeleteFunc(tracks, func(t Track) bool {
+			c := candidate(t)
+			return !musicmatch.ExactMatch(text, c) || artistHint != "" && !artistComplete && !musicmatch.SameArtist(t.Artist, artistHint) && !musicmatch.ExplicitArtistMatch(text, c)
+		})
+		slog.Info("soundcloud_implicit_comparison_candidates", "cached_candidates", len(cached), "artist_lookup_complete", artistComplete, "eligible_tracks", len(tracks))
+	}
 	slices.SortStableFunc(tracks, func(a, b Track) int {
-		return musicmatch.Score(text, candidate(b)) - musicmatch.Score(text, candidate(a))
+		if order := musicmatch.Score(text, candidate(b)) - musicmatch.Score(text, candidate(a)); order != 0 {
+			return order
+		}
+		if artistHint != "" {
+			aHint, bHint := musicmatch.SameArtist(a.Artist, artistHint), musicmatch.SameArtist(b.Artist, artistHint)
+			if aHint != bHint {
+				if aHint {
+					return -1
+				}
+				return 1
+			}
+		}
+		return 0
 	})
+	if implicit {
+		seen := make(map[string]bool, len(tracks))
+		unique := tracks[:0]
+		for _, t := range tracks {
+			if !seen[t.URN] {
+				seen[t.URN] = true
+				unique = append(unique, t)
+				if len(unique) == p.cfg.QueueLimit {
+					break
+				}
+			}
+		}
+		tracks = unique
+	}
 	for index, track := range tracks {
 		if track.DurationMS <= 0 {
 			continue

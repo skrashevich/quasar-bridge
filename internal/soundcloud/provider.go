@@ -98,7 +98,7 @@ func (p *Provider) canHandleCommand(ctx context.Context, c providerCommand) bool
 	if p == nil || !p.cfg.Enabled || ctx.Err() != nil || dialogue.SpeakerKey(ctx) == "" {
 		return false
 	}
-	if c.action == "" || isCatalogCommand(c.action) && !c.explicit && !p.IsDefault() {
+	if c.action == "" || isCatalogCommand(c.action) && !isPersonalCommand(c.action) && !c.explicit && !p.IsDefault() {
 		return false
 	}
 	p.mu.Lock()
@@ -114,7 +114,7 @@ func (p *Provider) canHandleCommand(ctx context.Context, c providerCommand) bool
 		return s != nil && c.number <= len(s.results)
 	}
 	if isCatalogCommand(c.action) {
-		return c.explicit || p.IsDefault()
+		return c.explicit || p.IsDefault() || isPersonalCommand(c.action) && p.ownsLocked(ctx, s)
 	}
 	if c.explicit {
 		return true
@@ -147,12 +147,16 @@ func (p *Provider) CanDeliver(ctx context.Context, request sound.Request) bool {
 }
 
 func isCatalogCommand(action string) bool {
-	return action == "search" || action == "resolve" || action == "likes"
+	return action == "search" || action == "resolve" || isPersonalCommand(action)
+}
+
+func isPersonalCommand(action string) bool {
+	return action == "likes" || action == "library" || action == "personal_playlist" || action == "uploads"
 }
 
 func isPlaybackMutation(action string) bool {
 	switch action {
-	case "info", "artist_info", "like", "unlike":
+	case "info", "artist_info", "like", "unlike", "library":
 		return false
 	}
 	return true
@@ -341,7 +345,7 @@ func (p *Provider) handleCommand(ctx context.Context, c providerCommand) (string
 		return "", nil
 	}
 	catalog := isCatalogCommand(c.action)
-	if catalog && !c.explicit && !p.IsDefault() {
+	if catalog && !isPersonalCommand(c.action) && !c.explicit && !p.IsDefault() {
 		return "", nil
 	}
 	p.mu.Lock()
@@ -353,6 +357,10 @@ func (p *Provider) handleCommand(ctx context.Context, c providerCommand) (string
 		return "", context.Canceled
 	}
 	owned := p.ownsCommandLocked(ctx, s, c)
+	if isPersonalCommand(c.action) && !c.explicit && !p.IsDefault() && !owned {
+		p.mu.Unlock()
+		return "", nil
+	}
 	if c.action == "select" {
 		if s == nil || c.number > len(s.results) {
 			p.mu.Unlock()
@@ -391,6 +399,29 @@ func (p *Provider) handleCommand(ctx context.Context, c providerCommand) (string
 	}
 	s.at = p.now()
 	switch c.action {
+	case "library":
+		p.mu.Unlock()
+		if p.client == nil {
+			return providerError(ctx, errors.New("unavailable"))
+		}
+		playlists, err := p.client.Library(ctx, 10)
+		if err != nil {
+			return providerError(ctx, err)
+		}
+		if len(playlists) == 0 {
+			return "В личной библиотеке SoundCloud нет плейлистов.", nil
+		}
+		var answer strings.Builder
+		answer.WriteString("Плейлисты вашей библиотеки SoundCloud:")
+		for _, playlist := range playlists {
+			title := []rune(playlist.Title)
+			if len(title) > 120 {
+				title = title[:120]
+			}
+			fmt.Fprintf(&answer, "\n%s.", string(title))
+		}
+		answer.WriteString("\nСкажите «включи мой плейлист» и его название.")
+		return answer.String(), nil
 	case "info", "artist_info":
 		track := s.queue[s.index]
 		p.mu.Unlock()
@@ -499,7 +530,7 @@ func (p *Provider) handleCommand(ctx context.Context, c providerCommand) (string
 	p.mu.Unlock()
 	var err error
 	switch c.action {
-	case "search", "resolve", "likes", "related":
+	case "search", "resolve", "likes", "related", "personal_playlist", "uploads":
 		if p.client == nil {
 			err = errors.New("unavailable")
 			break
@@ -510,6 +541,10 @@ func (p *Provider) handleCommand(ctx context.Context, c providerCommand) (string
 			tracks, err = p.client.Resolve(ctx, c.query, p.cfg.QueueLimit)
 		case "likes":
 			tracks, err = p.client.Likes(ctx, p.cfg.QueueLimit)
+		case "personal_playlist":
+			tracks, err = p.client.PersonalPlaylist(ctx, c.query, p.cfg.QueueLimit)
+		case "uploads":
+			tracks, err = p.client.Uploaded(ctx, p.cfg.QueueLimit)
 		case "related":
 			tracks, err = p.client.Related(ctx, op.queue[op.index], p.cfg.QueueLimit)
 		default:
@@ -518,6 +553,10 @@ func (p *Provider) handleCommand(ctx context.Context, c providerCommand) (string
 				query = "music"
 			}
 			tracks, err = p.client.Search(ctx, query, c.kind, p.cfg.QueueLimit)
+		}
+		if errors.Is(err, ErrUnavailable) && c.action == "personal_playlist" {
+			p.operationFailed(op)
+			return "В личной библиотеке SoundCloud не найден такой плейлист.", nil
 		}
 		if err != nil {
 			break
@@ -596,8 +635,14 @@ func providerError(ctx context.Context, err error) (string, error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", err
 	}
+	if errors.Is(err, ErrWebChallenge) {
+		return "SoundCloud просит подтвердить вход или пройти CAPTCHA. Откройте SoundCloud в браузере, подтвердите вход и обновите токен веб-сессии.", nil
+	}
 	if errors.Is(err, ErrAuthorization) {
-		return "Для избранного SoundCloud нужна авторизация пользователя. Настройте личный токен доступа.", nil
+		return "Для личной библиотеки SoundCloud нужна авторизация. Войдите в SoundCloud и настройте веб-сессию или личный токен доступа.", nil
+	}
+	if errors.Is(err, ErrNoPlayableLikes) {
+		return "В избранном SoundCloud есть треки, но сейчас ни один не доступен для полного воспроизведения на колонке.", nil
 	}
 	return "Не удалось воспроизвести или выполнить запрос SoundCloud. Попробуйте другой трек или повторите запрос.", nil
 }

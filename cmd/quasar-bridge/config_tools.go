@@ -124,7 +124,7 @@ func (c *configurationControl) Get(ctx context.Context, section string) (any, er
 	if err != nil {
 		return nil, errors.New("cannot read configuration file")
 	}
-	next, err := parseConfig(raw, false)
+	next, err := parseConfigForFile(raw, c.path, false)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +185,7 @@ func (c *configurationControl) setLocked(ctx context.Context, changes map[string
 	if len(raw) > 1<<20 {
 		return nil, errors.New("configuration exceeds voice editing size limit")
 	}
-	if _, err := parseConfig(raw, false); err != nil {
+	if _, err := parseConfigForFile(raw, c.path, false); err != nil {
 		return nil, err
 	}
 	var doc map[string]jsontext.Value
@@ -215,7 +215,7 @@ func (c *configurationControl) setLocked(ctx context.Context, changes map[string
 	if err != nil {
 		return nil, errors.New("cannot encode configuration")
 	}
-	next, err := parseConfig(data, false)
+	next, err := parseConfigForFile(data, c.path, false)
 	if err != nil {
 		return nil, err
 	}

@@ -14,6 +14,22 @@ type MusicComparisonProvider interface {
 	IsDefault() bool
 	AcceptYandex(context.Context) error
 }
+
+// Bare titles are considered only after ordinary routing positively chose
+// Yandex. Providers without this optional read-only eligibility check decline.
+func (e *Engine) implicitMusicComparisonEnabled(ctx context.Context, text string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if _, ok := e.SoundCloud.(MusicComparisonProvider); !ok {
+		return false
+	}
+	provider, ok := e.SoundCloud.(interface {
+		ImplicitComparisonEnabled(context.Context, string) bool
+	})
+	return ok && provider.ImplicitComparisonEnabled(ctx, text)
+}
+
 type comparisonTicket struct {
 	sequence       uint64
 	at             time.Time

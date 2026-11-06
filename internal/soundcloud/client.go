@@ -28,6 +28,7 @@ type Client struct {
 	expires  time.Time
 	userAuth bool
 	clientID string
+	webToken string
 }
 
 func NewClient(cfg Config, hc *http.Client) (*Client, error) {
@@ -64,15 +65,28 @@ func NewClient(cfg Config, hc *http.Client) (*Client, error) {
 		return nil
 	}
 	c := &Client{cfg: cfg, http: &copyClient, token: cfg.AccessToken, refresh: cfg.RefreshToken, userAuth: cfg.AccessToken != "" || cfg.RefreshToken != "", clientID: cfg.ClientID}
-	if err := c.loadTokens(); err != nil {
-		return nil, err
+	if cfg.API != "official" {
+		if err := c.loadWebToken(); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.API != "web" && c.webToken == "" {
+		if err := c.loadTokens(); err != nil {
+			return nil, err
+		}
 	}
 	c.mode = cfg.API
 	if c.mode == "auto" {
 		c.mode = "web"
-		if c.token != "" || c.refresh != "" || (cfg.ClientID != "" && cfg.ClientSecret != "") {
+		if c.webToken == "" && (c.token != "" || c.refresh != "" || (cfg.ClientID != "" && cfg.ClientSecret != "")) {
 			c.mode = "official"
 		}
+	}
+	// An official application's client ID is not the browser application's ID.
+	// Keep the legacy public-web override only when no official credentials are
+	// configured; retaining those credentials across web login must not mix APIs.
+	if c.mode == "web" && (cfg.ClientSecret != "" || cfg.AccessToken != "" || cfg.RefreshToken != "" || cfg.TokenFile != "") {
+		c.clientID = ""
 	}
 	return c, nil
 }
@@ -117,7 +131,11 @@ func (c *Client) request(ctx context.Context, method, raw string, values url.Val
 		q[k] = v
 	}
 	u.RawQuery = q.Encode()
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
+	var body io.Reader
+	if auth && c.mode == "web" && c.webToken != "" && method == http.MethodPut {
+		body = strings.NewReader("{}")
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return nil, 0, errors.New("soundcloud: invalid request")
 	}
@@ -129,6 +147,17 @@ func (c *Client) request(ctx context.Context, method, raw string, values url.Val
 			}
 			q.Set("client_id", id)
 			req.URL.RawQuery = q.Encode()
+			if c.webToken != "" {
+				req.Header.Set("Authorization", "OAuth "+c.webToken)
+				req.Header.Set("Origin", "https://soundcloud.com")
+				req.Header.Set("Referer", "https://soundcloud.com/")
+				req.Header.Set("Accept", "application/json")
+				q.Set("app_locale", "en")
+				req.URL.RawQuery = q.Encode()
+				if method == http.MethodPut {
+					req.Header.Set("Content-Type", "application/json")
+				}
+			}
 		} else {
 			token, e := c.accessToken(ctx, false)
 			if e != nil {
@@ -137,7 +166,24 @@ func (c *Client) request(ctx context.Context, method, raw string, values url.Val
 			req.Header.Set("Authorization", "OAuth "+token)
 		}
 	}
-	resp, err := c.http.Do(req)
+	requestClient := c.http
+	if auth {
+		catalogClient := *c.http
+		prior := catalogClient.CheckRedirect
+		catalogClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+			// A mutation's redirect must never turn an unsuccessful write into
+			// a successful login page GET. Catalog reads stay on their origin.
+			if method != http.MethodGet && method != http.MethodHead || next.URL.Scheme != u.Scheme || next.URL.Host != u.Host {
+				return http.ErrUseLastResponse
+			}
+			if prior != nil {
+				return prior(next, via)
+			}
+			return nil
+		}
+		requestClient = &catalogClient
+	}
+	resp, err := requestClient.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, 0, ctx.Err()
@@ -162,6 +208,17 @@ func (c *Client) request(ctx context.Context, method, raw string, values url.Val
 }
 func (c *Client) api(ctx context.Context, method, raw string, q url.Values) ([]byte, error) {
 	b, status, e := c.request(ctx, method, raw, q, true)
+	if c.mode == "web" && c.webToken != "" {
+		switch status {
+		case http.StatusUnauthorized:
+			return nil, ErrAuthorization
+		case http.StatusForbidden:
+			return nil, ErrWebChallenge
+		}
+		if e == nil && method != http.MethodGet && method != http.MethodHead && !confirmedWebMutation(status, b) {
+			return nil, ErrWebChallenge
+		}
+	}
 	if status == 401 || status == 403 {
 		if c.mode == "web" {
 			_, e = c.webID(ctx, true)

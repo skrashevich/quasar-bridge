@@ -60,16 +60,7 @@ func Query(text string) string {
 
 // Score measures metadata agreement only; it makes no assumption about audio quality.
 func Score(query string, c Candidate) int {
-	q, title, artist := Query(query), normalize(c.Title), normalize(c.Artist)
-	if artist != "" {
-		if rest, ok := strings.CutPrefix(title, artist+" "); ok {
-			title = rest
-		} else if index, rest, ok := strings.Cut(title, " "); ok && len(index) <= 3 && strings.IndexFunc(index, func(r rune) bool { return !unicode.IsDigit(r) }) == -1 {
-			if rest, ok := strings.CutPrefix(rest, artist+" "); ok {
-				title = rest
-			}
-		}
-	}
+	q, title, artist := matchingMetadata(query, c)
 	if q == "" || title == "" {
 		return -10000
 	}
@@ -109,4 +100,48 @@ func Score(query string, c Candidate) int {
 func PreferSoundCloud(query string, ym, sc Candidate, preferSCOnTie bool) bool {
 	a, b := Score(query, ym), Score(query, sc)
 	return b > a || b == a && preferSCOnTie
+}
+
+// ExactMatch accepts a whole normalized title, optionally accompanied by the
+// artist. It deliberately excludes fuzzy/artist-only matches and an unrequested
+// alternate recording even when its version is stored outside the title.
+func ExactMatch(query string, c Candidate) bool {
+	q, title, artist := matchingMetadata(query, c)
+	if q == "" || title == "" || !(q == title || artist != "" && (q == title+" "+artist || q == artist+" "+title)) {
+		return false
+	}
+	version := " " + normalize(c.Title+" "+c.Version) + " "
+	for _, marker := range []string{"cover", "кавер", "remix", "ремикс", "live", "концерт", "karaoke", "караоке", "instrumental", "sped up", "slowed", "nightcore"} {
+		if strings.Contains(version, " "+marker+" ") && !strings.Contains(" "+q+" ", " "+marker+" ") {
+			return false
+		}
+	}
+	return true
+}
+
+// SameArtist compares only normalized artist metadata, without aliases or history.
+func SameArtist(a, b string) bool {
+	a, b = normalize(a), normalize(b)
+	return a != "" && a == b
+}
+
+func matchingMetadata(query string, c Candidate) (q, title, artist string) {
+	q, title, artist = Query(query), normalize(c.Title), normalize(c.Artist)
+	if artist != "" {
+		if rest, ok := strings.CutPrefix(title, artist+" "); ok {
+			title = rest
+		} else if index, rest, ok := strings.Cut(title, " "); ok && len(index) <= 3 && strings.IndexFunc(index, func(r rune) bool { return !unicode.IsDigit(r) }) == -1 {
+			if rest, ok := strings.CutPrefix(rest, artist+" "); ok {
+				title = rest
+			}
+		}
+	}
+	return q, title, artist
+}
+
+// ExplicitArtistMatch requires the utterance to name both the whole title and
+// its artist, preserving the same recording/version exclusions as ExactMatch.
+func ExplicitArtistMatch(query string, c Candidate) bool {
+	q, title, artist := matchingMetadata(query, c)
+	return artist != "" && title != "" && ExactMatch(query, c) && (q == title+" "+artist || q == artist+" "+title)
 }

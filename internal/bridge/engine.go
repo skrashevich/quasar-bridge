@@ -379,6 +379,9 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if json.Unmarshal([]byte(answer), &choice) != nil || !directRoute(choice.Route) {
 		return failed
 	}
+	if choice.Route == "yandex" && classCtx.Err() == nil && e.implicitMusicComparisonEnabled(ctx, text) {
+		return RouteDecision{Route: "music_compare", Source: "implicit_music_compare"}
+	}
 	return RouteDecision{Route: choice.Route, Source: "classifier"}
 }
 

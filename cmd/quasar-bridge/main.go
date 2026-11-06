@@ -40,6 +40,7 @@ func main() {
 	route := flag.String("route", "", "explain a route without executing home actions or generating an answer")
 	validate := flag.Bool("check-config", false, "validate configuration without contacting backends")
 	soundCloudSetup := flag.String("soundcloud-setup", "", "configure SoundCloud: off, explicit, default, compare-yandex or compare-soundcloud")
+	soundCloudAuth := flag.String("soundcloud-auth", "", "manage SoundCloud web session: login (token from stdin), status or logout")
 	checkSoundCloud := flag.Bool("check-soundcloud", false, "check configured SoundCloud catalog and media connectivity")
 	checkSoundCloudProxy := flag.Bool("check-soundcloud-proxy", false, "check SoundCloud through a candidate SOCKS5 URL read from stdin without saving it")
 	listModels := flag.Bool("list-models", false, "list available LLM models as ID and quoted label (tab-separated); no model selection required")
@@ -51,8 +52,12 @@ func main() {
 	speakerBackup := flag.String("speaker-backup", "/data/opt/quasar-bridge/endpoint-backup.json", "persistent endpoint backup")
 	speakerURL := flag.String("speaker-url", "ws://127.0.0.1:8443/uni.ws", "on-device bridge URL")
 	flag.Parse()
-	if (*checkSoundCloud || *checkSoundCloudProxy) && (*soundCloudSetup != "" || *speakerAction != "") {
+	if (*checkSoundCloud || *checkSoundCloudProxy) && (*soundCloudSetup != "" || *speakerAction != "" || *soundCloudAuth != "") {
 		fmt.Fprintln(os.Stderr, "SoundCloud check cannot be combined with configuration changes")
+		os.Exit(2)
+	}
+	if *soundCloudAuth != "" && (*soundCloudSetup != "" || *speakerAction != "") {
+		fmt.Fprintln(os.Stderr, "SoundCloud authentication cannot be combined with other configuration changes")
 		os.Exit(2)
 	}
 	if *checkSoundCloudProxy {
@@ -86,7 +91,7 @@ func main() {
 	diagnosticLogs := newDiagnosticLog(1 << 20)
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stderr, diagnosticLogs), nil))
 	slog.SetDefault(logger)
-	cfg, err := readConfigForCommand(*path, *listModels || *chatGPTAuth != "")
+	cfg, err := readConfigForCommand(*path, *listModels || *chatGPTAuth != "" || *soundCloudAuth != "")
 	if err != nil {
 		slog.Error("configuration rejected", "error", err)
 		os.Exit(1)
@@ -112,6 +117,9 @@ func main() {
 		diagnostics++
 	}
 	if *checkSoundCloudProxy {
+		diagnostics++
+	}
+	if *soundCloudAuth != "" {
 		diagnostics++
 	}
 	if *chatGPTAuth != "" {
@@ -164,6 +172,13 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(string(data))
+		return
+	}
+	if *soundCloudAuth != "" {
+		if err := runSoundCloudAuth(ctx, *path, *soundCloudAuth, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 	if *checkSoundCloud || *checkSoundCloudProxy {

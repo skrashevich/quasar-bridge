@@ -19,7 +19,7 @@ test "$(id -u)" = 0 || { error 'Запустите установку от root.
 mkdir -p "$state"
 chmod 0700 "$state"
 saved=$(mktemp -d "$state/.setup.XXXXXX")
-for name in config.json runtime.env; do
+for name in config.json runtime.env soundcloud-session.json; do
  if [ -e "$state/$name" ]; then cp "$state/$name" "$saved/$name"; fi
 done
 committed=false
@@ -31,15 +31,23 @@ home_url=
 legacy=${QUASAR_YAM_PACKAGE_DIR:-/data/quazar/yam/data/plugins/quasar-bridge}
 legacy_backup=$state/yam-package.backup
 migrated=false
+soundcloud_session_path=
+soundcloud_session_saved=false
+soundcloud_account_changed=false
+account_only=false
+account_restart_attempted=false
 cleanup() {
  result=$?
  trap - EXIT HUP INT TERM
  if [ "$hidden" = true ]; then stty echo; printf '\n'; fi
  if [ "$committed" = false ] && [ "$changed" = true ]; then
-  for name in config.json runtime.env; do
+  for name in config.json runtime.env soundcloud-session.json; do
    if [ -e "$saved/$name" ]; then cp "$saved/$name" "$state/$name"; else rm -f "$state/$name"; fi
   done
-  if [ -f "$state/app/control.sh" ]; then sh "$state/app/control.sh" restart || true; fi
+  if [ "$soundcloud_session_saved" = true ]; then
+   if [ -f "$saved/web-session.backup" ]; then cp -p "$saved/web-session.backup" "$soundcloud_session_path"; else rm -f "$soundcloud_session_path"; fi
+  fi
+  if [ -f "$state/app/control.sh" ] && { [ "$account_only" = false ] || [ "$account_restart_attempted" = true ]; }; then sh "$state/app/control.sh" restart || true; fi
   warn 'Прежние настройки восстановлены.' >&2
  fi
  if [ "$committed" = false ] && [ "$migrated" = true ]; then
@@ -151,6 +159,41 @@ save_soundcloud_proxy() {
  chmod 0600 "$saved/runtime.proxy.new"
  mv "$saved/runtime.proxy.new" "$state/runtime.env"
 }
+backup_soundcloud_session() {
+ if [ -n "$soundcloud_session_path" ]; then return 0; fi
+ if ! soundcloud_session_path=$(sh "$package/start.sh" -soundcloud-auth token-file 2> "$saved/soundcloud-auth.log"); then
+  error 'Не удалось определить файл веб-сессии SoundCloud.'
+  cat "$saved/soundcloud-auth.log" >&2
+  return 1
+ fi
+ case "$soundcloud_session_path" in /*) ;; *) error 'Некорректный путь веб-сессии SoundCloud.'; return 1 ;; esac
+ if [ "$soundcloud_session_path" != "$state/soundcloud-session.json" ]; then
+  if [ -e "$soundcloud_session_path" ]; then cp -p "$soundcloud_session_path" "$saved/web-session.backup"; fi
+  soundcloud_session_saved=true
+ fi
+}
+login_soundcloud() {
+ backup_soundcloud_session
+ info 'Вставьте oauth_token вашей веб-сессии SoundCloud. Ввод скрыт; Enter — пропустить вход.'
+ while :; do
+  secret 'SoundCloud oauth_token:'
+  soundcloud_token=$answer
+  answer=
+  if [ -z "$soundcloud_token" ]; then warn 'Вход в SoundCloud пропущен; прежняя сессия сохранена.'; break; fi
+  soundcloud_was_changed=$changed
+  changed=true
+  if printf '%s\n' "$soundcloud_token" | sh "$package/start.sh" -soundcloud-auth login > "$saved/soundcloud-auth.log" 2>&1; then
+   unset soundcloud_token
+   soundcloud_account_changed=true
+   ok 'Вход в SoundCloud проверен; веб-сессия сохранена.'
+   break
+  fi
+  changed=$soundcloud_was_changed
+  unset soundcloud_token
+  warn 'Вход не выполнен. Проверьте oauth_token и доступ к SoundCloud; повторите ввод или нажмите Enter.'
+ done
+ unset soundcloud_token
+}
 choose_model() {
  if [ "$api" = chatgpt ]; then
   section 'Вход в ChatGPT'
@@ -221,6 +264,42 @@ probe_compatibility() {
   return 1
  fi
 }
+if [ "${1:-}" = --soundcloud-account ]; then
+ account_only=true
+ if [ ! -f "$state/config.json" ] || [ ! -f "$state/app/control.sh" ]; then
+  error 'Сначала установите Quasar Bridge; режим аккаунта использует уже установленную программу.'
+  exit 1
+ fi
+ section 'SoundCloud · аккаунт'
+ info '6 — войти в аккаунт, 7 — удалить веб-сессию, 0 — отменить.'
+ while :; do
+  ask 'Аккаунт SoundCloud [0]:'
+  case "$answer" in
+   ''|0) exit 0 ;;
+   6) login_soundcloud; break ;;
+   7)
+    backup_soundcloud_session
+    changed=true
+    run_step 'Удаление веб-сессии SoundCloud' sh "$package/start.sh" -soundcloud-auth logout
+    soundcloud_account_changed=true
+    break
+    ;;
+   *) warn 'Введите 6, 7 или 0.' ;;
+  esac
+ done
+ if [ "$soundcloud_account_changed" = true ]; then
+  account_restart_attempted=true
+  run_step 'Перезапуск Quasar Bridge' sh "$state/app/control.sh" restart
+  ok 'Настройки аккаунта SoundCloud применены.'
+ else
+  info 'Настройки аккаунта SoundCloud сохранены без изменений.'
+ fi
+ committed=true
+ exit 0
+elif [ "$#" -ne 0 ]; then
+ error 'Допустимый дополнительный режим: --soundcloud-account.'
+ exit 2
+fi
 configure=true
 section 'Quasar Bridge · установка и обновление'
 info 'Enter выбирает вариант в квадратных скобках. Ctrl+C отменяет установку.'
@@ -319,6 +398,7 @@ echo 'SoundCloud: публичный каталог работает без уч
 echo '0 — сохранить настройки (при новой установке выключен), 1 — выключить,'
 echo '2 — только явные запросы SoundCloud, 3 — SoundCloud по умолчанию,'
 echo '4 — сравнивать с Яндексом (при равенстве Яндекс), 5 — сравнивать (при равенстве SoundCloud).'
+echo '6 — войти в аккаунт SoundCloud, 7 — удалить веб-сессию SoundCloud.'
 while :; do
  ask 'Режим SoundCloud [0]:'
  case "$answer" in
@@ -328,7 +408,14 @@ while :; do
   3) soundcloud_mode=default ;;
   4) soundcloud_mode=compare-yandex ;;
   5) soundcloud_mode=compare-soundcloud ;;
-  *) echo 'Введите число от 0 до 5.'; continue ;;
+  6) login_soundcloud; break ;;
+  7)
+   backup_soundcloud_session
+   changed=true
+   run_step 'Удаление веб-сессии SoundCloud' sh "$package/start.sh" -soundcloud-auth logout
+   break
+   ;;
+  *) echo 'Введите число от 0 до 5, 6 для входа или 7 для выхода.'; continue ;;
  esac
  changed=true
  sh "$package/start.sh" -soundcloud-setup "$soundcloud_mode"

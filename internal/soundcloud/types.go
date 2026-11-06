@@ -18,11 +18,14 @@ const (
 )
 
 var ErrAuthorization = errors.New("SoundCloud: для избранного нужна авторизация пользователя")
+var ErrWebChallenge = errors.New("SoundCloud: доступ веб-сессии отклонён; откройте SoundCloud в браузере и проверьте CAPTCHA или повторите вход")
 var ErrCollectionBudget = errors.New("SoundCloud: превышен лимит проверки коллекций")
 
 var ErrHydrationBudget = errors.New("SoundCloud: превышен лимит проверки доступности треков плейлиста")
 
 var ErrUnavailable = errors.New("SoundCloud: трек недоступен для полного воспроизведения")
+
+var ErrNoPlayableLikes = errors.New("SoundCloud: в избранном есть треки, но нет доступных для полного воспроизведения на колонке")
 
 type Track struct {
 	trackAuthorization                                                      string
@@ -86,10 +89,19 @@ func (i catalogItem) urn(kind string) string {
 	return ""
 }
 func (i catalogItem) track() (Track, bool) {
+	return i.trackForPrincipal(false)
+}
+
+// personalTrack is used only after authenticating the current account.
+func (i catalogItem) personalTrack() (Track, bool) {
+	return i.trackForPrincipal(true)
+}
+
+func (i catalogItem) trackForPrincipal(personal bool) (Track, bool) {
 	if i.Track != nil {
-		return i.Track.track()
+		return i.Track.trackForPrincipal(personal)
 	}
-	if i.Sharing == "private" || i.Access == "blocked" || i.Access == "preview" || i.Policy == "BLOCK" || i.Policy == "SNIP" || (i.Streamable != nil && !*i.Streamable) {
+	if i.Sharing == "private" && !personal || i.Access == "blocked" || i.Access == "preview" || i.Policy == "BLOCK" || i.Policy == "SNIP" || (i.Streamable != nil && !*i.Streamable) {
 		return Track{}, false
 	}
 	urn := i.urn("tracks")

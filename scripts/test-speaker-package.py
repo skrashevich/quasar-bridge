@@ -201,6 +201,17 @@ if [ "$1" = -check-soundcloud ] || [ "$1" = -check-soundcloud-proxy ]; then
  fi
  exit 0
 fi
+if [ "$1" = -soundcloud-auth ]; then
+ session=${QUASAR_TEST_SOUNDCLOUD_SESSION_FILE:-$QUASAR_DATA_DIR/soundcloud-session.json}
+ if [ "$2" = token-file ]; then printf '%s\\n' "$session"; exit 0; fi
+ printf '%s\\n' "$1 $2" >> "$QUASAR_TEST_TRACE"
+ if [ "$2" = login ]; then
+  IFS= read -r token || exit 1
+  test "$token" = "${QUASAR_TEST_SOUNDCLOUD_TOKEN_OK:-fixture-token}" || exit 1
+  printf 'new-web-session' > "$session"
+ elif [ "$2" = logout ]; then rm -f "$session"; fi
+ exit 0
+fi
 printf '%s\\n' "$*" >> "$QUASAR_TEST_TRACE"
 if [ "$1" = -soundcloud-setup ] && [ "${QUASAR_TEST_FAIL_SOUNDCLOUD:-}" = yes ]; then exit 1; fi
 if [ "$1" = -chatgpt-auth ] && [ "$2" = login ]; then
@@ -826,6 +837,96 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
             self.assertEqual((self.state / "runtime.env").read_text(), runtime)
             if failure:
                 self.assertNotIn("install", self.trace.read_text().splitlines())
+
+    def test_soundcloud_login_retries_hidden_token_without_changing_other_settings(self):
+        self.prepare_soundcloud_proxy_update()
+        self.env["QUASAR_TEST_SOUNDCLOUD_TOKEN_OK"] = "private-login-token"
+        before = (self.state / "runtime.env").read_text()
+        result = subprocess.run(["sh", str(self.package / "setup.sh")], env=self.env,
+                                input="n\n6\nwrong-token\nprivate-login-token\nn\n", capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.trace.read_text().splitlines(), ["-soundcloud-auth login", "-soundcloud-auth login", "install"])
+        self.assertEqual((self.state / "soundcloud-session.json").read_text(), "new-web-session")
+        self.assertEqual((self.state / "runtime.env").read_text(), before)
+        self.assertNotIn("private-login-token", result.stdout + result.stderr)
+        self.assertNotIn("wrong-token", result.stdout + result.stderr)
+
+    def test_soundcloud_auth_cancel_restores_custom_session_and_removes_new_default(self):
+        for custom in (False, True):
+            with self.subTest(custom=custom):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.prepare_soundcloud_proxy_update(connected=False)
+                self.env["QUASAR_TEST_FAIL_SOUNDCLOUD_ACCESS"] = "yes"
+                session = self.root / "custom session.json" if custom else self.state / "soundcloud-session.json"
+                if custom:
+                    session.write_text("old-web-session")
+                    session.chmod(0o600)
+                    self.env["QUASAR_TEST_SOUNDCLOUD_SESSION_FILE"] = str(session)
+                else:
+                    self.env.pop("QUASAR_TEST_SOUNDCLOUD_SESSION_FILE", None)
+                before = (self.state / "config.json").read_text()
+                result = subprocess.run(["sh", str(self.package / "setup.sh")], env=self.env,
+                                        input="n\n6\nfixture-token\n", capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((self.state / "config.json").read_text(), before)
+                if custom:
+                    self.assertEqual(session.read_text(), "old-web-session")
+                    self.assertEqual(session.stat().st_mode & 0o777, 0o600)
+                else:
+                    self.assertFalse(session.exists())
+
+    def test_soundcloud_logout_and_cancel_restore_existing_session(self):
+        self.prepare_soundcloud_proxy_update(connected=False)
+        session = self.state / "soundcloud-session.json"
+        session.write_text("old-web-session")
+        self.env["QUASAR_TEST_FAIL_SOUNDCLOUD_ACCESS"] = "yes"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")], env=self.env,
+                                input="n\n7\n", capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("-soundcloud-auth logout", self.trace.read_text().splitlines())
+        self.assertEqual(session.read_text(), "old-web-session")
+
+    def test_soundcloud_account_only_restarts_without_installing(self):
+        self.prepare_soundcloud_proxy_update()
+        control = self.state / "app/control.sh"
+        control.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$QUASAR_TEST_TRACE"\n')
+        result = subprocess.run(["sh", str(self.package / "setup.sh"), "--soundcloud-account"],
+                                env=self.env, input="6\nfixture-token\n", capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.trace.read_text().splitlines(), ["-soundcloud-auth login", "restart"])
+        self.assertNotIn("Подключение к нейросети", result.stdout)
+        self.assertEqual((self.state / "soundcloud-session.json").read_text(), "new-web-session")
+
+    def test_soundcloud_account_only_cancel_and_failed_login_do_not_restart(self):
+        self.prepare_soundcloud_proxy_update()
+        control = self.state / "app/control.sh"
+        control.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$QUASAR_TEST_TRACE"\n')
+        session = self.state / "soundcloud-session.json"
+        session.write_text("old-web-session")
+        for replies in ("0\n", "6\nwrong-token\n\n"):
+            self.trace.unlink(missing_ok=True)
+            result = subprocess.run(["sh", str(self.package / "setup.sh"), "--soundcloud-account"],
+                                    env=self.env, input=replies, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            commands = self.trace.read_text().splitlines() if self.trace.exists() else []
+            self.assertNotIn("restart", commands)
+            self.assertNotIn("install", commands)
+            self.assertEqual(session.read_text(), "old-web-session")
+
+    def test_soundcloud_account_only_restart_failure_restores_custom_session(self):
+        self.prepare_soundcloud_proxy_update()
+        control = self.state / "app/control.sh"
+        control.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$QUASAR_TEST_TRACE"\nexit 1\n')
+        session = self.root / "custom session.json"
+        session.write_text("old-web-session")
+        self.env["QUASAR_TEST_SOUNDCLOUD_SESSION_FILE"] = str(session)
+        before = (self.state / "config.json").read_text()
+        result = subprocess.run(["sh", str(self.package / "setup.sh"), "--soundcloud-account"],
+                                env=self.env, input="6\nfixture-token\n", capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(session.read_text(), "old-web-session")
+        self.assertEqual((self.state / "config.json").read_text(), before)
+        self.assertNotIn("install", self.trace.read_text().splitlines())
 
     def prepare_soundcloud_proxy_update(self, runtime="KEEP_FIXTURE=yes\n", connected=True):
         self.state.mkdir()

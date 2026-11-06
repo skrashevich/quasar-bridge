@@ -40,7 +40,7 @@ func (c *configurationControl) MusicDefault(ctx context.Context, target string) 
 	if readErr != nil {
 		return "Не удалось прочитать настройку музыкального сервиса. Настройка не изменена.", nil
 	}
-	next, parseErr := parseConfig(saved, false)
+	next, parseErr := parseConfigForFile(saved, c.path, false)
 	if parseErr != nil {
 		return "Не удалось прочитать настройку музыкального сервиса. Настройка не изменена.", nil
 	}
