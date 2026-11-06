@@ -15,3 +15,5 @@ Set Framerate 12
 Set TypingSpeed 22ms
 Set CursorBlink false
 Set WaitTimeout 180s
+Env TERM "xterm-256color"
+Env NO_COLOR ""
