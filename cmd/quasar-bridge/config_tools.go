@@ -30,6 +30,7 @@ type voiceSetting struct {
 // Explicit leaves prevent a parent-object update from smuggling in credentials,
 // process commands, network endpoints or filesystem paths.
 var voiceSettings = []voiceSetting{
+	{"soundcloud.default", "Логическое: SoundCloud — музыкальный сервис по умолчанию; false возвращает Яндекс Музыку. Применяется без перезапуска.", "", false},
 	{"llm_model", "Модель LLM; непустая строка в hybrid. Наличие модели на сервере отдельно не проверяется.", "QUASAR_LLM_MODEL", true},
 	{"llm_api", "API: chat_completions, responses или chatgpt. Зависимые параметры меняй одним вызовом.", "QUASAR_LLM_API", true},
 	{"llm_reasoning_effort", "Усилие рассуждения: пустая строка, none, minimal, low, medium, high, xhigh, max; только responses/chatgpt.", "QUASAR_LLM_REASONING_EFFORT", true},
@@ -78,13 +79,14 @@ var voiceSettings = []voiceSetting{
 }
 
 type configurationControl struct {
-	mu          sync.Mutex
-	path        string
-	active      config
-	engine      *bridge.Engine
-	logs        *journal.Writer
-	restart     func(context.Context) (any, error)
-	restartDone <-chan struct{}
+	mu                   sync.Mutex
+	path                 string
+	active               config
+	engine               *bridge.Engine
+	logs                 *journal.Writer
+	restart              func(context.Context) (any, error)
+	restartDone          <-chan struct{}
+	musicDefaultSequence uint64
 }
 
 type configurationResult struct {
@@ -96,6 +98,7 @@ type configurationResult struct {
 }
 
 func requiresRestart(active, next config) bool {
+	active.SoundCloud.Default, next.SoundCloud.Default = false, false
 	active.Routing, next.Routing = bridge.RoutingConfig{}, bridge.RoutingConfig{}
 	active.ConversationLog, next.ConversationLog = journal.Config{}, journal.Config{}
 	return !reflect.DeepEqual(active, next)
@@ -104,7 +107,7 @@ func requiresRestart(active, next config) bool {
 func (c *configurationControl) result(status string, next config) configurationResult {
 	result := configurationResult{Status: status, Pending: []string{}, RestartRequired: requiresRestart(c.active, next), RestartScheduled: c.restartPending()}
 	for _, setting := range voiceSettings {
-		if !bytes.Equal(configValue(c.active, setting.Path), configValue(next, setting.Path)) {
+		if !bytes.Equal(c.activeValue(setting.Path), configValue(next, setting.Path)) {
 			result.Pending = append(result.Pending, setting.Path)
 		}
 	}
@@ -121,7 +124,7 @@ func (c *configurationControl) Get(ctx context.Context, section string) (any, er
 	if err != nil {
 		return nil, errors.New("cannot read configuration file")
 	}
-	next, err := parseConfig(raw, false)
+	next, err := parseConfigForFile(raw, c.path, false)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +141,7 @@ func (c *configurationControl) Get(ctx context.Context, section string) (any, er
 		if section != "" && setting.Path != section && !strings.HasPrefix(setting.Path, section+".") {
 			continue
 		}
-		active, effective := configValue(c.active, setting.Path), configValue(next, setting.Path)
+		active, effective := c.activeValue(setting.Path), configValue(next, setting.Path)
 		saved := configurationValue(raw, setting.Path)
 		_, overridden := os.LookupEnv(setting.Environment)
 		entries = append(entries, entry{setting, active, saved, effective, !bytes.Equal(active, effective), !overridden})
@@ -182,7 +185,7 @@ func (c *configurationControl) setLocked(ctx context.Context, changes map[string
 	if len(raw) > 1<<20 {
 		return nil, errors.New("configuration exceeds voice editing size limit")
 	}
-	if _, err := parseConfig(raw, false); err != nil {
+	if _, err := parseConfigForFile(raw, c.path, false); err != nil {
 		return nil, err
 	}
 	var doc map[string]jsontext.Value
@@ -212,7 +215,7 @@ func (c *configurationControl) setLocked(ctx context.Context, changes map[string
 	if err != nil {
 		return nil, errors.New("cannot encode configuration")
 	}
-	next, err := parseConfig(data, false)
+	next, err := parseConfigForFile(data, c.path, false)
 	if err != nil {
 		return nil, err
 	}
@@ -272,12 +275,25 @@ func (c *configurationControl) Apply(ctx context.Context, action string) (any, e
 }
 
 func configValue(cfg config, path string) jsontext.Value {
+	if path == "soundcloud.default" {
+		raw, _ := json.Marshal(cfg.SoundCloud.Default)
+		return raw
+	}
 	if path == "routing.classifier.enabled" {
 		raw, _ := json.Marshal(cfg.Routing.ClassifierEnabled())
 		return raw
 	}
 	raw, _ := json.Marshal(cfg, json.Deterministic(true))
 	return configurationValue(raw, path)
+}
+
+func (c *configurationControl) activeValue(path string) jsontext.Value {
+	if path == "soundcloud.default" {
+		provider, available := c.engine.SoundCloud.(liveMusicDefault)
+		raw, _ := json.Marshal(available && provider.IsDefault())
+		return raw
+	}
+	return configValue(c.active, path)
 }
 
 func configurationValue(raw []byte, path string) jsontext.Value {

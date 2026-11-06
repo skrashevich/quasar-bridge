@@ -8,18 +8,71 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	common "github.com/freequasar/quasar-go-genproto/proto/alice/megamind/protos/common"
-	directives "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	cancellation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	fileplayer "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/audio_file_player"
+	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
+	directives "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	cancellation "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	fileplayer "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/audio_file_player"
+	q "github.com/skrashevich/quasar-go-genproto/proto/yandex_io/protos"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/sound"
 	"quasarbridge/internal/wire"
 )
+
+func TestSoundCloudQueueMetadataUsesNativeDirectiveFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, previous, next string
+		shuffled             bool
+	}{
+		{name: "first", next: "soundcloud:tracks:2"},
+		{name: "middle shuffled", previous: "soundcloud:tracks:1", next: "soundcloud:tracks:3", shuffled: true},
+		{name: "last", previous: "soundcloud:tracks:2"},
+		{name: "single"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := sound.Request{URL: "https://audio.example/sc.m3u8", StreamID: "stream", Title: "Title", Format: "HLS", Kind: "Track", Provider: "SoundCloud", TrackID: "soundcloud:tracks:42", PermalinkURL: "https://soundcloud.com/artist/title", SessionID: "session", CallbackToken: "token", PreviousTrackID: tc.previous, NextTrackID: tc.next, RepeatMode: "off", Shuffle: tc.shuffled}
+			d, err := makeSoundDirective(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			music := d.GetPayload().GetFields()["metadata"].GetStructValue().GetFields()["glagol_metadata"].GetStructValue().GetFields()["music_metadata"].GetStructValue()
+			fields := music.GetFields()
+			if fields["id"].GetStringValue() != r.TrackID || fields["type"].GetStringValue() != "Track" || fields["description"].GetStringValue() != r.PermalinkURL || fields["repeat_mode"].GetStringValue() != r.RepeatMode || fields["shuffled"] == nil || fields["shuffled"].GetBoolValue() != tc.shuffled {
+				t.Fatal("current-track metadata changed")
+			}
+			// Captured audio_play JSON names differ from the IPC output's
+			// AudioMetadata.MusicMeta.Prev/Next fields. Only each TrackInfo
+			// object's shape is shared with that generated protobuf contract.
+			if fields["prev"] != nil || fields["next"] != nil {
+				t.Fatal("IPC output field names used in native JSON input")
+			}
+			for key, id := range map[string]string{"prev_track_info": tc.previous, "next_track_info": tc.next} {
+				if id == "" {
+					if fields[key] != nil {
+						t.Fatalf("missing queue neighbor emitted as %s", key)
+					}
+					continue
+				}
+				encoded, err := protojson.Marshal(fields[key].GetStructValue())
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got q.AudioMetadata_MusicMeta_TrackInfo
+				if err := protojson.Unmarshal(encoded, &got); err != nil {
+					t.Fatalf("invalid native %s object: %v", key, err)
+				}
+				want := &q.AudioMetadata_MusicMeta_TrackInfo{Id: new(id), Type: new("Track")}
+				if !proto.Equal(&got, want) {
+					t.Fatalf("native %s = %v, want %v", key, &got, want)
+				}
+			}
+		})
+	}
+}
 
 func soundInput(id string) []byte {
 	return aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: id}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new("проиграй звук")}}}}}}})

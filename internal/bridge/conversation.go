@@ -43,8 +43,14 @@ func (c *conversation) emit(id string, e journal.Event) {
 	if alias := c.aliases[id]; alias != "" {
 		id = alias
 	}
-	t := c.turns[id]
+	t, tracked := c.turns[id]
 	c.mu.Unlock()
+	// Only requests admitted as conversation turns may emit journal records.
+	// In particular, lifecycle responses and cancels have no turn to update.
+	if !tracked {
+		return
+	}
+
 	e.Session = c.id
 	e.Request = journalID(id)
 	e.Route = t.route
@@ -58,7 +64,11 @@ func (c *conversation) route(id, route string) {
 		return
 	}
 	c.mu.Lock()
-	t := c.turns[id]
+	t, tracked := c.turns[id]
+	if !tracked {
+		c.mu.Unlock()
+		return
+	}
 	t.route = route
 	c.turns[id] = t
 	c.mu.Unlock()
@@ -81,6 +91,9 @@ func (c *conversation) client(data []byte) {
 		req = e.GetSpeechInput()
 	}
 	if req != nil {
+		if decodeSoundCloudProtocolEvent(req.GetRequest().GetEvent()).owned {
+			return
+		}
 		id := e.GetHeader().GetMessageId()
 		c.mu.Lock()
 		now := time.Now()

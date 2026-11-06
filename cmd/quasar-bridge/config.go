@@ -16,6 +16,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/soundcloud"
 )
 
 type progressConfig struct {
@@ -25,6 +26,7 @@ type progressConfig struct {
 }
 
 type config struct {
+	SoundCloud         soundcloud.Config    `json:"soundcloud"`
 	AirPlay            airPlayConfig        `json:"airplay"`
 	DialogueContext    dialogue.Config      `json:"dialogue_context"`
 	LocalProgress      progressConfig       `json:"local_progress"`
@@ -61,7 +63,20 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 	if err != nil {
 		return config{}, errors.New("cannot read configuration file")
 	}
-	return parseConfig(raw, modelOptional)
+	return parseConfigForFile(raw, path, modelOptional)
+}
+
+// File-based previews and runtime reads share derived credential paths; pathless
+// parsing remains independent of the caller's working directory.
+func parseConfigForFile(raw []byte, path string, modelOptional bool) (config, error) {
+	cfg, err := parseConfig(raw, modelOptional)
+	if err != nil {
+		return cfg, err
+	}
+	if err = configureSoundCloudTokenPath(&cfg, path); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
 }
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
@@ -70,7 +85,15 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 		return cfg, errors.New("invalid configuration JSON")
 	}
 	for name, target := range map[string]*string{
-		"QUASAR_LISTEN": &cfg.Listen, "QUASAR_UPSTREAM": &cfg.Upstream,
+		"QUASAR_SOUNDCLOUD_CLIENT_ID":        &cfg.SoundCloud.ClientID,
+		"QUASAR_SOUNDCLOUD_CLIENT_SECRET":    &cfg.SoundCloud.ClientSecret,
+		"QUASAR_SOUNDCLOUD_ACCESS_TOKEN":     &cfg.SoundCloud.AccessToken,
+		"QUASAR_SOUNDCLOUD_REFRESH_TOKEN":    &cfg.SoundCloud.RefreshToken,
+		"QUASAR_SOUNDCLOUD_TOKEN_FILE":       &cfg.SoundCloud.TokenFile,
+		"QUASAR_SOUNDCLOUD_PROXY_URL":        &cfg.SoundCloud.ProxyURL,
+		"QUASAR_SOUNDCLOUD_WEB_ACCESS_TOKEN": &cfg.SoundCloud.WebAccessToken,
+		"QUASAR_SOUNDCLOUD_WEB_TOKEN_FILE":   &cfg.SoundCloud.WebTokenFile,
+		"QUASAR_LISTEN":                      &cfg.Listen, "QUASAR_UPSTREAM": &cfg.Upstream,
 		"QUASAR_TLS_CERT": &cfg.TLSCert, "QUASAR_TLS_KEY": &cfg.TLSKey,
 		"QUASAR_MODE": &cfg.Mode, "QUASAR_LLM_BASE_URL": &cfg.LLMBaseURL,
 		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
@@ -208,6 +231,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 		return cfg, err
 	}
 	if err := cfg.ConversationLog.Validate(); err != nil {
+		return cfg, err
+	}
+	if err := configureSoundCloudOrigin(&cfg); err != nil {
 		return cfg, err
 	}
 	cfg.AirPlay.defaults()

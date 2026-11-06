@@ -21,6 +21,15 @@
   "llm_hosted_tools": [],
   "home_warm_area": "",
   "listen_after_reply": true,
+  "soundcloud": {
+    "enabled": false,
+    "compare_yandex": false,
+    "default": false,
+    "api": "auto",
+    "proxy_url": "",
+    "queue_limit": 50,
+    "base_url": ""
+  },
   "airplay": {
     "disabled": false
   },

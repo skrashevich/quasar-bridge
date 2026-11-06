@@ -6,6 +6,8 @@
 !/config*.example.json
 /runtime.env
 chatgpt-auth*.json
+soundcloud-session*.json
+.soundcloud-session-*
 *.env
 !*.env.example
 *.key
