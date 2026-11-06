@@ -33,6 +33,7 @@ type MusicStarter interface {
 }
 type Engine struct {
 	Configuration bool
+	Recovery      func(context.Context, string) (string, error)
 	AirPlay       AirPlayController
 	LLM           Completer
 	Assistant     Completer
@@ -95,6 +96,17 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "recovery":
+		action := configvoice.RecoveryAction(text)
+		if action == "" || e.Recovery == nil {
+			return result, errors.New("emergency recovery is unavailable")
+		}
+		answer, err := e.Recovery(ctx, action)
+		if err == nil {
+			reply.SuppressListening(ctx)
+		}
+		result.Answer = answer
+		return result, err
 	case "airplay":
 		if e.AirPlay == nil {
 			return Resolution{Route: "yandex"}, nil
@@ -247,6 +259,9 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.prepared = true
 	}()
 	p := e.policy()
+	if configvoice.RecoveryAction(text) != "" {
+		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
+	}
 	if e.Configuration && configvoice.InConversation(text, snapshot.Messages) {
 		return RouteDecision{Route: "llm", Source: "bridge_configuration"}
 	}

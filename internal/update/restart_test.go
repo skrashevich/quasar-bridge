@@ -26,7 +26,7 @@ func TestRestartWaitsForAnswerContext(t *testing.T) {
 	delivery := reply.WithPolicy(t.Context())
 	ctx, cancel := context.WithCancel(delivery)
 	defer cancel()
-	done, err := launchRestart(ctx, state, lock)
+	done, err := launchServiceAction(ctx, state, lock, "restart")
 	if err != nil {
 		t.Fatal(err)
 	}

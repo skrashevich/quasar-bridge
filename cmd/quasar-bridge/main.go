@@ -170,6 +170,17 @@ func main() {
 	logs := new(journal.Writer)
 	lc := newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY"))
 	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
+	// Recovery is a direct command path, independent of assistant tool settings
+	// and of the availability of either the classifier or the dialogue model.
+	engine.Recovery = func(ctx context.Context, action string) (string, error) {
+		if _, err := update.New(*path).Recover(ctx, action); err != nil {
+			return "", err
+		}
+		if action == "observe" {
+			return "Режим наблюдения сохранён. Перезапуск Bridge запланирован после этого ответа. После перезапуска запросы будут идти в Яндекс.", nil
+		}
+		return "Аварийный откат запланирован после этого ответа. После успешного восстановления подключения к Яндексу колонка перезагрузится.", nil
+	}
 	configuration := &configurationControl{path: *path, active: cfg, engine: engine, logs: logs}
 	configuration.restart = func(ctx context.Context) (any, error) { return update.New(*path).Restart(ctx) }
 	engine.Configuration = cfg.AssistantTools.Enabled && cfg.AssistantTools.Configuration
