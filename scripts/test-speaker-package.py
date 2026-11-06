@@ -255,6 +255,31 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
         self.assertEqual(output.splitlines(), ["responses", key, "fixture-model"])
         self.assertNotIn(key, result.stdout + result.stderr)
 
+    def test_claude_selects_anthropic_chat_completions_without_api_question(self):
+        # "claude" and the explicit address are equivalent. Anthropic has no
+        # Responses API, so the wizard must not ask for it: after the key it goes
+        # straight to the model number (2), the Home Assistant URL and the final "n".
+        for address in ("claude", "https://api.anthropic.com/v1", "https://api.anthropic.com/v1/"):
+            with self.subTest(address=address):
+                self.trace.write_text("")
+                for name in ("config.json", "runtime.env"):
+                    (self.state / name).unlink(missing_ok=True)
+                result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                        env=self.env, input=f"{address}\nsk-ant-fixture\n2\n\nn\n",
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("Responses", result.stdout)
+                self.assertEqual(self.trace.read_text().splitlines(),
+                                 ["-list-models", "-check-config", "-check-backends", "install"])
+                output = subprocess.check_output([
+                    "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_LLM_API" "$QUASAR_LLM_BASE_URL" '
+                    '"$QUASAR_LLM_API_KEY" "$QUASAR_LLM_MODEL"',
+                    "sh", str(self.state / "runtime.env"),
+                ], text=True)
+                expected_base = address if address != "claude" else "https://api.anthropic.com/v1"
+                self.assertEqual(output.splitlines(), ["chat_completions", expected_base,
+                                 "sk-ant-fixture", "fixture-model"])
+
     def test_model_selection_rejects_invalid_numbers_without_refetching(self):
         result = subprocess.run(["sh", str(self.package / "setup.sh")],
                                 env=self.env, input="chatgpt\nname\n0\n3\n2\n\nn\n",

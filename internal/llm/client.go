@@ -123,12 +123,17 @@ func (c *Client) chat(ctx context.Context, messages []Message, structured bool, 
 
 func (c *Client) chatCompletions(ctx context.Context, messages []Message, structured bool, tools []Tool) (Message, error) {
 	request := map[string]any{
-		"model": c.Model, "messages": messages, "stream": false,
-		"temperature": 0, "max_tokens": 1024,
-		"chat_template_kwargs": map[string]any{"enable_thinking": false},
+		"model": c.Model, "messages": messages, "stream": false, "max_tokens": 1024,
 	}
-	if structured {
-		request["response_format"] = map[string]string{"type": "json_object"}
+	// Anthropic rejects temperature and json_object response_format with HTTP 400
+	// and has no use for chat_template_kwargs. Its JSON answers are requested by
+	// the prompt and validated by the bridge. llm_chat_parameters still applies.
+	if !isAnthropic(c.BaseURL) {
+		request["temperature"] = 0
+		request["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
+		if structured {
+			request["response_format"] = map[string]string{"type": "json_object"}
+		}
 	}
 	for key, value := range c.ChatParameters {
 		if key == "response_format" && !structured {
@@ -202,17 +207,18 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 		return nil, errors.New("invalid LLM endpoint")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	setAuthHeaders(req, baseURL, apiKey)
 	hc := c.HTTP
 	if hc == nil {
 		hc = http.DefaultClient
 	}
-	if c.API == "chatgpt" {
-		req.Header.Set("Accept", "text/event-stream")
-		// An OAuth credential is valid only for this endpoint. A redirect must not
-		// forward it or turn an inference request into a different operation.
+	if c.API == "chatgpt" || isAnthropic(baseURL) {
+		if c.API == "chatgpt" {
+			req.Header.Set("Accept", "text/event-stream")
+		}
+		// A credential is valid only for this endpoint. A redirect must not
+		// forward it (Go keeps custom headers such as x-api-key across hosts)
+		// or turn an inference request into a different operation.
 		clone := *hc
 		clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		hc = &clone

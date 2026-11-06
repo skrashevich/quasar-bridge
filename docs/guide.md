@@ -137,7 +137,7 @@ quasar-bridge -config config.json -list-models
 `-chatgpt-auth` можно оставить пустым; обычный запуск и `-check-config`
 по-прежнему требуют выбранную модель в режиме `hybrid`.
 
-По умолчанию (`llm_api: "chat_completions"`) клиент делает
+По умолчанию (`llm_api: "chat_completions"`, кроме адреса Anthropic, см. ниже) клиент делает
 `POST /chat/completions` с `stream=false`, `temperature=0`,
 `max_tokens=1024` и `chat_template_kwargs.enable_thinking=false`.
 Для классификации и планирования действий он также передаёт
@@ -155,23 +155,28 @@ quasar-bridge -config config.json -list-models
 Формат и допустимые значения параметров зависят от выбранного API.
 
 Для [OpenAI-совместимого endpoint Anthropic](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk)
-отключите несовместимые параметры явно:
+достаточно указать его адрес; в установщике его выбирает ответ `claude`:
 
 ```json
 {
   "llm_api": "chat_completions",
   "llm_base_url": "https://api.anthropic.com/v1",
-  "llm_model": "claude-haiku-5-5",
-  "llm_chat_parameters": {
-    "temperature": null,
-    "response_format": null,
-    "chat_template_kwargs": null
-  }
+  "llm_model": "claude-haiku-5-5"
 }
 ```
 
-Ключ Anthropic задаётся через `QUASAR_LLM_API_KEY`. Параметры запроса задаются
-явно и не зависят от имени хоста или модели.
+Ключ Anthropic задаётся через `QUASAR_LLM_API_KEY`. Для точного адреса
+`https://api.anthropic.com/v1` (только HTTPS) мост отправляет ключ в заголовке
+`x-api-key` вместо `Authorization: Bearer` и добавляет обязательный
+`anthropic-version: 2023-06-01`, в том числе в запросе списка моделей. Редиректы
+для этого адреса не выполняются, чтобы ключ не ушёл на другой хост. Адреса
+прокси и агрегаторов (OpenRouter и другие), даже с моделью Claude, работают
+по обычным правилам с `Authorization: Bearer`.
+
+Anthropic отвечает HTTP 400 на `temperature` и на `response_format` со значением
+`json_object` (допустим только `json_schema`), а `chat_template_kwargs` игнорирует.
+Поэтому для этого адреса мост не добавляет `temperature`, `response_format`
+и `chat_template_kwargs`. `llm_chat_parameters` по-прежнему имеет приоритет.
 JSON для классификации и планирования запрашивается инструкцией в промпте,
 а результат проверяется мостом; серверная гарантия JSON-схемы здесь не
 используется. Некорректный JSON приводит к штатной обработке ошибки,

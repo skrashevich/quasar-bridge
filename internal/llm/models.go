@@ -20,6 +20,36 @@ type Model struct {
 	Name string `json:"name"`
 }
 
+const (
+	// AnthropicBaseURL is the endpoint selected by "claude" in the installer.
+	AnthropicBaseURL = "https://api.anthropic.com/v1"
+	// anthropicVersion is the oldest API version Anthropic accepts; the
+	// endpoint rejects requests without it, including GET /models.
+	anthropicVersion = "2023-06-01"
+)
+
+// isAnthropic reports whether baseURL is the official Anthropic API. Only the
+// exact HTTPS host qualifies, so the x-api-key is never sent anywhere else.
+func isAnthropic(baseURL string) bool {
+	u, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	return err == nil && u.Scheme == "https" && strings.EqualFold(u.Hostname(), "api.anthropic.com") && u.User == nil
+}
+
+// setAuthHeaders adds provider credentials. Anthropic authenticates with
+// x-api-key and requires anthropic-version; everything else uses a bearer token.
+func setAuthHeaders(req *http.Request, baseURL, token string) {
+	if isAnthropic(baseURL) {
+		req.Header.Set("anthropic-version", anthropicVersion)
+		if token != "" {
+			req.Header.Set("x-api-key", token)
+		}
+		return
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
 // Models returns the provider's ordered model catalog without running inference.
 // ChatGPT returns only models visible to the selected subscription account.
 func (c *Client) Models(ctx context.Context) ([]Model, error) {
@@ -51,14 +81,17 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	if err != nil || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" {
 		return nil, errors.New("invalid LLM model catalog endpoint")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
+	catalogURL := baseURL + "/models"
+	if isAnthropic(baseURL) {
+		// Anthropic pages the catalog at 20 models by default; 1000 is its maximum.
+		catalogURL += "?limit=1000"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogURL, nil)
 	if err != nil {
 		return nil, errors.New("invalid LLM model catalog endpoint")
 	}
 	req.Header.Set("Accept", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	setAuthHeaders(req, baseURL, token)
 	hc := c.HTTP
 	if hc == nil {
 		hc = http.DefaultClient

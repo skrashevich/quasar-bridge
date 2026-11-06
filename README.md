@@ -94,9 +94,10 @@ curl -fL -o /tmp/install-quasar-bridge.sh https://github.com/skrashevich/quasar-
 Установщик сам скачает последнюю версию, сверит контрольную сумму, передаст
 файлы на колонку и задаст несколько вопросов:
 
-1. Адрес API нейросети (заканчивается на `/v1`) или `chatgpt` для подписки ChatGPT/Codex.
+1. Адрес API нейросети (заканчивается на `/v1`), `chatgpt` для подписки ChatGPT/Codex
+   или `claude` для Anthropic (то же, что `https://api.anthropic.com/v1`).
 2. Ключ API — если не нужен, просто нажмите Enter. Ввод скрыт. Для `chatgpt` этот шаг пропускается.
-3. Тип API: Chat Completions (подходит почти всем) или Responses. Для `chatgpt` он выбирается автоматически.
+3. Тип API: Chat Completions (подходит почти всем) или Responses. Для `chatgpt` и `claude` он выбирается автоматически.
 4. Номер модели из списка, загруженного через API. Для `chatgpt` перед этим потребуется вход в браузере.
 5. Секретная ссылка на Home Assistant MCP — Enter, если умный дом не нужен.
    Ввод тоже скрыт.

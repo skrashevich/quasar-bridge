@@ -126,21 +126,25 @@ fi
 if [ "$configure" = true ]; then
  while :; do
   while :; do
-   ask 'Адрес API нейросети (с /v1) или chatgpt для подписки ChatGPT/Codex:'
+   ask 'Адрес API нейросети (с /v1), chatgpt для подписки ChatGPT/Codex или claude для Anthropic:'
    case "$answer" in
     chatgpt) base=https://api.openai.com/v1; api=chatgpt; break ;;
+    claude) base=https://api.anthropic.com/v1; api=chat_completions; break ;;
     http://?*|https://?*) base=$answer; api=chat_completions; break ;;
-    *) echo 'Введите полный адрес, например https://llm.example.invalid/v1, или chatgpt.' ;;
+    *) echo 'Введите полный адрес, например https://llm.example.invalid/v1, или chatgpt, или claude.' ;;
    esac
   done
   key=
   if [ "$api" != chatgpt ]; then
    secret 'Ключ API (Enter, если не нужен):'
    key=$answer
-   while :; do
-    ask 'API: 1 — Chat Completions, 2 — Responses [1]:'
-    case "$answer" in ''|1) api=chat_completions; break ;; 2) api=responses; break ;; esac
-   done
+   # Anthropic's OpenAI-compatible endpoint has only Chat Completions.
+   if [ "${base%/}" != https://api.anthropic.com/v1 ]; then
+    while :; do
+     ask 'API: 1 — Chat Completions, 2 — Responses [1]:'
+     case "$answer" in ''|1) api=chat_completions; break ;; 2) api=responses; break ;; esac
+    done
+   fi
   fi
   model=
   home_url=

@@ -47,8 +47,11 @@ func writeChatAnswer(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}]}`))
 }
 
-func TestChatDefaultsDoNotDependOnEndpointOrModel(t *testing.T) {
-	for _, endpoint := range []string{"", "https://api.anthropic.com/v1"} {
+// Only the official Anthropic endpoint gets different defaults (see
+// anthropic_test.go); the host name of any other provider and the model name,
+// even a Claude model served by a proxy, change nothing.
+func TestChatDefaultsDoNotDependOnProxyEndpointOrModel(t *testing.T) {
+	for _, endpoint := range []string{"", "https://openrouter.example.invalid/api/v1"} {
 		t.Run(endpoint, func(t *testing.T) {
 			c := endpointTestClient(t, endpoint, func(w http.ResponseWriter, r *http.Request) {
 				body := readChatRequest(t, r)
