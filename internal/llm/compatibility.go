@@ -111,6 +111,20 @@ func compatibilityParameter(name string) bool {
 	}
 }
 
+// ProbeError identifies the request that failed without adding private details
+// to Error. Retrying means the same diagnostic request will be attempted once
+// more, with its parameter profile unchanged.
+type ProbeError struct {
+	Phase    string
+	Retrying bool
+	Err      error
+}
+
+func (e *ProbeError) Error() string {
+	return "LLM compatibility " + e.Phase + " check: " + e.Err.Error()
+}
+func (e *ProbeError) Unwrap() error { return e.Err }
+
 // ProbeCompatibility tries a bounded set of Chat Completions parameter profiles.
 // It never changes the live client: only a profile that produces both a plain
 // answer and a JSON object is returned for the installer to persist explicitly.
@@ -130,12 +144,9 @@ func (c *Client) ProbeCompatibility(ctx context.Context, report func(error)) (ma
 	}
 	var last error
 	for range 10 {
-		last = probe.checkCompatibility(ctx)
+		last = probe.checkCompatibility(ctx, report)
 		if last == nil {
 			return probe.ChatParameters, nil
-		}
-		if report != nil {
-			report(last)
 		}
 		failure, ok := errors.AsType[*HTTPError](last)
 		if !ok || !failure.compatible || ctx.Err() != nil {
@@ -148,19 +159,47 @@ func (c *Client) ProbeCompatibility(ctx context.Context, report func(error)) (ma
 	return nil, fmt.Errorf("no compatible LLM parameter configuration found: %w", last)
 }
 
-func (c *Client) checkCompatibility(ctx context.Context) error {
-	if _, err := c.Complete(ctx, []Message{{Role: "user", Content: "Reply with one word: ok"}}, false); err != nil {
+func (c *Client) checkCompatibility(ctx context.Context, report func(error)) error {
+	if _, err := c.probeCompletion(ctx, "plain", "Reply with one word: ok", false, report); err != nil {
 		return err
 	}
-	answer, err := c.Complete(ctx, []Message{{Role: "user", Content: `Reply only with this JSON object: {"ok":true}`}}, true)
+	answer, err := c.probeCompletion(ctx, "json", `Reply only with this JSON object: {"ok":true}`, true, report)
 	if err != nil {
 		return err
 	}
 	var object map[string]any
 	if json.Unmarshal([]byte(answer), &object) != nil || object == nil {
-		return errors.New("LLM compatibility check did not return a JSON object")
+		failure := &ProbeError{Phase: "json", Err: errors.New("LLM compatibility check did not return a JSON object")}
+		if report != nil {
+			report(failure)
+		}
+		return failure
 	}
 	return nil
+}
+
+func (c *Client) probeCompletion(ctx context.Context, phase, content string, structured bool, report func(error)) (string, error) {
+	for attempt := 0; ; attempt++ {
+		answer, err := c.Complete(ctx, []Message{{Role: "user", Content: content}}, structured)
+		if err == nil {
+			return answer, nil
+		}
+		retry := attempt == 0 && ctx.Err() == nil && transientTransportError(err)
+		failure := &ProbeError{Phase: phase, Retrying: retry, Err: err}
+		if report != nil {
+			report(failure)
+		}
+		if !retry {
+			return "", failure
+		}
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", &ProbeError{Phase: phase, Err: newTransportError("LLM transport: "+ctx.Err().Error(), ctx.Err(), c.BaseURL, c.APIKey)}
+		case <-timer.C:
+		}
+	}
 }
 
 func nextCompatibilityParameters(parameters map[string]any, rejected string) bool {

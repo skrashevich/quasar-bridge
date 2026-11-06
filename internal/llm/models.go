@@ -70,9 +70,9 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	resp, err := clone.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("LLM model catalog: %w", ctx.Err())
+			return nil, newTransportError("LLM model catalog: "+ctx.Err().Error(), ctx.Err(), baseURL, token)
 		}
-		return nil, errors.New("LLM model catalog transport failed")
+		return nil, newTransportError("LLM model catalog transport failed", err, baseURL, token)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -88,10 +88,10 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	const maxCatalogBytes = 2 << 20
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCatalogBytes+1))
 	if ctx.Err() != nil {
-		return nil, fmt.Errorf("LLM model catalog: %w", ctx.Err())
+		return nil, newTransportError("LLM model catalog: "+ctx.Err().Error(), ctx.Err(), baseURL, token)
 	}
 	if err != nil {
-		return nil, errors.New("cannot read LLM model catalog")
+		return nil, newTransportError("cannot read LLM model catalog", err, baseURL, token)
 	}
 	if len(data) > maxCatalogBytes {
 		return nil, errors.New("LLM model catalog exceeded size limit")

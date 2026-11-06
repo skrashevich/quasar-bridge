@@ -220,9 +220,9 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 	resp, err := hc.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("LLM transport: %w", ctx.Err())
+			return nil, newTransportError("LLM transport: "+ctx.Err().Error(), ctx.Err(), baseURL, apiKey)
 		}
-		return nil, errors.New("LLM transport failed")
+		return nil, newTransportError("LLM transport failed", err, baseURL, apiKey)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -242,9 +242,9 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("LLM transport: %w", ctx.Err())
+			return nil, newTransportError("LLM transport: "+ctx.Err().Error(), ctx.Err(), baseURL, apiKey)
 		}
-		return nil, errors.New("cannot read LLM response")
+		return nil, newTransportError("cannot read LLM response", err, baseURL, apiKey)
 	}
 	if len(data) > maxResponseBytes {
 		return nil, errors.New("LLM response exceeded size limit")

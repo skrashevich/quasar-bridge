@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"flag"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,7 +14,11 @@ import (
 	"reflect"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
+
+	"quasarbridge/internal/llm"
 )
 
 func TestChatParametersEnvironmentOverride(t *testing.T) {
@@ -40,6 +47,126 @@ func TestChatParametersEnvironmentOverride(t *testing.T) {
 			}
 			if err != nil || !reflect.DeepEqual(cfg.LLMChatParameters, tc.want) {
 				t.Fatalf("parameters = %v, error = %v; want %v", cfg.LLMChatParameters, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestExplicitLLMTransportDiagnosticContainsPhaseAndCause(t *testing.T) {
+	c := llm.Client{BaseURL: "https://private-fixture.invalid/private-path", APIKey: "private-api-key", HTTP: &http.Client{Transport: chatGPTTransport(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("private-api-key read failure: %w", io.ErrUnexpectedEOF)
+	})}}
+	_, err := c.Complete(t.Context(), nil, false)
+	var output strings.Builder
+	writeLLMProviderError(&output, &llm.ProbeError{Phase: "json", Retrying: true, Err: err})
+	text := output.String()
+	if !strings.Contains(text, "JSON") || !strings.Contains(text, "unexpected EOF") || !strings.Contains(text, "повтор") {
+		t.Fatalf("transport diagnostic missing phase, cause or retry: %q", text)
+	}
+	for _, private := range []string{"private-api-key", "private-fixture", "private-path", "Authorization"} {
+		if strings.Contains(text, private) {
+			t.Fatalf("private data in diagnostic: %q", text)
+		}
+	}
+}
+
+func TestLLMTransportDiagnosticsProcess(t *testing.T) {
+	if path := os.Getenv("QUASAR_TEST_TRANSPORT_CONFIG"); path != "" {
+		flag.CommandLine = flag.NewFlagSet("quasar-bridge", flag.ExitOnError)
+		os.Args = []string{"quasar-bridge", "-config", path, "-probe-llm-compat"}
+		if os.Getenv("QUASAR_TEST_TRANSPORT_MODE") == "runtime" {
+			os.Args = []string{"quasar-bridge", "-config", path, "-query", "hello"}
+		}
+		if os.Getenv("QUASAR_TEST_TRANSPORT_MODE") == "deadline" {
+			http.DefaultClient.Timeout = 30 * time.Millisecond
+		}
+		main()
+		os.Exit(0)
+	}
+	for _, mode := range []string{"persistent", "recovered JSON", "runtime", "deadline", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls atomic.Int64
+			started := make(chan struct{}, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				call := calls.Add(1)
+				var request map[string]any
+				_ = json.UnmarshalRead(r.Body, &request)
+				if mode == "deadline" || mode == "cancel" {
+					select {
+					case started <- struct{}{}:
+					default:
+					}
+					<-r.Context().Done()
+					return
+				}
+				if mode == "recovered JSON" && (call == 1 || call == 3) {
+					_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"{\"ok\":true}"}}]}`)
+					return
+				}
+				connection, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_ = connection.Close()
+			}))
+			defer server.Close()
+			path := configFile(t, `{"mode":"hybrid","llm_api":"chat_completions","llm_base_url":"`+server.URL+`/private-fixture-path","llm_model":"fixture"}`)
+			before, _ := os.ReadFile(path)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLLMTransportDiagnosticsProcess$")
+			for _, entry := range os.Environ() {
+				if !strings.HasPrefix(entry, "QUASAR_") {
+					child.Env = append(child.Env, entry)
+				}
+			}
+			child.Env = append(child.Env, "QUASAR_TEST_TRANSPORT_CONFIG="+path, "QUASAR_TEST_TRANSPORT_MODE="+mode, "QUASAR_LLM_API_KEY=private-api-key")
+			var stdout, stderr strings.Builder
+			child.Stdout, child.Stderr = &stdout, &stderr
+			if err := child.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "cancel" {
+				select {
+				case <-started:
+					_ = child.Process.Signal(syscall.SIGTERM)
+				case <-ctx.Done():
+					t.Fatal("probe request did not start")
+				}
+			}
+			err := child.Wait()
+			if mode == "recovered JSON" {
+				if err != nil || strings.TrimSpace(stdout.String()) != `{}` || calls.Load() != 3 || !strings.Contains(stderr.String(), "JSON") {
+					t.Fatalf("error=%v stdout=%q stderr=%q calls=%d", err, stdout.String(), stderr.String(), calls.Load())
+				}
+			} else if mode == "runtime" {
+				if err != nil || calls.Load() != 1 || !strings.Contains(stdout.String(), `"Route":"yandex"`) {
+					t.Fatalf("runtime fallback failed: error=%v stdout=%q stderr=%q calls=%d", err, stdout.String(), stderr.String(), calls.Load())
+				}
+			} else {
+				wantCalls := int64(1)
+				if mode == "persistent" {
+					wantCalls = 2
+				}
+				if err == nil || stdout.Len() != 0 || calls.Load() != wantCalls {
+					t.Fatalf("error=%v stdout=%q stderr=%q calls=%d", err, stdout.String(), stderr.String(), calls.Load())
+				}
+			}
+			if mode == "persistent" && (!strings.Contains(stderr.String(), "EOF") || !strings.Contains(stderr.String(), "обычный ответ")) {
+				t.Fatalf("useful cause absent: %q", stderr.String())
+			}
+			if mode == "runtime" && strings.Contains(stderr.String(), "EOF") {
+				t.Fatalf("runtime exposed raw transport cause: %q", stderr.String())
+			}
+			for _, private := range []string{"private-api-key", "private-fixture-path", "Authorization"} {
+				if strings.Contains(stderr.String(), private) {
+					t.Fatalf("private data in stderr: %q", stderr.String())
+				}
+			}
+			after, _ := os.ReadFile(path)
+			if ctx.Err() != nil || string(after) != string(before) {
+				t.Fatal("diagnostic timed out or modified configuration")
 			}
 		})
 	}
