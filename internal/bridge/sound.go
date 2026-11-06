@@ -6,10 +6,10 @@ import (
 	"net/url"
 	"strings"
 
-	directives "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
-	"github.com/freequasar/quasar-go-genproto/proto/alice/protos/data/channel"
-	"github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint"
-	fileplayer "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/audio_file_player"
+	directives "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
+	"github.com/skrashevich/quasar-go-genproto/proto/alice/protos/data/channel"
+	"github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint"
+	fileplayer "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/audio_file_player"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -52,13 +52,31 @@ func (n *Native) discardSound(p *nativeRequest) {
 
 func (n *Native) takeSound(p *nativeRequest) []*directives.TDirective {
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	p.soundSealed = true
-	if p.canceled || p.ctx.Err() != nil || p.soundDirective == nil {
+	if p.canceled || p.ctx.Err() != nil || p.soundDirective == nil || p.soundRequest == nil {
+		n.mu.Unlock()
 		return nil
 	}
-	directive := p.soundDirective
+	directive, request := p.soundDirective, *p.soundRequest
 	p.soundDirective = nil
+	comparison := p.comparison != nil
+	n.mu.Unlock()
+	if guard, ok := n.resolver.(interface{ ComparisonCurrent(context.Context) bool }); comparison && ok && !guard.ComparisonCurrent(p.ctx) {
+		n.mu.Lock()
+		p.soundSuperseded = true
+		n.mu.Unlock()
+		return nil
+	}
+	// Provider.Handle holds its own lock while invoking queueSound. Never acquire
+	// that lock under Native.mu; this snapshot is immutable after sealing.
+	if validator, ok := n.resolver.(interface {
+		CanDeliver(context.Context, sound.Request) bool
+	}); ok && !validator.CanDeliver(p.ctx, request) {
+		n.mu.Lock()
+		p.soundSuperseded = true
+		n.mu.Unlock()
+		return nil
+	}
 	return []*directives.TDirective{directive}
 }
 
@@ -77,7 +95,11 @@ func makeSoundDirective(request sound.Request) (*directives.TDirective, error) {
 		return &directives.TDirective{Type: "client_action", Name: "audio_stop", AnalyticsType: "audio_stop", IsLedSilent: true, PayloadType: &directives.TDirective_Payload{Payload: payload}}, nil
 	}
 	if request.URL != "" && request.Sound == "" {
-		if request.OffsetMS < 0 || request.OffsetMS > 2*60*60*1000 {
+		maxOffset := int64(2 * 60 * 60 * 1000)
+		if request.Provider == "SoundCloud" && request.DurationMS > 0 {
+			maxOffset = min(request.DurationMS, 24*60*60*1000)
+		}
+		if request.OffsetMS < 0 || request.OffsetMS > maxOffset {
 			return nil, errors.New("invalid playback offset")
 		}
 		u, err := url.Parse(request.URL)
@@ -88,16 +110,50 @@ func makeSoundDirective(request sound.Request) (*directives.TDirective, error) {
 		if strings.HasSuffix(strings.ToLower(u.Path), ".m3u8") {
 			format, kind = "HLS", "FmRadio"
 		}
+		if request.Format != "" {
+			format = request.Format
+		}
+		if request.Kind != "" {
+			kind = request.Kind
+		}
+		if request.DurationMS < 0 {
+			return nil, errors.New("invalid playback duration")
+		}
 		id := request.StreamID
 		if id == "" {
 			id = newID()
 		}
-		payload, err := structpb.NewStruct(map[string]any{
-			"stream":      map[string]any{"id": id, "url": request.URL, "format": format, "type": kind, "offset_ms": request.OffsetMS},
-			"metadata":    map[string]any{"title": request.Title},
-			"screen_type": "Default",
-			"set_pause":   false,
-		})
+		stream := map[string]any{"id": id, "url": request.URL, "format": format, "type": kind, "offset_ms": request.OffsetMS}
+		if request.DurationMS > 0 {
+			stream["duration_ms"] = request.DurationMS
+		}
+		metadata := map[string]any{"title": request.Title}
+		data := map[string]any{"stream": stream, "metadata": metadata, "screen_type": "Default", "set_pause": false}
+		if request.Provider == "SoundCloud" {
+			if request.SessionID == "" || request.CallbackToken == "" || request.StreamID == "" {
+				return nil, errors.New("incomplete SoundCloud session")
+			}
+			metadata["subtitle"] = request.Subtitle
+			metadata["art_image_url"] = request.ArtworkURL
+			metadata["hide_progress_bar"] = false
+			music := map[string]any{"id": request.TrackID, "type": kind, "description": request.PermalinkURL, "repeat_mode": request.RepeatMode, "shuffled": request.Shuffle}
+			if request.PreviousTrackID != "" {
+				music["prev_track_info"] = map[string]any{"id": request.PreviousTrackID, "type": kind}
+			}
+			if request.NextTrackID != "" {
+				music["next_track_info"] = map[string]any{"id": request.NextTrackID, "type": kind}
+			}
+			metadata["glagol_metadata"] = map[string]any{"music_metadata": music}
+			data["screen_type"] = "Music"
+			data["provider_name"] = "SoundCloud"
+			data["scenario_meta"] = map[string]any{"@scenario_name": "SoundCloud", "owner": "quasar_bridge", "content_id": request.TrackID, "session_id": request.SessionID}
+			callbacks := make(map[string]any, 4)
+			for _, name := range []string{"started", "stopped", "finished", "failed"} {
+				callbacks["on_"+name] = map[string]any{"name": nativeSoundCloudPrefix + name, "type": "server_action", "is_led_silent": true, "ignore_answer": false, "payload": map[string]any{"session_id": request.SessionID, "stream_id": id, "token": request.CallbackToken}}
+			}
+			data["callbacks"] = callbacks
+		}
+		payload, err := structpb.NewStruct(data)
 		if err != nil {
 			return nil, errors.New("cannot encode sound directive")
 		}

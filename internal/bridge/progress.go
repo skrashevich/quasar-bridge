@@ -6,12 +6,12 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	directive "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
-	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	stream "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/stream_control"
-	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
-	deferred "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
+	directive "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
+	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	stream "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/stream_control"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	deferred "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
 	"google.golang.org/protobuf/encoding/protowire"
 	"quasarbridge/internal/reply"
 	"quasarbridge/internal/wire"
@@ -110,6 +110,13 @@ func (n *Native) beginDeferred(p *nativeRequest) error {
 	return n.synthesize(p, "а")
 }
 func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
+	if last {
+		return n.dispatchSound(p, func() error { return n.writeDeferredPart(p, text, last) })
+	}
+	return n.writeDeferredPart(p, text, last)
+}
+
+func (n *Native) writeDeferredPart(p *nativeRequest, text string, last bool) error {
 	if err := p.ctx.Err(); err != nil {
 		return err
 	}

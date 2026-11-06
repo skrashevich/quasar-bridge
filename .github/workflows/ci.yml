@@ -45,6 +45,8 @@ jobs:
           for script in install.sh packaging/speaker/*.sh packaging/speaker/S96quasar-bridge; do
             sh -n "$script"
           done
+      - name: Test installation from pull request artifacts
+        run: python3 scripts/test-pr-install.py
       - name: Test standalone installation with BusyBox
         run: |
           docker run --rm -v "$PWD:/src:ro" -v /tmp/quasar-bridge:/test-binary:ro \
@@ -109,7 +111,7 @@ jobs:
             python3 scripts/build-speaker-package.py --arch "$PACKAGE_ARCH" --upx
           fi
       - name: Keep speaker release assets
-        if: inputs.upload-speaker
+        if: inputs.upload-speaker || github.event_name == 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: speaker-release-${{ matrix.arch }}

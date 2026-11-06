@@ -120,6 +120,7 @@ class PackageTest(unittest.TestCase):
                         "uninstall.sh", "setup.sh", "S96quasar-bridge", "firmware.sh",
                         "config.device.example.json", "ARCH", "VERSION",
                         "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "SOURCE.md",
+                        "docs/soundcloud.md",
                         "docs/licenses/go-aac-LGPL-3.0.txt", "docs/licenses/go-aac-GPL-3.0.txt",
                     }
                     # Dependency license notices may grow independently.
@@ -188,7 +189,20 @@ class ChatGPTSetupTest(unittest.TestCase):
         binary = self.package / "bin/quasar-bridge"
         binary.write_text('''#!/bin/sh
 if [ "$1" = -config ]; then shift 2; fi
+if [ "$1" = -check-soundcloud ] || [ "$1" = -check-soundcloud-proxy ]; then
+ if [ -n "${QUASAR_TEST_SOUNDCLOUD_TRACE:-}" ]; then
+  printf '%s\\n' "$1" >> "$QUASAR_TEST_SOUNDCLOUD_TRACE"
+ fi
+ if [ "$1" = -check-soundcloud-proxy ]; then
+  IFS= read -r candidate || exit 1
+  test "$candidate" = "${QUASAR_TEST_SOUNDCLOUD_PROXY_OK:-}" || exit 1
+ elif [ "${QUASAR_TEST_SOUNDCLOUD_DISABLED:-}" != yes ]; then
+  test "${QUASAR_TEST_FAIL_SOUNDCLOUD_ACCESS:-}" != yes || exit 1
+ fi
+ exit 0
+fi
 printf '%s\\n' "$*" >> "$QUASAR_TEST_TRACE"
+if [ "$1" = -soundcloud-setup ] && [ "${QUASAR_TEST_FAIL_SOUNDCLOUD:-}" = yes ]; then exit 1; fi
 if [ "$1" = -chatgpt-auth ] && [ "$2" = login ]; then
  test "${QUASAR_TEST_FAIL_LOGIN:-}" != yes || exit 1
  if [ -n "${QUASAR_LLM_CHATGPT_AUTH_FILE:-}" ]; then printf '{}' > "$QUASAR_LLM_CHATGPT_AUTH_FILE"; fi
@@ -228,7 +242,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
 
     def test_subscription_setup_signs_in_before_model_selection(self):
         result = subprocess.run(["sh", str(self.package / "setup.sh")],
-                                env=self.env, input="chatgpt\n2\n\nn\n",
+                                env=self.env, input="chatgpt\n2\n\n0\nn\n",
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.trace.read_text().splitlines(),
@@ -261,7 +275,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
         key = "fixture'\"\\$`token"
         result = subprocess.run(["sh", str(self.package / "setup.sh")],
                                 env=self.env,
-                                input=f"https://llm.example.invalid/v1\n{key}\n2\n2\n\nn\n",
+                                input=f"https://llm.example.invalid/v1\n{key}\n2\n2\n\n0\nn\n",
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.trace.read_text().splitlines(),
@@ -275,7 +289,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
 
     def test_model_selection_rejects_invalid_numbers_without_refetching(self):
         result = subprocess.run(["sh", str(self.package / "setup.sh")],
-                                env=self.env, input="chatgpt\nname\n0\n3\n2\n\nn\n",
+                                env=self.env, input="chatgpt\nname\n0\n3\n2\n\n0\nn\n",
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         output = subprocess.check_output([
@@ -327,7 +341,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
         home_trace = self.root / "home-values"
         result = subprocess.run(["sh", str(self.package / "setup.sh")],
                                 env=dict(self.env, QUASAR_TEST_HOME_TRACE=str(home_trace)),
-                                input="y\nhttps://llm.example.invalid/v1\n\n1\n2\n",
+                                input="y\nhttps://llm.example.invalid/v1\n\n1\n2\n0\n",
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("URL Home Assistant MCP", result.stdout)
@@ -361,7 +375,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
                            QUASAR_TEST_HOME_TRACE=str(home_trace))
                 result = subprocess.run(["sh", str(self.package / "setup.sh")],
                                         env=env,
-                                        input="y\nhttps://llm.example.invalid/v1\n\n1\n2\n",
+                                        input="y\nhttps://llm.example.invalid/v1\n\n1\n2\n0\n",
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertNotIn("URL Home Assistant MCP", result.stdout)
@@ -382,7 +396,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
                                 env=dict(self.env, QUASAR_TEST_FAIL_BACKEND_ONCE="yes",
                                          QUASAR_TEST_HOME_TRACE=str(home_trace)),
                                 input=(f"https://llm.example.invalid/v1\n\n1\n2\n{home_url}\ny\n"
-                                       "https://llm.example.invalid/v1\n\n1\n2\nn\n"),
+                                       "https://llm.example.invalid/v1\n\n1\n2\n0\nn\n"),
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout.count("URL Home Assistant MCP"), 1)
@@ -408,7 +422,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
                 answers = ("y\n" if existing else "") + "https://llm.example.invalid/v1\n\n1\n2\n"
                 if not existing:
                     answers += wrong_url + "\n"
-                answers += f"2\n{corrected_url}\n" + ("" if existing else "n\n")
+                answers += f"2\n{corrected_url}\n0\n" + ("" if existing else "n\n")
                 result = subprocess.run(["sh", str(self.package / "setup.sh")],
                                         env=dict(self.env, QUASAR_TEST_FAIL_BACKEND_ONCE="yes",
                                                  QUASAR_TEST_HOME_TRACE=str(home_trace)),
@@ -431,7 +445,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
         tunnel = "ssh -N -L 1455:127.0.0.1:1455 -p 2222 root@192.0.2.24"
         result = subprocess.run(["sh", str(self.package / "setup.sh")],
                                 env=dict(self.env, QUASAR_SSH_TUNNEL=tunnel),
-                                input="chatgpt\n2\n\nn\n",
+                                input="chatgpt\n2\n\n0\nn\n",
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(tunnel, result.stdout)
@@ -448,7 +462,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
                                    env=dict(self.env, QUASAR_TEST_AUTH_WAIT_FILE=str(marker)),
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT)
-        process.stdin.write(b"chatgpt\n2\n\nn\n")
+        process.stdin.write(b"chatgpt\n2\n\n0\nn\n")
         process.stdin.close()
         process.stdin = None
         output = bytearray()
@@ -511,6 +525,7 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
             reply_after("Номер модели", "2")
             home_url = "https://home.example.invalid/visible-input"
             reply_after("URL Home Assistant MCP", home_url, echo=True)
+            reply_after("Режим SoundCloud", "0")
             reply_after("Подключить Алису", "n")
             deadline = time.monotonic() + 5
             while process.poll() is None or select.select([master], [], [], 0)[0]:
@@ -543,6 +558,198 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.trace.read_text().splitlines(),
                          ["-chatgpt-auth " + action for action in ("login", "status", "models", "logout")])
+
+    def test_soundcloud_setup_modes_preserve_existing_backend_and_validate_input(self):
+        self.state.mkdir()
+        (self.state / "app").mkdir()
+        (self.state / "app/control.sh").write_text("#!/bin/sh\nexit 0\n")
+        config = '{"mode":"hybrid","llm_model":"kept","soundcloud":{"access_token":"kept"}}'
+        runtime = "KEEP_FIXTURE=yes\nQUASAR_LLM_MODEL=kept\n"
+        (self.state / "config.json").write_text(config)
+        (self.state / "runtime.env").write_text(runtime)
+        for choice, mode in (("1", "off"), ("2", "explicit"), ("3", "default"),
+                             ("4", "compare-yandex"), ("5", "compare-soundcloud")):
+            with self.subTest(choice=choice):
+                self.trace.unlink(missing_ok=True)
+                result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                        env=self.env, input=f"n\ninvalid\n{choice}\nn\n",
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.trace.read_text().splitlines(),
+                                 ["-soundcloud-setup " + mode, "install"])
+                self.assertEqual((self.state / "runtime.env").read_text(), runtime)
+                self.assertIn("Введите число от 0 до 5", result.stdout)
+
+    def test_soundcloud_keep_and_failure_do_not_change_saved_settings(self):
+        self.state.mkdir()
+        (self.state / "app").mkdir()
+        (self.state / "app/control.sh").write_text("#!/bin/sh\nexit 0\n")
+        config = '{"mode":"hybrid","soundcloud":{"enabled":true,"api":"official"}}'
+        runtime = "KEEP_FIXTURE=yes\n"
+        (self.state / "config.json").write_text(config)
+        (self.state / "runtime.env").write_text(runtime)
+        for choice, failure in (("0", False), ("5", True)):
+            self.trace.unlink(missing_ok=True)
+            result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                    env=dict(self.env, QUASAR_TEST_FAIL_SOUNDCLOUD="yes" if failure else "no"),
+                                    input=f"n\n{choice}\nn\n", capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode == 0, not failure, result.stdout + result.stderr)
+            self.assertEqual((self.state / "config.json").read_text(), config)
+            self.assertEqual((self.state / "runtime.env").read_text(), runtime)
+            if failure:
+                self.assertNotIn("install", self.trace.read_text().splitlines())
+
+    def prepare_soundcloud_proxy_update(self, runtime="KEEP_FIXTURE=yes\n", connected=True):
+        self.state.mkdir()
+        (self.state / "app").mkdir()
+        (self.state / "app/control.sh").write_text("#!/bin/sh\nexit 0\n")
+        config = '{"mode":"hybrid","soundcloud":{"enabled":true,"proxy_url":"socks5://json.example.invalid:1080"}}'
+        (self.state / "config.json").write_text(config)
+        (self.state / "runtime.env").write_text(runtime)
+        if connected:
+            (self.state / "endpoint-backup.json").write_text("existing Alice connection")
+        self.env["QUASAR_TEST_SOUNDCLOUD_TRACE"] = str(self.root / "soundcloud-checks")
+        return config
+
+    def test_soundcloud_accessible_or_disabled_does_not_offer_proxy(self):
+        for disabled in (False, True):
+            with self.subTest(disabled=disabled):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.prepare_soundcloud_proxy_update()
+                result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                        env=dict(self.env, QUASAR_TEST_SOUNDCLOUD_DISABLED="yes" if disabled else "no",
+                                                 QUASAR_TEST_FAIL_SOUNDCLOUD_ACCESS="yes" if disabled else "no"),
+                                        input="n\n0\n", capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("SOCKS5 URL", result.stdout)
+                self.assertEqual((self.state / "runtime.env").read_text(), "KEEP_FIXTURE=yes\n")
+        self.assertEqual((self.root / "soundcloud-checks").read_text().splitlines(),
+                         ["-check-soundcloud", "-check-soundcloud"])
+
+    def test_soundcloud_failed_proxy_retries_and_only_saves_validated_secret(self):
+        previous = ("KEEP_FIXTURE=yes\n# BEGIN QUASAR SETUP\nQUASAR_LLM_MODEL=kept\n# END QUASAR SETUP\n"
+                    "# BEGIN QUASAR SOUNDCLOUD PROXY\n"
+                    "QUASAR_SOUNDCLOUD_PROXY_URL=socks5://old.example.invalid:1080\n"
+                    "# END QUASAR SOUNDCLOUD PROXY\n"
+                    "QUASAR_SOUNDCLOUD_PROXY_URL=socks5://manual.example.invalid:1080\n")
+        config = self.prepare_soundcloud_proxy_update(previous)
+        proxy = "socks5://fixture-user:private%27%22%5C%24%60@proxy.example.invalid:1080"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_SOUNDCLOUD_ACCESS="yes",
+                                         QUASAR_TEST_SOUNDCLOUD_PROXY_OK=proxy),
+                                input=f"n\n0\ninvalid\nsocks5://unreachable.example.invalid:1080\n{proxy}\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.state / "config.json").read_text(), config)
+        saved = (self.state / "runtime.env").read_text()
+        self.assertEqual(saved.count("# BEGIN QUASAR SOUNDCLOUD PROXY"), 1)
+        self.assertNotIn("old.example.invalid", saved)
+        self.assertIn("QUASAR_SOUNDCLOUD_PROXY_URL=socks5://manual.example.invalid:1080", saved)
+        output = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s\\n" "$KEEP_FIXTURE" "$QUASAR_LLM_MODEL" "$QUASAR_SOUNDCLOUD_PROXY_URL"',
+            "sh", str(self.state / "runtime.env"),
+        ], text=True)
+        self.assertEqual(output.splitlines(), ["yes", "kept", proxy])
+        self.assertEqual((self.state / "runtime.env").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.root / "soundcloud-checks").read_text().splitlines(),
+                         ["-check-soundcloud"] + ["-check-soundcloud-proxy"] * 3)
+        self.assertNotIn(proxy, result.stdout + result.stderr + self.trace.read_text())
+        self.assertNotIn("unreachable.example.invalid", saved)
+
+    def test_soundcloud_skipping_proxy_keeps_existing_secret_and_warns(self):
+        runtime = ("KEEP_FIXTURE=yes\n# BEGIN QUASAR SOUNDCLOUD PROXY\n"
+                   "QUASAR_SOUNDCLOUD_PROXY_URL='socks5://private-user:private-password@kept.example.invalid:1080'\n"
+                   "# END QUASAR SOUNDCLOUD PROXY\n")
+        config = self.prepare_soundcloud_proxy_update(runtime)
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_SOUNDCLOUD_ACCESS="yes"),
+                                input="n\n0\ninvalid\n\n", capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.state / "config.json").read_text(), config)
+        self.assertEqual((self.state / "runtime.env").read_text(), runtime)
+        self.assertIn("SOCKS5 URL", result.stdout)
+        self.assertIn("SoundCloud может оставаться недоступным", result.stdout)
+        self.assertNotIn("private-user", result.stdout + result.stderr)
+        self.assertNotIn("private-password", result.stdout + result.stderr)
+
+    def test_soundcloud_proxy_saved_on_new_install_keeps_llm_settings(self):
+        proxy = "socks5h://new-user:new-password@proxy.example.invalid:1080"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_SOUNDCLOUD_ACCESS="yes",
+                                         QUASAR_TEST_SOUNDCLOUD_PROXY_OK=proxy),
+                                input=f"chatgpt\n2\n\n3\n{proxy}\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_LLM_API" "$QUASAR_LLM_MODEL" "$QUASAR_SOUNDCLOUD_PROXY_URL"',
+            "sh", str(self.state / "runtime.env"),
+        ], text=True)
+        self.assertEqual(output.splitlines(), ["chatgpt", "fixture-model", proxy])
+        self.assertNotIn(proxy, result.stdout + result.stderr + self.trace.read_text())
+
+    def test_soundcloud_proxy_eof_restores_original_configuration(self):
+        runtime = "KEEP_FIXTURE=yes\nQUASAR_SOUNDCLOUD_PROXY_URL=socks5://old.example.invalid:1080\n"
+        config = self.prepare_soundcloud_proxy_update(runtime, connected=False)
+        legacy = self.root / "legacy-yam"
+        legacy.mkdir()
+        proxy = "socks5://candidate-user:candidate-password@proxy.example.invalid:1080"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_SOUNDCLOUD_ACCESS="yes",
+                                         QUASAR_TEST_SOUNDCLOUD_PROXY_OK=proxy,
+                                         QUASAR_YAM_PACKAGE_DIR=str(legacy)),
+                                input=f"n\n0\n{proxy}\n", capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Ввод прерван", result.stdout + result.stderr)
+        self.assertEqual((self.state / "config.json").read_text(), config)
+        self.assertEqual((self.state / "runtime.env").read_text(), runtime)
+        self.assertFalse(self.trace.exists(), "installation ran before the aborted migration")
+
+    def test_soundcloud_proxy_terminal_input_is_hidden(self):
+        self.prepare_soundcloud_proxy_update()
+        proxy = "socks5://private-user:private-password@proxy.example.invalid:1080"
+        master, slave = pty.openpty()
+        process = subprocess.Popen(["sh", str(self.package / "setup.sh")],
+                                   env=dict(self.env, QUASAR_TEST_FAIL_SOUNDCLOUD_ACCESS="yes",
+                                            QUASAR_TEST_SOUNDCLOUD_PROXY_OK=proxy, NO_COLOR="1"),
+                                   stdin=slave, stdout=slave, stderr=slave)
+        os.close(slave)
+        output = bytearray()
+
+        def reply_after(fragment, answer, hidden=False):
+            needle = fragment.encode()
+            deadline = time.monotonic() + 5
+            while needle not in output:
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0, output.decode(errors="replace"))
+                if select.select([master], [], [], remaining)[0]:
+                    output.extend(os.read(master, 65536))
+            if hidden:
+                self.assertFalse(termios.tcgetattr(master)[3] & termios.ECHO)
+            os.write(master, (answer + "\n").encode())
+
+        try:
+            reply_after("Изменить подключение", "n")
+            reply_after("Режим SoundCloud", "0")
+            reply_after("SOCKS5 URL", proxy, hidden=True)
+            deadline = time.monotonic() + 5
+            while process.poll() is None or select.select([master], [], [], 0)[0]:
+                self.assertLess(time.monotonic(), deadline, output.decode(errors="replace"))
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+            self.assertEqual(process.wait(timeout=5), 0, output.decode(errors="replace"))
+            self.assertNotIn(proxy, output.decode(errors="replace"))
+            self.assertNotIn("private-password", output.decode(errors="replace"))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            os.close(master)
 
 
 class HostBootstrapTest(unittest.TestCase):
@@ -856,7 +1063,7 @@ class InstallationTest(unittest.TestCase):
         self.env["QUASAR_RELEASE_URL"] = self.serve_directory(release)
         key = "fixture'\"\\$`token"
         result = self.run_script(ROOT / "install.sh",
-                                 input_text=f"{url}\n{key}\n1\n1\n\ny\nn\n")
+                                 input_text=f"{url}\n{key}\n1\n1\n\n0\ny\nn\n")
         self.assertNotIn(key, result.stdout + result.stderr)
         self.control("status")
         self.assertEqual(json.loads(firmware.read_text())["aliced"]["uniProxyUrl"],
@@ -885,7 +1092,7 @@ exec sh -c "$*"
 ''')
         ssh.chmod(0o755)
         self.env["PATH"] = str(shim) + os.pathsep + self.env["PATH"]
-        self.run_script(ROOT / "install.sh", "root@fixture", input_text="n\n")
+        self.run_script(ROOT / "install.sh", "root@fixture", input_text="n\n0\n")
         self.assertEqual(env_file.read_bytes(), original)
         self.control("status")
 
@@ -913,7 +1120,7 @@ exec sh -c "$*"
                     time.sleep(0.1)
             else:
                 self.fail("legacy fixture did not start")
-            self.run_script(self.package / "setup.sh", input_text="n\ny\nn\n")
+            self.run_script(self.package / "setup.sh", input_text="n\n0\ny\nn\n")
             process.wait(timeout=5)
             self.control("status")
             self.assertFalse(legacy.exists())
@@ -923,6 +1130,34 @@ exec sh -c "$*"
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=5)
+
+    def test_setup_enables_soundcloud_with_actual_binary_and_keeps_existing_credentials(self):
+        self.install()
+        config = self.state / "config.json"
+        document = json.loads(config.read_text())
+        document.update(mode="hybrid", llm_base_url=self.backend_url(), llm_model="fixture-model")
+        document["soundcloud"] = {"enabled": False, "api": "web", "client_id": "kept-client",
+                                  "access_token": "kept-token", "queue_limit": 12}
+        config.write_text(json.dumps(document))
+        # This lifecycle fixture preserves deliberately fake catalog credentials.
+        # Substitute only the external connectivity check; configuration changes,
+        # validation, installation and the running service use the real binary.
+        checked = self.root / "soundcloud-access-checked"
+        access_check = self.root / "check-soundcloud-fixture.sh"
+        access_check.write_text("#!/bin/sh\ntouch " + shlex.quote(str(checked)) + "\n")
+        setup = self.package / "setup.sh"
+        source = setup.read_text()
+        probe = 'sh "$package/start.sh" -check-soundcloud '
+        self.assertEqual(source.count(probe), 1)
+        setup.write_text(source.replace(probe, "sh " + shlex.quote(str(access_check)) + " "))
+        self.run_script(self.package / "setup.sh", input_text="n\n5\nn\n")
+        self.assertTrue(checked.exists())
+        self.control("status")
+        updated = json.loads(config.read_text())
+        self.assertEqual(updated["soundcloud"], {"enabled": True, "default": True,
+                         "compare_yandex": True, "api": "web", "client_id": "kept-client",
+                         "access_token": "kept-token", "queue_limit": 12})
+        self.assertEqual(updated["listen"], document["listen"])
 
     def test_failed_backend_setup_restores_existing_settings(self):
         class Handler(http.server.BaseHTTPRequestHandler):

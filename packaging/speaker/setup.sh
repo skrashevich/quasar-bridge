@@ -137,6 +137,19 @@ CONFIG
  mv "$saved/runtime.new" "$state/runtime.env"
  chmod 0600 "$state/config.json" "$state/runtime.env"
 }
+save_soundcloud_proxy() {
+ changed=true
+ {
+  if [ -f "$state/runtime.env" ]; then
+   sed '/^# BEGIN QUASAR SOUNDCLOUD PROXY$/,/^# END QUASAR SOUNDCLOUD PROXY$/d' "$state/runtime.env"
+  fi
+  printf '\n# BEGIN QUASAR SOUNDCLOUD PROXY\n'
+  setting QUASAR_SOUNDCLOUD_PROXY_URL "$soundcloud_proxy"
+  printf '# END QUASAR SOUNDCLOUD PROXY\n'
+ } > "$saved/runtime.proxy.new"
+ chmod 0600 "$saved/runtime.proxy.new"
+ mv "$saved/runtime.proxy.new" "$state/runtime.env"
+}
 choose_model() {
  if [ "$api" = chatgpt ]; then
   section 'Вход в ChatGPT'
@@ -274,6 +287,49 @@ if [ "$configure" = true ]; then
     *) warn 'Введите 1, 2, 3 или 0.' ;;
    esac
   done
+ done
+fi
+echo 'SoundCloud: публичный каталог работает без учётных данных.'
+echo '0 — сохранить настройки (при новой установке выключен), 1 — выключить,'
+echo '2 — только явные запросы SoundCloud, 3 — SoundCloud по умолчанию,'
+echo '4 — сравнивать с Яндексом (при равенстве Яндекс), 5 — сравнивать (при равенстве SoundCloud).'
+while :; do
+ ask 'Режим SoundCloud [0]:'
+ case "$answer" in
+  ''|0) break ;;
+  1) soundcloud_mode=off ;;
+  2) soundcloud_mode=explicit ;;
+  3) soundcloud_mode=default ;;
+  4) soundcloud_mode=compare-yandex ;;
+  5) soundcloud_mode=compare-soundcloud ;;
+  *) echo 'Введите число от 0 до 5.'; continue ;;
+ esac
+ changed=true
+ sh "$package/start.sh" -soundcloud-setup "$soundcloud_mode"
+ break
+done
+section 'Проверка доступа к SoundCloud'
+if sh "$package/start.sh" -check-soundcloud > "$saved/soundcloud-check.log" 2>&1; then
+ ok 'Проверка SoundCloud завершена.'
+else
+ warn 'Не удалось проверить каталог и аудиопоток SoundCloud.'
+ info 'Причина может быть в доступе к сервису, авторизации или настройках.'
+ info 'Можно проверить SOCKS5-прокси, который будет использовать только SoundCloud.'
+ info 'Формат: socks5://host:port или socks5://user:password@host:port. Ввод скрыт.'
+ while :; do
+  secret 'SOCKS5 URL (Enter — сохранить прежние настройки и продолжить):'
+  soundcloud_proxy=$answer
+  if [ -z "$soundcloud_proxy" ]; then
+   warn 'Настройки прокси сохранены без изменений. SoundCloud может оставаться недоступным.'
+   break
+  fi
+  if printf '%s\n' "$soundcloud_proxy" |
+     sh "$package/start.sh" -check-soundcloud-proxy > "$saved/soundcloud-check.log" 2>&1; then
+   save_soundcloud_proxy
+   ok 'Доступ к SoundCloud через SOCKS5 проверен; настройки сохранены.'
+   break
+  fi
+  warn 'Проверка через SOCKS5 не прошла. Проверьте URL, доступ и авторизацию или нажмите Enter.'
  done
 fi
 if [ -d "$legacy" ]; then

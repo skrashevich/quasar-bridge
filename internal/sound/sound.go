@@ -9,12 +9,27 @@ import (
 )
 
 type Request struct {
-	Sound    string `json:"sound,omitempty"`
-	URL      string `json:"url,omitempty"`
-	Command  string `json:"command,omitempty"`
-	StreamID string `json:"stream_id,omitempty"`
-	Title    string `json:"title,omitempty"`
-	OffsetMS int64  `json:"offset_ms,omitzero"`
+	Sound           string `json:"sound,omitempty"`
+	URL             string `json:"url,omitempty"`
+	Command         string `json:"command,omitempty"`
+	StreamID        string `json:"stream_id,omitempty"`
+	Title           string `json:"title,omitempty"`
+	OffsetMS        int64  `json:"offset_ms,omitzero"`
+	Format          string `json:"format,omitempty"`
+	Kind            string `json:"kind,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	Subtitle        string `json:"subtitle,omitempty"`
+	ArtworkURL      string `json:"artwork_url,omitempty"`
+	TrackID         string `json:"track_id,omitempty"`
+	PermalinkURL    string `json:"permalink_url,omitempty"`
+	SessionID       string `json:"session_id,omitempty"`
+	Generation      uint64 `json:"generation,omitzero"`
+	CallbackToken   string `json:"callback_token,omitempty"`
+	RepeatMode      string `json:"repeat_mode,omitempty"`
+	PreviousTrackID string `json:"previous_track_id,omitempty"`
+	NextTrackID     string `json:"next_track_id,omitempty"`
+	DurationMS      int64  `json:"duration_ms,omitzero"`
+	Shuffle         bool   `json:"shuffle,omitzero"`
 }
 
 type PlaybackState struct {

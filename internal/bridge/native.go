@@ -12,16 +12,16 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
-	asrcommon "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
-	cancellation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	continuation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
-	ack "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/input_start_ack"
-	tts "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_generate"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	asrcommon "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
+	cancellation "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	continuation "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
+	ack "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/input_start_ack"
+	tts "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_generate"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/dialogue"
@@ -46,6 +46,8 @@ type FallbackResolver interface {
 }
 
 type nativeRequest struct {
+	silentEvent                     bool
+	comparison                      *nativeComparison
 	streaming                       bool
 	listenOnStreamStart             bool
 	partial                         uint32
@@ -75,26 +77,32 @@ type nativeRequest struct {
 	soundRequest                    *sound.Request
 	soundDirective                  *soundDirective
 	soundSealed                     bool
+	soundSuperseded                 bool
 	expires                         *time.Timer
 }
 type Native struct {
-	connectionScope  string
-	ctx              context.Context
-	cancel           context.CancelFunc
-	up, down         Sender
-	resolver         Resolver
-	mu               sync.Mutex
-	requests         map[string]*nativeRequest
-	tts              map[string]*nativeRequest
-	streams          map[uint32]*nativeRequest
-	blocked          map[uint32]*nativeRequest
-	wg               sync.WaitGroup
-	OnRoute          func(id, route string)
-	GateText         bool
-	ShouldListen     bool
-	DecisionDelay    time.Duration
-	ProgressAfter    time.Duration
-	ProgressInterval time.Duration
+	connectionScope      string
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	up, down             Sender
+	resolver             Resolver
+	mu                   sync.Mutex
+	soundControlMu       sync.Mutex
+	requests             map[string]*nativeRequest
+	tts                  map[string]*nativeRequest
+	streams              map[uint32]*nativeRequest
+	blocked              map[uint32]*nativeRequest
+	comparisonStreams    map[uint32]*nativeRequest
+	comparisonAliases    map[string]*nativeRequest
+	comparisonQuarantine map[string]*nativeRequest
+	wg                   sync.WaitGroup
+	OnRoute              func(id, route string)
+	GateText             bool
+	ShouldListen         bool
+	DecisionDelay        time.Duration
+	ProgressAfter        time.Duration
+	ProgressInterval     time.Duration
+	ComparisonTimeout    time.Duration
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -141,6 +149,14 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		req = e.GetVoiceInput()
 	case "SpeechInput":
 		req = e.GetSpeechInput()
+	}
+	if req != nil && strings.HasPrefix(req.GetRequest().GetEvent().GetName(), nativeSoundCloudPrefix) {
+		return n.soundCloudEvent(req, e.GetHeader())
+	}
+	if req != nil && f.Kind() == "TextInput" {
+		if handled, err := n.soundCloudControl(req, e.GetHeader()); handled || err != nil {
+			return err
+		}
 	}
 	if req != nil && f.Kind() == "TextInput" && strings.TrimSpace(req.GetRequest().GetEvent().GetText()) == "" {
 		return n.up(ctx, k, data)
@@ -205,6 +221,21 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 					delete(n.streams, stream)
 				}
 			}
+			for stream, q := range n.comparisonStreams {
+				if q == p {
+					delete(n.comparisonStreams, stream)
+				}
+			}
+			for alias, q := range n.comparisonAliases {
+				if q == p {
+					delete(n.comparisonAliases, alias)
+				}
+			}
+			for key, q := range n.comparisonQuarantine {
+				if q == p {
+					delete(n.comparisonQuarantine, key)
+				}
+			}
 		})
 		n.requests[id] = p
 		n.mu.Unlock()
@@ -250,6 +281,9 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			ttsID = p.ttsID
 		}
 		n.mu.Unlock()
+		if p != nil && p.silentEvent {
+			return nil
+		}
 		if ttsID != "" {
 			_ = n.sendCancel(ctx, ttsID)
 		}
@@ -279,6 +313,9 @@ func (n *Native) findLocked(h *header.TEventHeader) (*nativeRequest, bool) {
 }
 func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byte) error {
 	f := wire.Decode(data, wire.ServerToClient)
+	if handled, err := n.comparisonServer(ctx, k, data, f); handled {
+		return err
+	}
 	if f.Server == nil {
 		if len(data) >= 4 {
 			n.mu.Lock()
@@ -519,7 +556,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 	}
 	n.maybeResolve(p)
-	if err := n.down(ctx, k, data); err != nil {
+	if err := n.sendCloudMusic(ctx, k, data, p, e); err != nil {
 		return err
 	}
 	n.captureCloud(p, e)
@@ -547,6 +584,12 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		if n.resolver != nil && strings.TrimSpace(text) != "" {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
 				decision := routed.Decide(p.ctx, text)
+				if decision.Route == "music_compare" {
+					if err := n.beginMusicComparison(p); err != nil {
+						n.discardStale(p)
+					}
+					return
+				}
 				n.mu.Lock()
 				p.listenOnStreamStart = decision.Source == "dialogue_retry"
 				n.mu.Unlock()
@@ -577,6 +620,8 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
 			} else if result.Route == "airplay" {
 				result.Answer = "Не удалось изменить состояние AirPlay. Проверьте журнал Quasar Bridge."
+			} else if result.Route == "soundcloud" {
+				result.Answer = "Не удалось выполнить запрос SoundCloud. Возможно, запись недоступна. Попробуйте другую композицию."
 			} else if result.Route == "music" {
 				result.Answer = "Не удалось включить музыку с этой страницы."
 			} else {
@@ -640,19 +685,35 @@ func (n *Native) sendCancel(ctx context.Context, id string) error {
 	return n.up(ctx, websocket.MessageBinary, b)
 }
 func (n *Native) reply(p *nativeRequest, text string) error {
+	if p.silentEvent {
+		return n.dispatchSound(p, func() error { return n.replySoundCloudEvent(p) })
+	}
 	if p.streaming {
 		return n.finishDeferred(p, text)
 	}
+	silentPlayback := n.hasSilentPlayback(p)
+	err := n.dispatchSound(p, func() error { return n.replyResponse(p, text, silentPlayback) })
+	if err != nil || silentPlayback {
+		return err
+	}
+	return n.synthesize(p, text)
+}
+
+func (n *Native) replyResponse(p *nativeRequest, text string, silentPlayback bool) error {
 	requestID := p.request.GetHeader().GetRequestId()
 	if requestID == "" {
 		requestID = p.id
 	}
 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
-	silentPlayback := n.hasSilentPlayback(p)
 	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
 	if silentPlayback {
 		answer.VoiceResponse.HasVoiceResponse = false
 		answer.VoiceResponse.OutputSpeech.Text = new("")
+	}
+	if !p.gated && !p.cloud {
+		if err := n.ack(p); err != nil {
+			return err
+		}
 	}
 	answer.Response.Directives = n.takeSound(p)
 	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: answer}}}}
@@ -660,19 +721,11 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	if err != nil {
 		return err
 	}
-	if !p.gated && !p.cloud {
-		if err := n.ack(p); err != nil {
-			return err
-		}
-	}
-	if err := n.down(p.ctx, websocket.MessageBinary, b); err != nil {
+	if err := n.down(n.comparisonDeliveryContext(p), websocket.MessageBinary, b); err != nil {
 		return err
 	}
 	n.captureDelivered(p, text, true, silentPlayback || len(answer.Response.Directives) > 0, true)
-	if silentPlayback {
-		return nil
-	}
-	return n.synthesize(p, text)
+	return nil
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
 	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
@@ -707,7 +760,7 @@ func (n *Native) ack(p *nativeRequest) error {
 	if err != nil {
 		return err
 	}
-	return n.down(p.ctx, websocket.MessageBinary, b)
+	return n.down(n.comparisonDeliveryContext(p), websocket.MessageBinary, b)
 }
 
 func canReplaceResponse(r *response.TAliceResponseProto) bool {

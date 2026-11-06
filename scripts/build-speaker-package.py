@@ -78,6 +78,7 @@ def build(arch="arm64", output=None, binary=None, tag=None, upx=False,
         subprocess.run(command, cwd=ROOT, env=env, check=True)
         files = [(name, (ROOT / "packaging/speaker" / name).read_bytes()) for name in PAYLOAD]
         files += [(name, (ROOT / name).read_bytes()) for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "SOURCE.md")]
+        files += [("docs/soundcloud.md", (ROOT / "docs/soundcloud.md").read_bytes())]
         files += [(str(path.relative_to(ROOT)), path.read_bytes())
                   for path in sorted((ROOT / "docs/licenses").glob("*.txt"))]
         files += [("bin/quasar-bridge", executable.read_bytes()),

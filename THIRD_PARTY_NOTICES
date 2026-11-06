@@ -468,11 +468,6 @@ Apache License
    limitations under the License.
 
 
-github.com/freequasar/quasar-go-genproto v0.0.0-20261025092142-2f85025877ff
-
-No separate license notice is present in the module archive. Refer to the module's upstream source.
-
-
 github.com/google/jsonschema-go v0.4.3
 
 MIT License
@@ -1231,6 +1226,20 @@ whether future versions of the GNU Lesser General Public License shall
 apply, that proxy's public statement of acceptance of any version is
 permanent authorization for you to choose that version for the
 Library.
+
+
+github.com/skrashevich/quasar-go-genproto v0.3.1-0.20261106085113-5ec06bb3066c
+
+Copyright (c) Yandex LLC and its affiliates.
+All rights reserved.
+
+The Protocol Buffers (.proto) files contained in this repository were extracted or reconstructed from Yandex software binaries.
+
+All rights to the original definitions and associated intellectual property are reserved by Yandex and/or their respective rights holders.
+
+No license or rights are granted by this repository.
+
+This repository is not affiliated with, endorsed by, or officially associated with Yandex.
 
 
 github.com/skrashevich/station-airplay v0.2.2

@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
-	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -17,7 +17,7 @@ func (n *Native) captureDelivered(p *nativeRequest, text string, final, action, 
 		return
 	}
 	n.mu.Lock()
-	if p.canceled || p.ctx.Err() != nil || p.local != local {
+	if p.canceled || p.ctx.Err() != nil || p.local != local || p.soundSuperseded {
 		n.mu.Unlock()
 		return
 	}

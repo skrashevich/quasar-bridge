@@ -27,6 +27,7 @@ import (
 	"quasarbridge/internal/home"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/soundcloud"
 	"quasarbridge/internal/update"
 	"quasarbridge/internal/wire"
 )
@@ -38,6 +39,9 @@ func main() {
 	checkMCP := flag.Bool("check-mcp", false, "connect to configured MCP servers and list tools without executing them")
 	route := flag.String("route", "", "explain a route without executing home actions or generating an answer")
 	validate := flag.Bool("check-config", false, "validate configuration without contacting backends")
+	soundCloudSetup := flag.String("soundcloud-setup", "", "configure SoundCloud: off, explicit, default, compare-yandex or compare-soundcloud")
+	checkSoundCloud := flag.Bool("check-soundcloud", false, "check configured SoundCloud catalog and media connectivity")
+	checkSoundCloudProxy := flag.Bool("check-soundcloud-proxy", false, "check SoundCloud through a candidate SOCKS5 URL read from stdin without saving it")
 	listModels := flag.Bool("list-models", false, "list available LLM models as ID and quoted label (tab-separated); no model selection required")
 	chatGPTAuth := flag.String("chatgpt-auth", "", "manage ChatGPT subscription: login, status, logout or models")
 	chatGPTListen := flag.String("chatgpt-login-listen", "127.0.0.1:1455", "loopback address for ChatGPT browser sign-in (use SSH forwarding on a speaker)")
@@ -46,6 +50,30 @@ func main() {
 	speakerBackup := flag.String("speaker-backup", "/data/opt/quasar-bridge/endpoint-backup.json", "persistent endpoint backup")
 	speakerURL := flag.String("speaker-url", "ws://127.0.0.1:8443/uni.ws", "on-device bridge URL")
 	flag.Parse()
+	if (*checkSoundCloud || *checkSoundCloudProxy) && (*soundCloudSetup != "" || *speakerAction != "") {
+		fmt.Fprintln(os.Stderr, "SoundCloud check cannot be combined with configuration changes")
+		os.Exit(2)
+	}
+	if *checkSoundCloudProxy {
+		proxyURL, err := readSoundCloudProxy(os.Stdin)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		// Override even an existing runtime.env proxy for this check only.
+		if err := os.Setenv("QUASAR_SOUNDCLOUD_PROXY_URL", proxyURL); err != nil {
+			fmt.Fprintln(os.Stderr, "SoundCloud proxy override failed")
+			os.Exit(1)
+		}
+	}
+	if *soundCloudSetup != "" {
+		if err := configureSoundCloud(*path, *soundCloudSetup); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("SoundCloud configuration saved")
+		return
+	}
 	if *speakerAction != "" {
 		if err := setSpeakerEndpoint(*speakerConfig, *speakerBackup, *speakerURL, *speakerAction); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -79,6 +107,12 @@ func main() {
 	if *validate {
 		diagnostics++
 	}
+	if *checkSoundCloud {
+		diagnostics++
+	}
+	if *checkSoundCloudProxy {
+		diagnostics++
+	}
 	if *chatGPTAuth != "" {
 		diagnostics++
 	}
@@ -107,6 +141,18 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *checkSoundCloud || *checkSoundCloudProxy {
+		if *checkSoundCloud && !cfg.SoundCloud.Enabled {
+			fmt.Println("SoundCloud выключен")
+			return
+		}
+		if err := soundcloud.CheckAccess(ctx, cfg.SoundCloud); err != nil {
+			fmt.Fprintln(os.Stderr, "Не удалось проверить доступ к SoundCloud:", err)
+			os.Exit(1)
+		}
+		fmt.Println("SoundCloud доступен")
+		return
+	}
 	if *listModels {
 		if err := writeLLMModels(ctx, newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY")), os.Stdout); err != nil {
 			slog.Error("LLM model discovery failed", "error", err)
@@ -182,6 +228,9 @@ func main() {
 		return "Аварийный откат запланирован после этого ответа. После успешного восстановления подключения к Яндексу колонка перезагрузится.", nil
 	}
 	configuration := &configurationControl{path: *path, active: cfg, engine: engine, logs: logs}
+	if cfg.Mode == "hybrid" {
+		engine.MusicPreferences = configuration
+	}
 	configuration.restart = func(ctx context.Context) (any, error) { return update.New(*path).Restart(ctx) }
 	engine.Configuration = cfg.AssistantTools.Enabled && cfg.AssistantTools.Configuration
 	var airPlay *airPlayControl
@@ -196,6 +245,14 @@ func main() {
 		if airPlay != nil {
 			engine.AirPlay = airPlay
 		}
+	}
+	soundCloudProvider, soundCloudRelay, err := newSoundCloudProvider(cfg)
+	if err != nil {
+		slog.Error("SoundCloud configuration rejected", "error", err)
+		os.Exit(1)
+	}
+	if soundCloudProvider != nil {
+		engine.SoundCloud = soundCloudProvider
 	}
 	var musicQueue *assistant.MusicQueue
 	var hc *home.Controller
@@ -244,7 +301,7 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
 		if *route != "" {
-			data, _ := json.Marshal(engine.Decide(ctx, *route))
+			data, _ := json.Marshal(engine.Decide(dialogue.WithSpeaker(ctx, "diagnostic:route"), *route))
 			fmt.Println(string(data))
 			return
 		}
@@ -313,6 +370,9 @@ func main() {
 		}
 	}
 	mux := http.NewServeMux()
+	if soundCloudRelay != nil {
+		mux.Handle("/soundcloud/", soundCloudRelay)
+	}
 	registerDiagnostics(mux, diagnosticLogs, func() map[string]any { return airPlayHealth(airPlay) })
 	if musicQueue != nil {
 		mux.Handle("/music-stream/", musicQueue)
@@ -328,7 +388,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()})
+		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "soundcloud": soundCloudHealth(cfg, engine.SoundCloud != nil, soundCloudProvider), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()})
 		_, _ = w.Write(data)
 	})
 	mux.Handle("/uni.ws", proxy)
