@@ -37,6 +37,7 @@ func main() {
 	check := flag.Bool("check-backends", false, "check LLM and configured Home Assistant connectivity")
 	checkMCP := flag.Bool("check-mcp", false, "connect to configured MCP servers and list tools without executing them")
 	route := flag.String("route", "", "explain a route without executing home actions or generating an answer")
+	wake := flag.String("wake", "", "wake word (for example алиса or яндекс) that the -route text is spoken after")
 	validate := flag.Bool("check-config", false, "validate configuration without contacting backends")
 	listModels := flag.Bool("list-models", false, "list available LLM models as ID and quoted label (tab-separated); no model selection required")
 	chatGPTAuth := flag.String("chatgpt-auth", "", "manage ChatGPT subscription: login, status, logout or models")
@@ -244,6 +245,9 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
 		if *route != "" {
+			if *wake != "" {
+				ctx = bridge.WithWake(ctx, bridge.Wake{Phrase: bridge.NormalizeWake(*wake)})
+			}
 			data, _ := json.Marshal(engine.Decide(ctx, *route))
 			fmt.Println(string(data))
 			return

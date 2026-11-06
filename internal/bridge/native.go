@@ -84,6 +84,7 @@ type Native struct {
 	up, down         Sender
 	resolver         Resolver
 	mu               sync.Mutex
+	wake             wakeMemory
 	requests         map[string]*nativeRequest
 	tts              map[string]*nativeRequest
 	streams          map[uint32]*nativeRequest
@@ -158,6 +159,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		pctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
 		pctx = reply.WithPolicy(pctx)
+		pctx = WithWake(pctx, n.wake.resolve(req.GetSpotterPhrase(), req.GetRequest().GetActivationType(), time.Now()))
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)
 		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
@@ -550,7 +552,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				n.mu.Lock()
 				p.listenOnStreamStart = decision.Source == "dialogue_retry"
 				n.mu.Unlock()
-				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
+				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source, "wake", wakeFrom(p.ctx).Phrase, "wake_inherited", wakeFrom(p.ctx).Inherited)
 				stop := func() {}
 				if decision.Route != "yandex" && n.ProgressAfter > 0 {
 					stop = n.progress(p)

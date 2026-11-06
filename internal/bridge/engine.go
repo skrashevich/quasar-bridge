@@ -284,6 +284,15 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}
 	}
+	// Слово вызова выбирает маршрут раньше правил, но после служебных команд выше
+	// (настройка голосом, AirPlay, сброс диалога, управление воспроизведением).
+	if route, ok := p.wakeRoute(wakeFrom(ctx)); ok {
+		d := RouteDecision{Route: route, Source: "wake_word"}
+		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
+			d.Route = "music"
+		}
+		return d
+	}
 	if d, ok := p.match(text); ok {
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
 			d.Route = "music"

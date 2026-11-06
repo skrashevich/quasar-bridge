@@ -16,6 +16,11 @@ type RoutingConfig struct {
 	DefaultRoute string           `json:"default_route"`
 	Classifier   ClassifierConfig `json:"classifier"`
 	Refusal      RefusalConfig    `json:"refusal"`
+	// WakeRoutes назначает маршрут (llm, yandex или home) слову вызова колонки,
+	// например {"яндекс": "llm", "алиса": "yandex"}. Слово из списка выбирает маршрут
+	// сразу, правила и классификатор для такого запроса не вызываются. Слова,
+	// которых в списке нет, и активация по интонации идут по обычным правилам.
+	WakeRoutes map[string]string `json:"wake_routes,omitempty"`
 }
 type RoutingRule struct {
 	Name     string       `json:"name"`
@@ -59,6 +64,7 @@ type compiledRule struct {
 // RoutingPolicy owns normalized copies. Once compiled it is immutable and safe
 // to share across requests and existing WebSocket sessions.
 type RoutingPolicy struct {
+	wakeRoutes                      map[string]string
 	rules                           []compiledRule
 	defaultRoute                    string
 	classifier                      ClassifierConfig
@@ -153,6 +159,22 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 		return nil, errors.New("classifier prompt must not be empty")
 	}
 	p := &RoutingPolicy{defaultRoute: cfg.DefaultDestination(), classifier: cfg.Classifier, classifierEnabled: cfg.ClassifierEnabled(), refusalEnabled: cfg.Refusal.Enabled}
+	for word, route := range cfg.WakeRoutes {
+		key := NormalizeWake(word)
+		if key == "" || strings.HasPrefix(key, "<") {
+			return nil, errors.New("wake_routes: the wake word must be a word, not empty or in angle brackets")
+		}
+		if !directRoute(route) {
+			return nil, errors.New("wake_routes: invalid route for wake word " + key)
+		}
+		if p.wakeRoutes == nil {
+			p.wakeRoutes = map[string]string{}
+		}
+		if _, dup := p.wakeRoutes[key]; dup {
+			return nil, errors.New("wake_routes: duplicate wake word " + key)
+		}
+		p.wakeRoutes[key] = route
+	}
 	names := map[string]bool{}
 	for i, rule := range cfg.Rules {
 		fail := func(reason string) (*RoutingPolicy, error) { return nil, fmt.Errorf("routing rule %d: %s", i, reason) }
@@ -208,7 +230,8 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	if p.refusalEnabled && (len(p.refusalPrefixes) == 0 || len(p.refusalPhrases) == 0) {
 		return nil, errors.New("enabled refusal matcher requires prefixes and contains_any")
 	}
-	data, err := json.Marshal(cfg)
+	// Порядок ключей карты wake_routes должен быть одинаковым, иначе ревизия «плавает».
+	data, err := json.Marshal(cfg, json.Deterministic(true))
 	if err != nil {
 		return nil, errors.New("cannot encode routing configuration")
 	}
@@ -257,10 +280,27 @@ func (p *RoutingPolicy) match(text string) (RouteDecision, bool) {
 
 func (p *RoutingPolicy) Revision() string { return p.revision }
 
+// wakeRoute возвращает маршрут, назначенный слову вызова.
+func (p *RoutingPolicy) wakeRoute(w Wake) (string, bool) {
+	if w.Phrase == "" {
+		return "", false
+	}
+	route, ok := p.wakeRoutes[w.Phrase]
+	return route, ok
+}
+
 // Preview evaluates only static rules and the configured default. It never
 // calls a classifier, touches dialogue state or executes the selected handler.
 // Route=classify means that a real request would still need classification.
 func (p *RoutingPolicy) Preview(text string) RouteDecision {
+	return p.PreviewWake(text, Wake{})
+}
+
+// PreviewWake — Preview для запроса, произнесённого после указанного слова вызова.
+func (p *RoutingPolicy) PreviewWake(text string, w Wake) RouteDecision {
+	if route, ok := p.wakeRoute(w); ok {
+		return RouteDecision{Route: route, Source: "wake_word"}
+	}
 	if decision, ok := p.match(text); ok {
 		return decision
 	}
