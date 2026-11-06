@@ -201,6 +201,26 @@ fi
 if [ -n "${QUASAR_TEST_HOME_TRACE:-}" ]; then
  printf '%s\n' "${QUASAR_HOME_MCP_URL:-}" >> "$QUASAR_TEST_HOME_TRACE"
 fi
+if [ -n "${QUASAR_TEST_PARAMETERS_TRACE:-}" ]; then
+ printf '%s\\n' "${QUASAR_LLM_CHAT_PARAMETERS:-}" >> "$QUASAR_TEST_PARAMETERS_TRACE"
+fi
+if [ "$1" = -probe-llm-compat ]; then
+ test -n "${QUASAR_LLM_MODEL:-}" || exit 2
+ if [ -n "${QUASAR_TEST_COMPAT_DIAGNOSTIC:-}" ]; then
+  printf '%s\\n' "$QUASAR_TEST_COMPAT_DIAGNOSTIC" >&2
+ fi
+ if [ "${QUASAR_TEST_FAIL_COMPAT:-}" = yes ]; then
+  printf 'LLM compatibility failed: HTTP 400\\n' >&2
+  exit 1
+ fi
+ if [ "${QUASAR_TEST_EMPTY_COMPAT:-}" != yes ]; then
+  if [ -n "${QUASAR_TEST_COMPAT_PARAMETERS:-}" ]; then
+   printf '%s\\n' "$QUASAR_TEST_COMPAT_PARAMETERS"
+  else
+   printf '{}\\n'
+  fi
+ fi
+fi
 if [ "$1" = -check-backends ] && [ "${QUASAR_TEST_FAIL_BACKEND_ONCE:-}" = yes ] &&
    [ ! -e "$QUASAR_DATA_DIR/backend-attempted" ]; then
  touch "$QUASAR_DATA_DIR/backend-attempted"
@@ -272,6 +292,211 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
         ], text=True)
         self.assertEqual(output.splitlines(), ["responses", key, "fixture-model"])
         self.assertNotIn(key, result.stdout + result.stderr)
+
+    def test_chat_api_probes_and_saves_shell_escaped_parameters(self):
+        parameters = json.dumps({"chat_template_kwargs": None,
+                                 "temperature": "fixture'\"\\$`value"}, separators=(",", ":"))
+        key = "private-api-key"
+        values = self.root / "parameters"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_COMPAT_PARAMETERS=parameters,
+                                         QUASAR_TEST_PARAMETERS_TRACE=str(values)),
+                                input=f"https://llm.example.invalid/v1\n{key}\n1\n2\n\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.trace.read_text().splitlines(),
+                         ["-list-models", "-probe-llm-compat", "-check-config", "-check-backends", "install"])
+        output = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s" "$QUASAR_LLM_CHAT_PARAMETERS"',
+            "sh", str(self.state / "runtime.env"),
+        ], text=True)
+        self.assertEqual(output, parameters)
+        self.assertEqual(values.read_text().splitlines(), ["{}", "{}", parameters, parameters])
+        self.assertNotIn(key, result.stdout + result.stderr)
+        self.assertEqual((self.state / "runtime.env").stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(os.environ.get("QUASAR_TEST_BINARY"),
+                         "real setup integration requires a native QUASAR_TEST_BINARY")
+    def test_real_binary_setup_recovers_google_array_error_and_preserves_settings(self):
+        shutil.copy2(os.environ["QUASAR_TEST_BINARY"], self.package / "bin/quasar-bridge")
+        (self.package / "bin/quasar-bridge").chmod(0o755)
+        provider_error = json.dumps([{"error": {
+            "code": 400,
+            "message": 'Invalid JSON payload received. Unknown name "chat_template_kwargs": Cannot find field.',
+            "status": "INVALID_ARGUMENT",
+            "details": [{"@type": "type.googleapis.com/google.rpc.BadRequest",
+                         "fieldViolations": [{"description": 'Unknown name "chat_template_kwargs".'}]}],
+        }}])
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.trace.unlink(missing_ok=True)
+                self.state.mkdir()
+                original_config = ('{"mode":"observe","dialogue_context":{"max_turns":9},'
+                                   '"local_progress":{"enabled":false}}')
+                if existing:
+                    (self.state / "config.json").write_text(original_config)
+                (self.state / "runtime.env").write_text("KEEP_FIXTURE=yes\n")
+                requests = []
+
+                class Handler(http.server.BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        requests.append((self.path, self.headers.get("Authorization"), None))
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(b'{"data":[{"id":"models/gemini-fixture","name":"Gemini fixture"}]}')
+
+                    def do_POST(self):
+                        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                        requests.append((self.path, self.headers.get("Authorization"), body))
+                        if "chat_template_kwargs" in body:
+                            self.send_response(400)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(provider_error.encode())
+                            return
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        content = '{"ok":true}' if "response_format" in body else "ok"
+                        self.wfile.write(json.dumps({"choices": [{"message": {"content": content}}]}).encode())
+
+                    def log_message(self, *args):
+                        pass
+
+                server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                url = f"http://127.0.0.1:{server.server_port}/v1beta/openai"
+                answers = ("y\n" if existing else "") + f"{url}\nfixture-key\n1\n1\n"
+                answers += "n\n" if existing else "\nn\n"
+                try:
+                    result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                            env=self.env, input=answers,
+                                            capture_output=True, text=True, timeout=30)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=5)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(provider_error, result.stdout + result.stderr)
+                self.assertEqual(self.trace.read_text().splitlines(), ["install"])
+                output = subprocess.check_output([
+                    "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_LLM_CHAT_PARAMETERS" "$KEEP_FIXTURE"',
+                    "sh", str(self.state / "runtime.env"),
+                ], text=True).splitlines()
+                self.assertEqual(json.loads(output[0]), {"chat_template_kwargs": None})
+                self.assertEqual(output[1], "yes")
+                if existing:
+                    self.assertEqual((self.state / "config.json").read_text(), original_config)
+                else:
+                    self.assertEqual(json.loads((self.state / "config.json").read_text())["listen"],
+                                     "127.0.0.1:8443")
+                self.assertTrue(all(auth == "Bearer fixture-key" for _, auth, _ in requests))
+                self.assertEqual(requests[0][0], "/v1beta/openai/models")
+                self.assertTrue(all(path in ("/v1beta/openai/models", "/v1beta/openai/chat/completions")
+                                    for path, _, _ in requests))
+                posts = [body for path, _, body in requests if path.endswith("/chat/completions")]
+                self.assertEqual(sum("chat_template_kwargs" in body for body in posts), 1)
+                self.assertTrue(any("response_format" in body for body in posts))
+                self.assertTrue(all(body["model"] == "models/gemini-fixture" for body in posts))
+                self.assertNotIn("chat_template_kwargs", posts[-1])
+
+    def test_successful_probe_keeps_provider_errors_visible(self):
+        diagnostic = 'HTTP 400: {"error":{"message":"Unknown name chat_template_kwargs","status":"INVALID_ARGUMENT"}}'
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_COMPAT_DIAGNOSTIC=diagnostic,
+                                         QUASAR_TEST_COMPAT_PARAMETERS='{"chat_template_kwargs":null}'),
+                                input="https://llm.example.invalid/v1\n\n1\n2\n\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(diagnostic, result.stderr)
+        self.assertNotIn(diagnostic, (self.state / "runtime.env").read_text())
+
+    def test_failed_probe_restores_existing_settings_without_installing(self):
+        self.state.mkdir()
+        config = '{"mode":"observe","llm_model":"old-model"}'
+        runtime = 'KEEP_FIXTURE=yes\nQUASAR_LLM_CHAT_PARAMETERS=old-value\n'
+        (self.state / "config.json").write_text(config)
+        (self.state / "runtime.env").write_text(runtime)
+        diagnostic = 'HTTP 400: {"error":{"message":"provider failure details","status":"INVALID_ARGUMENT"}}'
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_COMPAT="yes",
+                                         QUASAR_TEST_COMPAT_DIAGNOSTIC=diagnostic),
+                                input="y\nhttps://llm.example.invalid/v1\n\n1\n2\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.trace.read_text().splitlines(), ["-list-models", "-probe-llm-compat"])
+        self.assertIn(diagnostic, result.stderr)
+        self.assertEqual((self.state / "config.json").read_text(), config)
+        self.assertEqual((self.state / "runtime.env").read_text(), runtime)
+
+    def test_empty_probe_result_does_not_install(self):
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_EMPTY_COMPAT="yes"),
+                                input="https://llm.example.invalid/v1\n\n1\n2\nn\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("install", self.trace.read_text().splitlines())
+        self.assertFalse((self.state / "runtime.env").exists())
+
+    def test_probe_failure_can_switch_to_responses_and_clear_stale_parameters(self):
+        self.state.mkdir()
+        (self.state / "config.json").write_text('{"mode":"observe"}')
+        (self.state / "endpoint-backup.json").write_text("existing Alice connection")
+        (self.state / "runtime.env").write_text(
+            '# BEGIN QUASAR SETUP\nQUASAR_LLM_CHAT_PARAMETERS=old-value\n# END QUASAR SETUP\n')
+        values = self.root / "parameters"
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_COMPAT="yes",
+                                         QUASAR_TEST_PARAMETERS_TRACE=str(values)),
+                                input=("y\nhttps://first.example.invalid/v1\n\n1\n2\ny\n"
+                                       "https://second.example.invalid/v1\n\n2\n2\n"),
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.trace.read_text().splitlines(),
+                         ["-list-models", "-probe-llm-compat", "-list-models", "-check-config", "-check-backends", "install"])
+        self.assertTrue(all(value == "{}" for value in values.read_text().splitlines()))
+        output = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_LLM_API" "$QUASAR_LLM_CHAT_PARAMETERS"',
+            "sh", str(self.state / "runtime.env"),
+        ], text=True)
+        self.assertEqual(output.splitlines(), ["responses", "{}"])
+
+    def test_cancelling_after_successful_probe_restores_old_parameters(self):
+        self.state.mkdir()
+        config = '{"mode":"observe","llm_chat_parameters":{"temperature":0.5}}'
+        runtime = 'KEEP_FIXTURE=yes\nQUASAR_LLM_CHAT_PARAMETERS=\'{"temperature":0.5}\'\n'
+        (self.state / "config.json").write_text(config)
+        (self.state / "runtime.env").write_text(runtime)
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=dict(self.env, QUASAR_TEST_FAIL_BACKEND_ONCE="yes",
+                                         QUASAR_TEST_COMPAT_PARAMETERS='{"chat_template_kwargs":null}'),
+                                input="y\nhttps://llm.example.invalid/v1\n\n1\n2\n0\n",
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.trace.read_text().splitlines(),
+                         ["-list-models", "-probe-llm-compat", "-check-config", "-check-backends"])
+        self.assertEqual((self.state / "config.json").read_text(), config)
+        self.assertEqual((self.state / "runtime.env").read_text(), runtime)
+
+    def test_update_without_reconfiguration_keeps_parameters_and_skips_probe(self):
+        self.state.mkdir()
+        config = '{"mode":"observe","llm_chat_parameters":{"chat_template_kwargs":null}}'
+        runtime = 'QUASAR_LLM_CHAT_PARAMETERS=\'{"chat_template_kwargs":null}\'\nKEEP_FIXTURE=yes\n'
+        (self.state / "config.json").write_text(config)
+        (self.state / "runtime.env").write_text(runtime)
+        (self.state / "endpoint-backup.json").write_text("existing Alice connection")
+        app = self.state / "app"
+        app.mkdir()
+        (app / "control.sh").write_text('#!/bin/sh\nprintf "control %s\\n" "$*" >> "$QUASAR_TEST_TRACE"\n')
+        result = subprocess.run(["sh", str(self.package / "setup.sh")],
+                                env=self.env, input="n\n", capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.trace.read_text().splitlines(), ["install", "control check-backends"])
+        self.assertEqual((self.state / "config.json").read_text(), config)
+        self.assertEqual((self.state / "runtime.env").read_text(), runtime)
 
     def test_model_selection_rejects_invalid_numbers_without_refetching(self):
         result = subprocess.run(["sh", str(self.package / "setup.sh")],
@@ -388,7 +613,8 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
         self.assertEqual(result.stdout.count("URL Home Assistant MCP"), 1)
         self.assertIn("backend temporarily unavailable", result.stdout + result.stderr)
         values = home_trace.read_text().splitlines()
-        self.assertTrue(all(value == home_url for value in values[1:]))
+        self.assertEqual(values[:2], ["", ""])
+        self.assertTrue(all(value == home_url for value in values[2:]))
 
     def test_failed_backend_can_correct_only_home_url(self):
         wrong_url = "https://home.example.invalid/typo"
@@ -411,7 +637,8 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
                 answers += f"2\n{corrected_url}\n" + ("" if existing else "n\n")
                 result = subprocess.run(["sh", str(self.package / "setup.sh")],
                                         env=dict(self.env, QUASAR_TEST_FAIL_BACKEND_ONCE="yes",
-                                                 QUASAR_TEST_HOME_TRACE=str(home_trace)),
+                                                 QUASAR_TEST_HOME_TRACE=str(home_trace),
+                                                 QUASAR_TEST_COMPAT_PARAMETERS='{"chat_template_kwargs":null}'),
                                         input=answers, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 calls = self.trace.read_text().splitlines()
@@ -422,10 +649,11 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
                 self.assertIn(wrong_url, values)
                 self.assertEqual(values[-1], corrected_url)
                 output = subprocess.check_output([
-                    "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_HOME_MCP_URL" "$QUASAR_LLM_MODEL"',
+                    "sh", "-c", '. "$1"; printf "%s\\n" "$QUASAR_HOME_MCP_URL" "$QUASAR_LLM_MODEL" "$QUASAR_LLM_CHAT_PARAMETERS"',
                     "sh", str(self.state / "runtime.env"),
                 ], text=True)
-                self.assertEqual(output.splitlines(), [corrected_url, "fixture-model"])
+                self.assertEqual(output.splitlines(),
+                                 [corrected_url, "fixture-model", '{"chat_template_kwargs":null}'])
 
     def test_subscription_setup_shows_concrete_tunnel_and_hides_status_json(self):
         tunnel = "ssh -N -L 1455:127.0.0.1:1455 -p 2222 root@192.0.2.24"
@@ -819,7 +1047,7 @@ class InstallationTest(unittest.TestCase):
         self.run_script(ROOT / "install.sh", ok=False)
         self.assertFalse(marker.exists())
 
-    def backend_url(self):
+    def backend_url(self, reject_template=False):
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(200)
@@ -828,16 +1056,35 @@ class InstallationTest(unittest.TestCase):
                 self.wfile.write(b'{"object":"list","data":[{"id":"fixture-model","object":"model"}]}')
 
             def do_POST(self):
-                self.rfile.read(int(self.headers["Content-Length"]))
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if reject_template and "chat_template_kwargs" in request:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"error":{"message":"Unknown name chat_template_kwargs", "status":"INVALID_ARGUMENT"}}')
+                    return
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(b'{"choices":[{"message":{"content":"ok"}}]}')
+                content = '{"ok":true}' if "response_format" in request else "ok"
+                self.wfile.write(json.dumps({"choices": [{"message": {"content": content}}]}).encode())
 
             def log_message(self, *args):
                 pass
 
         return self.serve(Handler) + "/v1"
+
+    def test_setup_probes_restricted_chat_api_and_saves_runtime_parameters(self):
+        url = self.backend_url(reject_template=True)
+        result = self.run_script(self.package / "setup.sh",
+                                 input_text=f"{url}\nfixture-key\n1\n1\n\nn\n")
+        self.control("status")
+        output = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s" "$QUASAR_LLM_CHAT_PARAMETERS"',
+            "sh", str(self.state / "runtime.env"),
+        ], text=True)
+        self.assertEqual(json.loads(output), {"chat_template_kwargs": None})
+        self.assertIn("Совместимые параметры API подобраны", result.stdout)
 
     def test_setup_configures_checks_backend_and_applies_endpoint_without_reboot(self):
         url = self.backend_url()

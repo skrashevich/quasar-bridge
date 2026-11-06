@@ -81,6 +81,13 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 			*target = value
 		}
 	}
+	if value, ok := os.LookupEnv("QUASAR_LLM_CHAT_PARAMETERS"); ok {
+		// Replace the complete map: {} also clears parameters from config.json.
+		cfg.LLMChatParameters = nil
+		if !strings.HasPrefix(strings.TrimSpace(value), "{") || json.Unmarshal([]byte(value), &cfg.LLMChatParameters) != nil {
+			return cfg, errors.New("QUASAR_LLM_CHAT_PARAMETERS must be a JSON object")
+		}
+	}
 	if value, ok := os.LookupEnv("QUASAR_ALLOWED_IPS"); ok {
 		cfg.AllowedIPs = nil
 		for item := range strings.SplitSeq(value, ",") {
