@@ -27,8 +27,10 @@ Wait /Номер модели:/
 Sleep 2s
 Type "1"
 Enter
+# The compatibility result remains above this persistent prompt.
 Wait /Секретный URL Home Assistant/
-Sleep 1s
+Sleep 4s
+Screenshot runtime/vhs-kuyase/install-probe.png
 Enter
 Wait /Подключить Алису/
 Sleep 2s
