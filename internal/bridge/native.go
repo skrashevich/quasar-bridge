@@ -12,16 +12,16 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
-	asrcommon "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
-	cancellation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	continuation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
-	ack "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/input_start_ack"
-	tts "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_generate"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	asrcommon "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
+	cancellation "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	continuation "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
+	ack "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/input_start_ack"
+	tts "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_generate"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/dialogue"
@@ -51,6 +51,8 @@ type nativeRequest struct {
 	partial                         uint32
 	responseID                      string
 	final                           bool
+	aggregateSeen                   bool
+	aggregateFinalSeen              bool
 	header                          *header.TEventHeader
 	isText                          bool
 	ttsStarted                      bool
@@ -494,9 +496,15 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		slog.Info("native_server_ready", "request", requestTag(p.id))
 	case "AsrResult":
 		asr := e.GetAsrResult()
+		aggregate := asr.GetAggregatedRecognition()
+		if aggregate != nil && (!p.aggregateSeen || (aggregate.GetIsFinal() && !p.aggregateFinalSeen)) {
+			p.aggregateSeen = true
+			p.aggregateFinalSeen = p.aggregateFinalSeen || aggregate.GetIsFinal()
+			slog.Info("native_asr_aggregate", "request", requestTag(p.id), "end_of_utt", asr.GetEndOfUtt(), "aggregate_present", true, "aggregate_final", aggregate.GetIsFinal(), "aggregate_index", aggregate.GetIndex(), "aggregate_text_bytes", len(aggregate.GetRecognizedText()))
+		}
 		if asr.GetEndOfUtt() {
 			p.final = true
-			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String())
+			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String(), "aggregate_present", aggregate != nil, "aggregate_final", aggregate.GetIsFinal(), "aggregate_index", aggregate.GetIndex(), "aggregate_text_bytes", len(aggregate.GetRecognizedText()))
 		}
 		if asr.GetEndOfUtt() && len(asr.GetRecognition()) > 0 {
 			r := asr.GetRecognition()[0]

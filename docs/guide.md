@@ -14,7 +14,7 @@ WebSocket-протокол Quasar/Uniproxy:
 
 Распознавание речи (ASR) и озвучивание (TTS) остаются в Яндексе. Даже запрос,
 обрабатываемый локально, использует облачный речевой тракт. Схемы протокола:
-[freequasar/quasar-go-genproto](https://github.com/freequasar/quasar-go-genproto).
+[skrashevich/quasar-go-genproto](https://github.com/skrashevich/quasar-go-genproto).
 
 ## Содержание
 

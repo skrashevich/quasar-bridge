@@ -6,10 +6,10 @@ import (
 	"net/url"
 	"strings"
 
-	directives "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
-	"github.com/freequasar/quasar-go-genproto/proto/alice/protos/data/channel"
-	"github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint"
-	fileplayer "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/audio_file_player"
+	directives "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
+	"github.com/skrashevich/quasar-go-genproto/proto/alice/protos/data/channel"
+	endpoint "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint"
+	fileplayer "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/audio_file_player"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
