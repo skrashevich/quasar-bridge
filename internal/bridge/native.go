@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,9 @@ type FallbackResolver interface {
 }
 
 type nativeRequest struct {
+	audioInput                      []byte
+	audioInputDone                  bool
+	inputWhisper                    bool
 	streaming                       bool
 	listenOnStreamStart             bool
 	partial                         uint32
@@ -113,6 +117,9 @@ func (n *Native) Close() {
 	n.wg.Wait()
 }
 func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byte) error {
+	if k == websocket.MessageBinary {
+		n.collectWhisperAudio(data)
+	}
 	f := wire.Decode(data, wire.ClientToServer)
 	if f.Client == nil || f.Client.GetEvent() == nil {
 		return n.up(ctx, k, data)
@@ -532,9 +539,26 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		return
 	}
 	p.started = true
+	audioInput := p.audioInput
+	p.audioInput = nil
+	p.audioInputDone = true
 	text := p.text
 	n.mu.Unlock()
 	n.wg.Go(func() {
+		if os.Getenv("QUASAR_AUTO_WHISPER") == "1" && strings.TrimSpace(text) != "" && len(audioInput) > 0 {
+			inputBytes := len(audioInput)
+			pcm, err := decodeWhisperOpus(audioInput)
+			audioInput = nil
+			if err == nil {
+				m := acousticWhisper(pcm)
+				n.mu.Lock()
+				p.inputWhisper = m.Whisper
+				n.mu.Unlock()
+				slog.Info("acoustic_whisper", "request", requestTag(p.id), "whisper", m.Whisper, "active_frames", m.Active, "zcr", m.ZCR, "periodicity", m.Periodicity, "voiced_fraction", m.Voiced)
+			} else {
+				slog.Info("acoustic_whisper_unavailable", "request", requestTag(p.id), "audio_bytes", inputBytes, "reason", err.Error())
+			}
+		}
 		if n.DecisionDelay > 0 {
 			select {
 			case <-time.After(n.DecisionDelay):
@@ -676,6 +700,11 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
 	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
+	if p.inputWhisper {
+		t.GetEvent().GetTtsGenerate().Text = new(`<speaker is_whisper="true">` + text)
+		slog.Info("tts_whisper_enabled", "request", requestTag(p.id))
+	}
+
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err
