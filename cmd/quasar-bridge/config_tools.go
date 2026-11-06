@@ -35,7 +35,7 @@ var voiceSettings = []voiceSetting{
 	{"llm_reasoning_effort", "Усилие рассуждения: пустая строка, none, minimal, low, medium, high, xhigh, max; только responses/chatgpt.", "QUASAR_LLM_REASONING_EFFORT", true},
 	{"llm_max_output_tokens", "Лимит выходных токенов: положительное целое число.", "", true},
 	{"llm_hosted_tools", "Массив серверных инструментов: web_search, code_interpreter для responses; для chatgpt только web_search; [] отключает.", "", true},
-	{"llm_chat_parameters", "Объект параметров chat_completions: temperature, max_tokens, max_completion_tokens, response_format, chat_template_kwargs, reasoning_effort. {} очищает.", "", true},
+	{"llm_chat_parameters", "Объект параметров chat_completions: temperature, max_tokens, max_completion_tokens, response_format, chat_template_kwargs, reasoning_effort. {} очищает.", "QUASAR_LLM_CHAT_PARAMETERS", true},
 	{"llm_strip_prefixes", "Массив обращений к модели, удаляемых перед отправкой запроса. [] отключает; маршруты настраиваются отдельно.", "", true},
 	{"home_warm_area", "Название области Home Assistant для прогрева кэша; строка, пустая отключает прогрев.", "QUASAR_HOME_WARM_AREA", true},
 	{"listen_after_reply", "Логическое: слушать следующий вопрос после локального ответа.", "", true},

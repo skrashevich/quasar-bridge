@@ -39,6 +39,7 @@ func main() {
 	route := flag.String("route", "", "explain a route without executing home actions or generating an answer")
 	validate := flag.Bool("check-config", false, "validate configuration without contacting backends")
 	listModels := flag.Bool("list-models", false, "list available LLM models as ID and quoted label (tab-separated); no model selection required")
+	probeCompat := flag.Bool("probe-llm-compat", false, "probe Chat Completions parameter compatibility and print a JSON override object without changing configuration")
 	chatGPTAuth := flag.String("chatgpt-auth", "", "manage ChatGPT subscription: login, status, logout or models")
 	chatGPTListen := flag.String("chatgpt-login-listen", "127.0.0.1:1455", "loopback address for ChatGPT browser sign-in (use SSH forwarding on a speaker)")
 	speakerAction := flag.String("speaker-endpoint", "", "apply or rollback the on-device loopback endpoint (requires writable firmware)")
@@ -85,6 +86,9 @@ func main() {
 	if *listModels {
 		diagnostics++
 	}
+	if *probeCompat {
+		diagnostics++
+	}
 	if diagnostics > 1 {
 		slog.Error("diagnostic flags are mutually exclusive")
 		os.Exit(2)
@@ -107,9 +111,31 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *probeCompat {
+		ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+		defer cancel()
+		parameters, err := newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY")).ProbeCompatibility(ctx, func(err error) {
+			writeLLMProviderError(os.Stderr, err)
+		})
+		if err != nil {
+			slog.Error("LLM compatibility check failed", "error", err)
+			os.Exit(1)
+		}
+		if parameters == nil {
+			parameters = map[string]any{}
+		}
+		data, err := json.Marshal(parameters, json.Deterministic(true))
+		if err != nil {
+			slog.Error("cannot encode LLM compatibility parameters")
+			os.Exit(1)
+		}
+		fmt.Println(string(data))
+		return
+	}
 	if *listModels {
 		if err := writeLLMModels(ctx, newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY")), os.Stdout); err != nil {
 			slog.Error("LLM model discovery failed", "error", err)
+			writeLLMProviderError(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
@@ -252,6 +278,7 @@ func main() {
 			_, err := lc.Complete(ctx, []llm.Message{{Role: "user", Content: "Ответь одним словом: связь"}}, false)
 			if err != nil {
 				slog.Error("LLM check failed", "error", err)
+				writeLLMProviderError(os.Stderr, err)
 				os.Exit(1)
 			}
 			if hc == nil {
