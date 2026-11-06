@@ -28,6 +28,7 @@ import (
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/update"
+	"quasarbridge/internal/voice"
 	"quasarbridge/internal/wire"
 )
 
@@ -243,6 +244,13 @@ func main() {
 				slog.Error("LLM check failed", "error", err)
 				os.Exit(1)
 			}
+			if cfg.TTS.Enabled && cfg.TTS.BaseURL != "" {
+				if err := bridge.CheckSpeech(ctx, voice.New(cfg.TTS, os.Getenv("QUASAR_TTS_API_KEY")), "Проверка голоса."); err != nil {
+					slog.Error("voice check failed", "error", err)
+					os.Exit(1)
+				}
+				fmt.Println("Voice: ok")
+			}
 			if hc == nil {
 				fmt.Println("LLM: ok; Home Assistant: disabled")
 				return
@@ -293,6 +301,15 @@ func main() {
 			n := bridge.NewNative(ctx, up, down, engine)
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
+			if cfg.TTS.Enabled {
+				if cfg.TTS.BaseURL != "" {
+					n.Voice = voice.New(cfg.TTS, os.Getenv("QUASAR_TTS_API_KEY"))
+				}
+				n.RevoiceYandex = cfg.TTS.RevoiceYandex
+				n.YandexVoice = cfg.TTS.YandexVoice
+				n.YandexEmotion = cfg.TTS.YandexEmotion
+				n.YandexSpeed = cfg.TTS.YandexSpeed
+			}
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond
@@ -317,7 +334,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()})
+		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "tts_enabled": cfg.TTS.Enabled && cfg.Mode == "hybrid", "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()})
 		_, _ = w.Write(data)
 	})
 	mux.Handle("/uni.ws", proxy)

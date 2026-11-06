@@ -32,11 +32,11 @@ func (tr githubTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func releaseServer(t *testing.T, tag string, status int) *Updater {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/skrashevich/quasar-bridge/releases/latest" {
+		if r.URL.Path == "/EV-G3N-IY/quasar-bridge-voice/releases/latest" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		if r.URL.Path != "/repos/skrashevich/quasar-bridge/releases/latest" {
+		if r.URL.Path != "/repos/EV-G3N-IY/quasar-bridge-voice/releases/latest" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.WriteHeader(status)
@@ -110,9 +110,9 @@ func TestPrepareVerifiesChecksumBeforeExtracting(t *testing.T) {
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/skrashevich/quasar-bridge/releases/download/v1.2.4/quasar-bridge-linux-arm64.tar.gz":
+				case "/EV-G3N-IY/quasar-bridge-voice/releases/download/v1.2.4/quasar-bridge-linux-arm64.tar.gz":
 					w.Write(archive)
-				case "/skrashevich/quasar-bridge/releases/download/v1.2.4/quasar-bridge-linux-arm64.tar.gz.sha256":
+				case "/EV-G3N-IY/quasar-bridge-voice/releases/download/v1.2.4/quasar-bridge-linux-arm64.tar.gz.sha256":
 					io.WriteString(w, checksum)
 				default:
 					t.Errorf("unexpected URL %s", r.URL.Path)
@@ -265,7 +265,7 @@ func TestInstallSchedulesVerifiedReleaseAndRejectsConcurrentUpdate(t *testing.T)
 	archive := fixtureArchive(t, map[string]string{"VERSION": "1.2.4\n", "ARCH": arch, "bin/quasar-bridge": "new binary", "install.sh": "#!/bin/sh\nprintf installed > \"$QUASAR_DATA_DIR/result\"\n"})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/repos/skrashevich/quasar-bridge/releases/latest":
+		case r.URL.Path == "/repos/EV-G3N-IY/quasar-bridge-voice/releases/latest":
 			io.WriteString(w, `{"tag_name":"v1.2.4"}`)
 		case strings.HasSuffix(r.URL.Path, ".sha256"):
 			fmt.Fprintf(w, "%x  quasar-bridge-linux-%s.tar.gz\n", sha256.Sum256(archive), arch)
@@ -330,19 +330,19 @@ func TestCheckUsesOfficialLatestReleaseRedirectWhenAPIUnavailable(t *testing.T) 
 		location string
 		ok       bool
 	}{
-		{"https://github.com/skrashevich/quasar-bridge/releases/tag/v1.2.4", true},
-		{"/skrashevich/quasar-bridge/releases/tag/v1.2.4", true},
+		{"https://github.com/EV-G3N-IY/quasar-bridge-voice/releases/tag/v1.2.4", true},
+		{"/EV-G3N-IY/quasar-bridge-voice/releases/tag/v1.2.4", true},
 		{"https://github.com/another/repository/releases/tag/v1.2.4", false},
-		{"https://example.org/skrashevich/quasar-bridge/releases/tag/v1.2.4", false},
-		{"http://github.com/skrashevich/quasar-bridge/releases/tag/v1.2.4", false},
-		{"https://github.com/skrashevich/quasar-bridge/releases/tag/v1.2.4-rc1", false},
+		{"https://example.org/EV-G3N-IY/quasar-bridge-voice/releases/tag/v1.2.4", false},
+		{"http://github.com/EV-G3N-IY/quasar-bridge-voice/releases/tag/v1.2.4", false},
+		{"https://github.com/EV-G3N-IY/quasar-bridge-voice/releases/tag/v1.2.4-rc1", false},
 	} {
 		t.Run(tc.location, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/repos/skrashevich/quasar-bridge/releases/latest":
+				case "/repos/EV-G3N-IY/quasar-bridge-voice/releases/latest":
 					w.WriteHeader(http.StatusServiceUnavailable)
-				case "/skrashevich/quasar-bridge/releases/latest":
+				case "/EV-G3N-IY/quasar-bridge-voice/releases/latest":
 					if r.Method != http.MethodHead {
 						t.Errorf("latest release used %s, want HEAD", r.Method)
 					}

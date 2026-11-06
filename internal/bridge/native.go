@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -27,6 +28,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/reply"
 	"quasarbridge/internal/sound"
+	"quasarbridge/internal/voice"
 	"quasarbridge/internal/wire"
 )
 
@@ -76,6 +78,7 @@ type nativeRequest struct {
 	soundDirective                  *soundDirective
 	soundSealed                     bool
 	expires                         *time.Timer
+	listenOverride                  *bool
 }
 type Native struct {
 	connectionScope  string
@@ -95,6 +98,12 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+	Voice            Speech
+	RevoiceYandex    bool
+	YandexVoice      string
+	YandexEmotion    string
+	YandexSpeed      float64
+	voiceStreams     atomic.Uint32
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -481,6 +490,26 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			})
 			return nil
 		}
+		// Only pure speech can move to another voice: directives must stay with the
+		// cloud response that carries them, and streaming answers arrive in parts.
+		if speech := voice.Clean(cloudResponseText(r)); (n.Voice != nil || n.YandexVoice != "") && n.RevoiceYandex && speech != "" && !r.GetResponse().GetIsStreaming() {
+			listen := r.GetVoiceResponse().GetShouldListen()
+			p.local = true
+			p.listenOverride = &listen
+			p.ttsID = newID()
+			n.tts[p.ttsID] = p
+			n.mu.Unlock()
+			n.wg.Go(func() {
+				if err := n.sendCancel(p.ctx, p.id); err != nil {
+					return
+				}
+				if err := n.reply(p, speech); err != nil {
+					slog.Warn("native_reply_failed", "request", requestTag(p.id))
+				}
+				slog.Info("native_revoice", "request", requestTag(p.id))
+			})
+			return nil
+		}
 	}
 	emptyFinal := false
 	switch f.Kind() {
@@ -647,6 +676,9 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
 	silentPlayback := n.hasSilentPlayback(p)
 	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
+	if p.listenOverride != nil {
+		answer.VoiceResponse.ShouldListen = *p.listenOverride && !silentPlayback
+	}
 	if silentPlayback {
 		answer.VoiceResponse.HasVoiceResponse = false
 		answer.VoiceResponse.OutputSpeech.Text = new("")
@@ -672,7 +704,31 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	return n.synthesize(p, text)
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
-	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
+	if n.Voice != nil {
+		started, err := n.speakCustom(p, text)
+		if err == nil {
+			return nil
+		}
+		n.logVoiceFailure(p, started, err)
+		if started || p.ctx.Err() != nil {
+			return err
+		}
+		// A silent speaker is worse than the wrong voice.
+	}
+	return n.synthesizeYandex(p, text)
+}
+func (n *Native) synthesizeYandex(p *nativeRequest, text string) error {
+	generate := &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}
+	if n.YandexVoice != "" {
+		generate.Voice = new(n.YandexVoice)
+	}
+	if n.YandexEmotion != "" {
+		generate.Emotion = new(n.YandexEmotion)
+	}
+	if n.YandexSpeed != 0 {
+		generate.Speed = new(n.YandexSpeed)
+	}
+	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: generate}}}}
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err

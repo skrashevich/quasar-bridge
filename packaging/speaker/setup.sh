@@ -108,9 +108,15 @@ choose_model() {
  fi
  awk -F '\t' '{ printf "%d — %s (%s)\n", NR, $1, $2 }' "$saved/models"
  while :; do
-  ask 'Номер модели:'
+  ask 'Номер модели или её точное название, если её нет в списке:'
   case "$answer" in
-   ''|*[!0-9]*) echo 'Введите номер из списка.'; continue ;;
+   '') echo 'Введите номер или название модели.'; continue ;;
+   *[!0-9]*)
+    case "$answer" in
+     *[!A-Za-z0-9._:/-]*) echo 'Название содержит недопустимые символы.'; continue ;;
+    esac
+    model=$answer
+    return 0 ;;
   esac
   model=$(awk -F '\t' -v choice="$answer" 'NR == choice { print $1 }' "$saved/models")
   if [ -n "$model" ]; then return 0; fi

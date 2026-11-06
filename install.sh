@@ -2,7 +2,7 @@
 # Run on a computer with an SSH target, or directly on an HTTPS-capable speaker.
 set -eu
 umask 077
-release=${QUASAR_RELEASE_URL:-https://github.com/skrashevich/quasar-bridge/releases/latest/download}
+release=${QUASAR_RELEASE_URL:-https://github.com/EV-G3N-IY/quasar-bridge-voice/releases/latest/download}
 fetch() {
  if command -v curl >/dev/null; then
   curl -fL --connect-timeout 15 -o "$1" "$2"

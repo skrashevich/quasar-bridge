@@ -1,4 +1,6 @@
 [![Лицензия: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+> **Это форк с заменой голоса.** Ответы озвучивает ваш сервис вместо Яндекса: [как настроить](docs/custom-voice.md). Основан на [skrashevich/quasar-bridge](https://github.com/skrashevich/quasar-bridge), лицензия та же (Apache 2.0). Установщик и обновления берут релизы этого репозитория.
 [![Go](https://img.shields.io/badge/go-1.27.3-00ADD8.svg)](go.mod)
 [![Платформа](https://img.shields.io/badge/platform-Yandex%20Station%20ARM64%20%7C%20ARMv7-ffcc00.svg)](#что-понадобится)
 
@@ -86,7 +88,7 @@ Quasar Bridge учит Яндекс Станцию отвечать с помо�
 **На компьютере** выполните команду, подставив адрес колонки вместо `SPEAKER_IP`:
 
 ```sh
-curl -fL -o /tmp/install-quasar-bridge.sh https://github.com/skrashevich/quasar-bridge/releases/latest/download/install.sh && sh /tmp/install-quasar-bridge.sh root@SPEAKER_IP -p 2222
+curl -fL -o /tmp/install-quasar-bridge.sh https://github.com/EV-G3N-IY/quasar-bridge-voice/releases/latest/download/install.sh && sh /tmp/install-quasar-bridge.sh root@SPEAKER_IP -p 2222
 ```
 
 Если SSH на колонке слушает другой порт, замените `2222`.
@@ -97,7 +99,7 @@ curl -fL -o /tmp/install-quasar-bridge.sh https://github.com/skrashevich/quasar-
 1. Адрес API нейросети (заканчивается на `/v1`) или `chatgpt` для подписки ChatGPT/Codex.
 2. Ключ API — если не нужен, просто нажмите Enter. Ввод скрыт. Для `chatgpt` этот шаг пропускается.
 3. Тип API: Chat Completions (подходит почти всем) или Responses. Для `chatgpt` он выбирается автоматически.
-4. Номер модели из списка, загруженного через API. Для `chatgpt` перед этим потребуется вход в браузере.
+4. Номер модели из списка, загруженного через API, или её точное название. Для `chatgpt` перед этим потребуется вход в браузере.
 5. Секретная ссылка на Home Assistant MCP — Enter, если умный дом не нужен.
    Ввод тоже скрыт.
 
@@ -276,7 +278,7 @@ sh "$pkg/control.sh" check-backends  # доступны ли нейросеть 
 `sh "$pkg/control.sh" restart`.
 
 Не получается разобраться — создайте
-[issue](https://github.com/skrashevich/quasar-bridge/issues). Укажите модель
+[issue](https://github.com/EV-G3N-IY/quasar-bridge-voice/issues). Укажите модель
 колонки, версию программы (файл `/data/opt/quasar-bridge/app/VERSION`), на каком шаге возникла проблема и текст ошибки.
 Ключи API и секретные ссылки из `runtime.env` не публикуйте.
 
