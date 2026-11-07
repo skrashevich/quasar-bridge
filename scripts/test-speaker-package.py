@@ -346,8 +346,8 @@ class InstallationTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
-    def control(self, action, **kwargs):
-        return self.run_script(self.state / "app/control.sh", action, **kwargs)
+    def control(self, *args, **kwargs):
+        return self.run_script(self.state / "app/control.sh", *args, **kwargs)
 
     def install(self, **kwargs):
         return self.run_script(self.package / "install.sh", **kwargs)
@@ -478,6 +478,37 @@ class InstallationTest(unittest.TestCase):
         self.control("rollback")  # Recovery also works when the bridge is down.
         self.assertEqual(json.loads(firmware.read_text()), original)
         self.assertFalse((self.state / "endpoint-backup.json").exists())
+
+    def test_wake_enable_and_disable_edit_only_the_second_slot(self):
+        self.install()
+        firmware = self.root / "firmware"
+        models = firmware / "spotter_models"
+        for word in ("alisa", "yandex"):
+            (models / "activation" / word).mkdir(parents=True)
+            (models / "activation" / word / "acoustic_model.nnet").write_text(word)
+        # Factory formatting: indented, spaces around colons; numbers must survive.
+        config_text = ('{\n   "common" : { "rate" : 0.14999999999999999 },\n'
+                       '   "aliced" : {\n      "keep" : 42\n   }\n}\n')
+        (firmware / "quasar.cfg").write_text(config_text)
+        (firmware / "maind").write_bytes(b"\x7fELF....customActivation....")
+        (firmware / "user_config.dat").write_text('xx{"account_config":{"spotter":"alisa"}}')
+        self.env.update(QUASAR_DEVICE_CONFIG=str(firmware / "quasar.cfg"),
+                        QUASAR_DEVICE_MODELS=str(models), QUASAR_DEVICE_MAIND=str(firmware / "maind"),
+                        QUASAR_DEVICE_USER_CONFIG=str(firmware / "user_config.dat"))
+        self.assertIn("enabled: no", self.control("wake", "status").stdout)
+        self.control("wake", "enable")  # the app has "alisa", so the second word is "yandex"
+        changed = json.loads((firmware / "quasar.cfg").read_text())
+        self.assertEqual(changed["aliced"]["customActivation"], {"forceEnable": True, "forcePhrase": "yandex"})
+        self.assertIn("0.14999999999999999", (firmware / "quasar.cfg").read_text())
+        slot = models / "custom_activation"
+        self.assertEqual((slot / "acoustic_model.nnet").read_text(), "yandex")
+        self.assertTrue((slot / ".second-wake-word").exists())
+        self.control("wake", "enable", ok=False)  # already enabled
+        self.run_script(self.state / "app/uninstall.sh", ok=False)  # must be disabled first
+        self.control("wake", "disable")
+        self.assertEqual((firmware / "quasar.cfg").read_text(), config_text)
+        self.assertFalse(slot.exists())
+        self.control("wake", "bogus", ok=False)
 
     def serve(self, handler):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)

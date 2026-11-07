@@ -42,7 +42,7 @@ jobs:
       - run: CGO_ENABLED=0 go build -trimpath -o /tmp/station-pcm-package github.com/skrashevich/station-airplay/cmd/station-pcm-package
       - name: Check shell syntax
         run: |
-          for script in install.sh packaging/speaker/*.sh packaging/speaker/S96quasar-bridge scripts/second-wake-word.sh; do
+          for script in install.sh packaging/speaker/*.sh packaging/speaker/S96quasar-bridge; do
             sh -n "$script"
           done
       - name: Test standalone installation with BusyBox
@@ -52,10 +52,6 @@ jobs:
             -e QUASAR_TEST_BINARY=/test-binary -e STATION_PCM_PACKAGE_TOOL=/pcm-package-tool \
             -w /src python:3.13-alpine \
             python3 scripts/test-speaker-package.py
-      - name: Test second wake word script with BusyBox
-        run: |
-          docker run --rm -v "$PWD:/src:ro" -w /src python:3.13-alpine \
-            python3 scripts/test-second-wake-word.py
       - name: Build source archive
         shell: bash
         run: |

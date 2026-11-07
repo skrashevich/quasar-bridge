@@ -14,6 +14,7 @@ import time
 
 ADB = ["adb", "-s", "127.0.0.1:15555"]
 GUEST = "/data/bridge-ci"
+QUASAR = "/system/vendor/quasar"
 
 
 def shell(command, timeout=60):
@@ -46,6 +47,40 @@ def stop(process):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
+
+
+def check_second_wake_word(out, arch):
+    """Enable and roll back the second wake word on the firmware's own files.
+
+    The VM runs the public OTA, so this checks the real quasar.cfg layout, the
+    shipped spotter models and the voice daemon of this board. It cannot check
+    recognition: the emulator has no microphone.
+    """
+    config = f"{QUASAR}/quasar.cfg"
+    tool = (f"{GUEST}/quasar-bridge -speaker-config {config} "
+            f"-speaker-wake-state {GUEST}/wake-{arch}")
+    status = shell(f"{tool} -speaker-wake status")
+    (out / f"{arch}-wake-status.txt").write_text(status + "\n")
+    if "firmware support: yes" not in status or "customActivation absent" not in status:
+        raise RuntimeError(f"unexpected second wake word status:\n{status}")
+    before = shell(f"sha256sum {config}").split()[0]
+    # Same step as the installer's firmware.sh; a snapshot VM may already be writable.
+    shell(f"touch {QUASAR}/.bridge-ci && rm {QUASAR}/.bridge-ci || mount -o remount,rw /")
+    for word in ("yandex", "alisa"):
+        shell(f"{tool} -speaker-wake apply -speaker-wake-word {word}")
+        patched = json.loads(shell(f"cat {config}"))
+        if patched["aliced"].get("customActivation") != {"forceEnable": True, "forcePhrase": word}:
+            raise RuntimeError(f"customActivation missing after enabling {word}")
+        listing = "find . -type f ! -name .second-wake-word | sort"
+        expected = shell(f"cd {QUASAR}/spotter_models/activation/{word} && {listing}")
+        actual = shell(f"cd {QUASAR}/spotter_models/custom_activation && {listing}")
+        if not expected or expected != actual:
+            raise RuntimeError(f"second slot does not match the {word} model:\n{expected}\n---\n{actual}")
+        shell(f"{tool} -speaker-wake apply -speaker-wake-word {word}; test $? -ne 0")  # already enabled
+        shell(f"{tool} -speaker-wake rollback")
+        if shell(f"sha256sum {config}").split()[0] != before:
+            raise RuntimeError(f"quasar.cfg differs after rolling back {word}")
+        shell(f"test ! -e {QUASAR}/spotter_models/custom_activation")
 
 
 def main():
@@ -115,6 +150,7 @@ def main():
             config_file.write_text(json.dumps(config, indent=2) + "\n")
             push(config_file, GUEST + "/config.json")
             shell(f"chmod 755 {GUEST}/quasar-bridge; {GUEST}/quasar-bridge -config {GUEST}/config.json -check-config")
+            check_second_wake_word(out, arch)
             command = ("export GOMAXPROCS=2; "
                        f"echo $$ >{GUEST}/bridge.pid; exec {GUEST}/quasar-bridge "
                        f"-config {GUEST}/config.json >{GUEST}/bridge.log 2>&1")
@@ -142,7 +178,7 @@ def main():
             shell(f"! kill -0 $(cat {GUEST}/bridge.pid) 2>/dev/null")
             (out / f"{arch}-bridge.log").write_text(shell(f"cat {GUEST}/bridge.log"))
             result["builds"].append({"arch": arch, "result": "PASS"})
-            print(f"PASS {args.board} {arch}: config, health, VoiceInput/ASR, AirPlay start/stop", flush=True)
+            print(f"PASS {args.board} {arch}: config, health, VoiceInput/ASR, AirPlay start/stop, second wake word", flush=True)
         mock_log = shell(f"cat {GUEST}/mock.log")
         (out / "mock.log").write_text(mock_log)
         if "UNEXPECTED" in mock_log or "FAIL" in mock_log:

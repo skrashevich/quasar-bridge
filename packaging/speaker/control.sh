@@ -87,5 +87,38 @@ case "$action" in
   trap - EXIT HUP INT TERM
   echo 'Endpoint saved. Reboot the speaker to apply it.'
   ;;
- *) fail 'usage: control.sh start|stop|restart|status|logs|check|check-backends|chatgpt-login|chatgpt-status|chatgpt-models|chatgpt-logout|apply|rollback' ;;
+ wake)
+  # Second wake word: the speaker answers to both "Alisa" and "Yandex" and the
+  # bridge can route them differently (routing.wake_routes).
+  sub=${2:-status}
+  wake() {
+   "$package/bin/quasar-bridge" -speaker-wake "$@" \
+    -speaker-config "${QUASAR_DEVICE_CONFIG:-/system/vendor/quasar/quasar.cfg}" \
+    -speaker-models "${QUASAR_DEVICE_MODELS:-/system/vendor/quasar/spotter_models}" \
+    -speaker-maind "${QUASAR_DEVICE_MAIND:-/system/vendor/quasar/maind}" \
+    -speaker-user-config "${QUASAR_DEVICE_USER_CONFIG:-/data/quasar/data/user_config.dat}" \
+    -speaker-wake-state "$state/second-wake-word"
+  }
+  case "$sub" in
+   status) exec_status=true ;;
+   enable|disable) exec_status=false ;;
+   *) fail 'usage: control.sh wake enable [alisa|yandex] | disable | status' ;;
+  esac
+  if [ "$exec_status" = true ]; then wake status; exit; fi
+  # shellcheck source=packaging/speaker/firmware.sh
+  . "$package/firmware.sh"
+  trap 'firmware_restore' EXIT
+  trap 'exit 1' HUP INT TERM
+  firmware_writable
+  if [ "$sub" = enable ]; then
+   wake apply ${3:+-speaker-wake-word "$3"}
+  else
+   wake rollback
+  fi
+  # The voice daemon may hold a just-removed model open; then the root stays
+  # writable until the reboot that is needed anyway.
+  firmware_restore || echo 'Could not switch the root filesystem back to read-only; reboot the speaker.' >&2
+  trap - EXIT HUP INT TERM
+  ;;
+ *) fail 'usage: control.sh start|stop|restart|status|logs|check|check-backends|chatgpt-login|chatgpt-status|chatgpt-models|chatgpt-logout|apply|rollback|wake' ;;
 esac
