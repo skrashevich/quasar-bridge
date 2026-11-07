@@ -10,6 +10,19 @@ import (
 	"quasarbridge/internal/bridge"
 )
 
+func TestReadConfigWakewordRouteMarker(t *testing.T) {
+	cfg, err := readConfig(configFile(t, `{"wakeword_route_marker":"/tmp/wakeword-route"}`))
+	if err != nil || cfg.WakewordRouteMarker != "/tmp/wakeword-route" {
+		t.Fatalf("marker=%q err=%v", cfg.WakewordRouteMarker, err)
+	}
+	if cfg, err = readConfig(configFile(t, `{}`)); err != nil || cfg.WakewordRouteMarker != "" {
+		t.Fatalf("default marker=%q err=%v", cfg.WakewordRouteMarker, err)
+	}
+	if _, err = readConfig(configFile(t, `{"wakeword_route_marker":"relative"}`)); err == nil {
+		t.Fatal("relative marker accepted")
+	}
+}
+
 func TestReadConfigLLMAPISettings(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
