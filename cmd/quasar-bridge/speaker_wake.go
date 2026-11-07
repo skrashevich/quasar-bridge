@@ -410,10 +410,10 @@ func replaceFile(path string, data []byte, mode os.FileMode) error {
 		err = closeErr
 	}
 	if err != nil {
-		return errors.New("cannot save speaker config")
+		return fmt.Errorf("cannot save speaker config: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		return errors.New("cannot replace speaker config")
+		return fmt.Errorf("cannot replace speaker config: %w", err)
 	}
 	return nil
 }

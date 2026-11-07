@@ -64,6 +64,9 @@ def check_second_wake_word(out, arch):
     if "firmware support: yes" not in status or "customActivation absent" not in status:
         raise RuntimeError(f"unexpected second wake word status:\n{status}")
     before = shell(f"sha256sum {config}").split()[0]
+    fs_info = shell(f"ls -la {QUASAR}/quasar.cfg; mount; id")
+    (out / f"{arch}-wake-fs.txt").write_text(fs_info + "\n")
+    print(fs_info, flush=True)
     # Same step as the installer's firmware.sh; a snapshot VM may already be writable.
     shell(f"touch {QUASAR}/.bridge-ci && rm {QUASAR}/.bridge-ci || mount -o remount,rw /")
     for word in ("yandex", "alisa"):
