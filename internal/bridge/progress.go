@@ -106,6 +106,9 @@ func (n *Native) beginDeferred(p *nativeRequest) error {
 	if err := n.deferredPart(p, "", false); err != nil {
 		return err
 	}
+	if p.nativeTextStream {
+		return n.synthesize(p, "")
+	}
 	// Obtain the provider's actual Opus headers; its speech payload is discarded.
 	return n.synthesize(p, "а")
 }
