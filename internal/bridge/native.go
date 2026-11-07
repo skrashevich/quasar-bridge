@@ -46,6 +46,7 @@ type FallbackResolver interface {
 }
 
 type nativeRequest struct {
+	wakewordLLM                     bool
 	streaming                       bool
 	listenOnStreamStart             bool
 	partial                         uint32
@@ -95,6 +96,10 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+
+	// WakewordRouteMarker, when set, is a file written by a local wake-word
+	// daemon; a fresh marker routes the next voice request to the LLM.
+	WakewordRouteMarker string
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -181,6 +186,9 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			n.mu.Unlock()
 			cancel()
 			return errors.New("too many pending native requests")
+		}
+		if f.Kind() == "VoiceInput" {
+			p.wakewordLLM = claimWakewordRoute(n.WakewordRouteMarker, time.Now())
 		}
 		if preparer, ok := n.resolver.(interface {
 			Prepare(context.Context) context.Context
@@ -547,6 +555,9 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		if n.resolver != nil && strings.TrimSpace(text) != "" {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
 				decision := routed.Decide(p.ctx, text)
+				if p.wakewordLLM {
+					decision = RouteDecision{Route: "llm", Source: "wakeword"}
+				}
 				n.mu.Lock()
 				p.listenOnStreamStart = decision.Source == "dialogue_retry"
 				n.mu.Unlock()

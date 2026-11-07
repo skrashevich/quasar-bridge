@@ -47,6 +47,8 @@ type config struct {
 	LLMStripPrefixes   []string             `json:"llm_strip_prefixes"`
 	HomeWarmArea       string               `json:"home_warm_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
+	// WakewordRouteMarker is an absolute file path; empty disables the feature.
+	WakewordRouteMarker string `json:"wakeword_route_marker"`
 	Routing            bridge.RoutingConfig `json:"routing"`
 }
 
@@ -141,6 +143,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	}
 	if cfg.LLMMaxOutputTokens <= 0 {
 		return cfg, errors.New("llm_max_output_tokens must be positive")
+	}
+	if cfg.WakewordRouteMarker != "" && !strings.HasPrefix(cfg.WakewordRouteMarker, "/") {
+		return cfg, errors.New("wakeword_route_marker must be an absolute path")
 	}
 	if cfg.LLMReasoningEffort != "" {
 		if cfg.LLMAPI != "responses" && cfg.LLMAPI != "chatgpt" {
