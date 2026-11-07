@@ -191,6 +191,9 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 		return r, context.Canceled
 	}
 	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
+	if metadata := speakerPrompt(ctx); metadata != "" {
+		messages[0].Content += "\n" + metadata
+	}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	messages = e.modelMessages(messages)
