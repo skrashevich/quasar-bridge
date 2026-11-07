@@ -25,6 +25,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/dialogue"
+	"quasarbridge/internal/identity"
 	"quasarbridge/internal/reply"
 	"quasarbridge/internal/sound"
 	"quasarbridge/internal/wire"
@@ -51,6 +52,7 @@ type nativeRequest struct {
 	partial                         uint32
 	responseID                      string
 	final                           bool
+	speaker                         *speakerState
 	aggregateSeen                   bool
 	aggregateFinalSeen              bool
 	header                          *header.TEventHeader
@@ -80,23 +82,28 @@ type nativeRequest struct {
 	expires                         *time.Timer
 }
 type Native struct {
-	connectionScope  string
-	ctx              context.Context
-	cancel           context.CancelFunc
-	up, down         Sender
-	resolver         Resolver
-	mu               sync.Mutex
-	requests         map[string]*nativeRequest
-	tts              map[string]*nativeRequest
-	streams          map[uint32]*nativeRequest
-	blocked          map[uint32]*nativeRequest
-	wg               sync.WaitGroup
-	OnRoute          func(id, route string)
-	GateText         bool
-	ShouldListen     bool
-	DecisionDelay    time.Duration
-	ProgressAfter    time.Duration
-	ProgressInterval time.Duration
+	connectionScope string
+	ctx             context.Context
+	cancel          context.CancelFunc
+	up, down        Sender
+	resolver        Resolver
+	mu              sync.Mutex
+	requests        map[string]*nativeRequest
+	speakerCatalog  map[string]speakerCatalogEntry
+	tts             map[string]*nativeRequest
+	streams         map[uint32]*nativeRequest
+	blocked         map[uint32]*nativeRequest
+	wg              sync.WaitGroup
+	OnRoute         func(id, route string)
+	OnSpeaker       func(id string, snapshot identity.Snapshot)
+	// Name callbacks are assigned before Client/Server; lookup is cache-only.
+	ResolveSpeakerName func(hashedID string) string
+	OnSpeakerName      func(hashedID, name string)
+	GateText           bool
+	ShouldListen       bool
+	DecisionDelay      time.Duration
+	ProgressAfter      time.Duration
+	ProgressInterval   time.Duration
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -120,6 +127,14 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		return n.up(ctx, k, data)
 	}
 	e := f.Client.GetEvent()
+	if sync := e.GetSynchronizeStateRequest(); sync != nil {
+		n.observeSpeakerCatalog(sync.GetUsersOptions(), "synchronize_state")
+		return n.up(ctx, k, data)
+	}
+	if e.GetMatchedUser() != nil {
+		n.observeMatchedSpeaker(e)
+		return n.up(ctx, k, data)
+	}
 	if stat := e.GetRequestStat(); stat != nil {
 		kind := "none"
 		raw := strings.ToLower(stat.GetError())
@@ -160,6 +175,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		pctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
 		pctx = reply.WithPolicy(pctx)
+		pctx = identity.WithState(pctx)
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)
 		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
@@ -171,6 +187,19 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		p.isText = f.Kind() == "TextInput"
 		p.input = append([]byte{}, data...)
 		p.gated = !p.isText || n.GateText
+		var initialSpeaker identity.Snapshot
+		if f.Kind() == "VoiceInput" || p.isText {
+			if profiles := req.GetRequest().GetAdditionalOptions().GetUsersOptions(); len(profiles) > 0 {
+				source := "voice_input"
+				if p.isText {
+					source = "text_input"
+				}
+				n.observeSpeakerCatalog(profiles, source)
+			}
+		}
+		if f.Kind() == "VoiceInput" {
+			p.speaker = new(speakerState)
+		}
 
 		slog.Info("native_request_shape", "request", requestTag(id), "text_bytes", len(p.text), "event_type", req.GetRequest().GetEvent().GetType().String(), "stream", e.GetHeader().GetStreamId(), "unknown_request_bytes", len(req.ProtoReflect().GetUnknown()), "payload_bytes", len(req.GetRequest().GetEvent().GetPayloadRaw()))
 		n.mu.Lock()
@@ -183,6 +212,11 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			n.mu.Unlock()
 			cancel()
 			return errors.New("too many pending native requests")
+		}
+		if p.speaker != nil {
+			p.speaker.observe(req, p.id, false, "voice_input")
+			initialSpeaker = p.speaker.enrichName(n.speakerCatalog, n.ResolveSpeakerName)
+			identity.Update(p.ctx, initialSpeaker)
 		}
 		if preparer, ok := n.resolver.(interface {
 			Prepare(context.Context) context.Context
@@ -210,6 +244,9 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		})
 		n.requests[id] = p
 		n.mu.Unlock()
+		if initialSpeaker != (identity.Snapshot{}) {
+			n.publishSpeaker(p.id, initialSpeaker)
+		}
 		if p.gated {
 			gated, err := wire.EnableApproval(f)
 			if err != nil {
@@ -376,6 +413,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 	if e == nil {
 		return n.down(ctx, k, data)
 	}
+	n.observeSpeakerDirectives(e)
 
 	n.mu.Lock()
 	if f.Kind() == "TtsSpeak" {
@@ -463,6 +501,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			query := p.text
 			n.mu.Unlock()
 			n.wg.Go(func() {
+				n.refreshSpeakerName(p)
 				result, err := resolver.Fallback(p.ctx, query)
 				if p.ctx.Err() != nil {
 					return
@@ -563,9 +602,11 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				if decision.Route != "yandex" && n.ProgressAfter > 0 {
 					stop = n.progress(p)
 				}
+				n.refreshSpeakerName(p)
 				result, err = routed.ResolveDecision(p.ctx, text, decision)
 				stop()
 			} else {
+				n.refreshSpeakerName(p)
 				result, err = n.resolver.Resolve(p.ctx, text)
 			}
 		}

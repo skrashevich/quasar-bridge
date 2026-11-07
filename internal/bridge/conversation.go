@@ -8,6 +8,7 @@ import (
 	"time"
 	"uuid"
 
+	"quasarbridge/internal/identity"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/wire"
 )
@@ -63,6 +64,14 @@ func (c *conversation) route(id, route string) {
 	c.turns[id] = t
 	c.mu.Unlock()
 	c.emit(id, journal.Event{Event: "route"})
+}
+func (c *conversation) speaker(id string, s identity.Snapshot) {
+	c.emit(id, journal.Event{Event: "speaker_recognition", Speaker: &journal.Speaker{
+		Status: s.Status, ID: s.ID, Source: s.Source, Confidence: s.Confidence,
+		NameAvailable: s.Name != "", Scoring: s.Scoring, Classification: s.Classification,
+		CandidateCount: s.CandidateCount,
+		CandidateID:    s.CandidateID, CandidateNameAvailable: s.CandidateName != "",
+	}})
 }
 func (c *conversation) client(data []byte) {
 	if !c.writer.Enabled() {

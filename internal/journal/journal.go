@@ -32,6 +32,21 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// Speaker contains request-bound recognition evidence. IDs are hashed upstream;
+// profile names and credentials are deliberately absent from this log format.
+type Speaker struct {
+	Status                 string `json:"status"`
+	ID                     string `json:"id,omitempty"`
+	Source                 string `json:"source,omitempty"`
+	Confidence             string `json:"confidence,omitempty"`
+	NameAvailable          bool   `json:"name_available,omitzero"`
+	CandidateID            string `json:"candidate_id,omitempty"`
+	CandidateNameAvailable bool   `json:"candidate_name_available,omitzero"`
+	Scoring                bool   `json:"scoring,omitzero"`
+	Classification         bool   `json:"classification,omitzero"`
+	CandidateCount         int    `json:"candidate_count,omitzero"`
+}
+
 type Event struct {
 	Time      time.Time `json:"time"`
 	Session   string    `json:"session,omitempty"`
@@ -44,6 +59,7 @@ type Event struct {
 	Delivered bool      `json:"delivered"`
 	ElapsedMS int64     `json:"elapsed_ms,omitempty"`
 	Truncated bool      `json:"truncated,omitempty"`
+	Speaker   *Speaker  `json:"speaker,omitempty"`
 }
 type Writer struct {
 	mu       sync.Mutex
