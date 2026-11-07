@@ -10,6 +10,10 @@ if [ -e "$state/endpoint-backup.json" ]; then
  echo 'Run control.sh rollback and reboot before uninstalling.' >&2
  exit 1
 fi
+if [ -e "$state/second-wake-word/state.json" ]; then
+ echo 'Run control.sh wake disable and reboot before uninstalling.' >&2
+ exit 1
+fi
 mkdir "$state/.install-lock" 2>/dev/null || { echo 'Another installation operation is in progress.' >&2; exit 1; }
 # shellcheck source=packaging/speaker/firmware.sh
 . "$package/firmware.sh"
