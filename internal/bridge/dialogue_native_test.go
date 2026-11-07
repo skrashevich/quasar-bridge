@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	app "github.com/freequasar/quasar-go-genproto/proto/alice/library/client/protos"
-	common "github.com/freequasar/quasar-go-genproto/proto/alice/megamind/protos/common"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	app "github.com/skrashevich/quasar-go-genproto/proto/alice/library/client/protos"
+	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/wire"
 )
