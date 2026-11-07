@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -259,5 +260,29 @@ func TestFileContainsFindsNeedleAcrossReadBoundary(t *testing.T) {
 	os.WriteFile(path, bytes.Repeat([]byte{'x'}, 2<<20), 0644)
 	if ok, err := fileContains(path, needle); err != nil || ok {
 		t.Fatalf("false positive: %v %v", ok, err)
+	}
+}
+
+// A bind-mounted quasar.cfg cannot be replaced by rename (EBUSY); it is rewritten in place.
+func TestSpeakerWakeRewritesInPlaceWhenConfigCannotBeReplaced(t *testing.T) {
+	f := newWakeFixture(t, wakePrettyConfig)
+	original := renameFile
+	t.Cleanup(func() { renameFile = original })
+	renameFile = func(string, string) error { return &os.LinkError{Op: "rename", Err: syscall.EBUSY} }
+	f.mustRun("apply", "yandex")
+	if !strings.Contains(f.read(f.paths.Config), `"forcePhrase":"yandex"`) {
+		t.Fatal("config not rewritten in place")
+	}
+	f.mustRun("rollback", "")
+	if f.read(f.paths.Config) != wakePrettyConfig {
+		t.Fatal("rollback did not restore the config in place")
+	}
+	// Other failures stay failures.
+	renameFile = func(string, string) error { return &os.LinkError{Op: "rename", Err: syscall.EACCES} }
+	if _, err := f.run("apply", "yandex"); err == nil {
+		t.Fatal("unrelated rename error must fail")
+	}
+	if f.read(f.paths.Config) != wakePrettyConfig || f.exists(f.paths.slotPath()) {
+		t.Fatal("failed apply left changes")
 	}
 }

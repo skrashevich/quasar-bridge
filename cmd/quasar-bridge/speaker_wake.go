@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // The firmware keeps one spotter component for the word chosen in the app and
@@ -375,6 +376,23 @@ func statusSpeakerWake(p speakerWakePaths) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+var renameFile = os.Rename
+
+func writeInPlace(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
 // writeNewFile creates a file that must not exist yet and syncs it.
 func writeNewFile(path string, data []byte, mode os.FileMode) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
@@ -412,7 +430,13 @@ func replaceFile(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("cannot save speaker config: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	err = renameFile(tmp, path)
+	if errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV) {
+		// The file is a mount point (for example a bind-mounted copy), so it cannot
+		// be replaced, only rewritten. Not atomic, but the original is saved.
+		err = writeInPlace(path, data)
+	}
+	if err != nil {
 		return fmt.Errorf("cannot replace speaker config: %w", err)
 	}
 	return nil
