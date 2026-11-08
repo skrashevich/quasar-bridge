@@ -64,6 +64,12 @@ ready:
 	case <-time.After(time.Second):
 		t.Fatal("segment did not finish")
 	}
+	n.mu.Lock()
+	_, retained := n.tts[segment.Client.GetEvent().GetHeader().GetMessageId()]
+	n.mu.Unlock()
+	if retained {
+		t.Fatal("completed segment TTS request was retained")
+	}
 	for len(down) > 0 {
 		f := <-down
 		if f.Server.GetStreamControl().GetClose() != nil {

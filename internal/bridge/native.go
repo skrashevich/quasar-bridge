@@ -361,6 +361,9 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 					return errors.New("initial speech synthesis failed")
 				}
 				if p.segmentAudioDone != nil {
+					// Each segment has its own TTS request ID. Retire it as soon
+					// as the source closes so long answers do not retain stale IDs.
+					delete(n.tts, p.ttsID)
 					if sc.GetClose().GetReason() != 0 {
 						p.segmentAudioDone <- errors.New("speech synthesis failed")
 						p.segmentAudioDone = nil
