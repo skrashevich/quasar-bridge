@@ -94,6 +94,11 @@ func (c *Client) Chat(ctx context.Context, messages []Message, tools []Tool) (Me
 	return c.chat(ctx, messages, false, tools)
 }
 func (c *Client) chat(ctx context.Context, messages []Message, structured bool, tools []Tool) (Message, error) {
+	if structured {
+		// Routing, safety and other structured completions are internal data.
+		// They must never be sent to a speech consumer.
+		ctx = context.WithValue(ctx, deltaConsumerKey{}, (func(string) error)(nil))
+	}
 	if err := ValidateChatParameters(c.ChatParameters); err != nil {
 		return Message{}, err
 	}
@@ -232,7 +237,8 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 		return nil, llmHTTPError(resp)
 	}
 	if c.API == "chatgpt" {
-		data, err := readResponseStream(resp.Body)
+		consumer, _ := ctx.Value(deltaConsumerKey{}).(func(string) error)
+		data, err := readResponseStreamWithDeltas(resp.Body, consumer)
 		if err != nil && ctx.Err() != nil {
 			return nil, fmt.Errorf("LLM transport: %w", ctx.Err())
 		}

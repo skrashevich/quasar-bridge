@@ -331,6 +331,9 @@ func main() {
 			n := bridge.NewNative(ctx, up, down, engine)
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
+			// TTS markup is transformed after the complete answer; preserve that
+			// contract until incremental markup handling is implemented.
+			n.StreamLLMSpeech = cfg.StreamLLMSpeech && !cfg.LLMTTSMarkup
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond
