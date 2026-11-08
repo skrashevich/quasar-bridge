@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"log/slog"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -133,31 +132,9 @@ type streamedSentenceBuffer struct {
 	pending, emitted string
 }
 
-func (b *streamedSentenceBuffer) feed(delta string, emit func(string) error) error {
-	b.pending += delta
-	for {
-		end := b.nextBoundary()
-		if end <= 0 {
-			return nil
-		}
-		raw := b.pending[:end]
-		text := strings.TrimSpace(raw)
-		if text != "" {
-			if err := emit(text); err != nil {
-				return err
-			}
-		}
-		b.emitted += raw
-		b.pending = b.pending[end:]
-	}
-}
-
-// feedNative sends exactly the original characters of each completed phrase
-// to Yandex's existing DeferredTtsGenerate session. Unlike the display-oriented
-// feed method, it MUST preserve boundary whitespace verbatim. A leading space
-// at the beginning of the next chunk is preferable to silently concatenating
-// two spoken words when the LLM streamed "Первое. Второе.".
-func (b *streamedSentenceBuffer) feedNative(delta string, emit func(string) error) error {
+// Both consumers use exactly the same boundary detection. The native wire
+// protocol must preserve every space; the display-oriented path may trim it.
+func (b *streamedSentenceBuffer) feedChunks(delta string, preserveSpace bool, emit func(string) error) error {
 	b.pending += delta
 	for {
 		end := b.nextBoundary()
@@ -166,7 +143,11 @@ func (b *streamedSentenceBuffer) feedNative(delta string, emit func(string) erro
 		}
 		raw := b.pending[:end]
 		if strings.TrimSpace(raw) != "" {
-			if err := emit(raw); err != nil {
+			part := raw
+			if !preserveSpace {
+				part = strings.TrimSpace(raw)
+			}
+			if err := emit(part); err != nil {
 				return err
 			}
 		}
@@ -175,15 +156,12 @@ func (b *streamedSentenceBuffer) feedNative(delta string, emit func(string) erro
 	}
 }
 
-func (b *streamedSentenceBuffer) remaining(full string) string {
-	if b.emitted == "" {
-		return full
-	}
-	if strings.HasPrefix(full, b.emitted) {
-		return strings.TrimSpace(full[len(b.emitted):])
-	}
-	// Never replay already-synthesized audio if the provider normalizes its
-	// final answer differently from its streamed deltas.
-	slog.Warn("native_stream_prefix_mismatch", "emitted_bytes", len(b.emitted), "answer_bytes", len(full))
-	return strings.TrimSpace(b.pending)
+func (b *streamedSentenceBuffer) feed(delta string, emit func(string) error) error {
+	return b.feedChunks(delta, false, emit)
+}
+
+// feedNative preserves whitespace across streamed pieces, including a leading
+// space in a second sentence; dropping it can join two spoken words together.
+func (b *streamedSentenceBuffer) feedNative(delta string, emit func(string) error) error {
+	return b.feedChunks(delta, true, emit)
 }
