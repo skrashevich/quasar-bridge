@@ -27,8 +27,8 @@ func TestNaturalPauseFirstLongSentenceStartsAtComma(t *testing.T) {
 	if len(got) != 2 || got[1] != strings.TrimSpace(second) {
 		t.Fatalf("rest of sentence should keep its original point, got %q", got)
 	}
-	if tail := b.remaining(first + second); tail != "" {
-		t.Fatalf("repeated speech after first comma: %q", tail)
+	if b.pending != "" || b.emitted != first+second {
+		t.Fatalf("streaming state lost or repeated text: pending=%q emitted=%q", b.pending, b.emitted)
 	}
 }
 
@@ -126,5 +126,22 @@ func TestNaturalPauseDoesNotCutDecimalComma(t *testing.T) {
 	}
 	if len(chunks) != 1 || chunks[0] != full {
 		t.Fatalf("decimal punctuation was split: %q", chunks)
+	}
+}
+
+func TestNativeSentenceChunksPreserveSpacesAndSplitTokens(t *testing.T) {
+	var b streamedSentenceBuffer
+	var got []string
+	emit := func(s string) error { got = append(got, s); return nil }
+	for _, delta := range []string{"Перв", "ое. Вто", "рое предложение."} {
+		if err := b.feedNative(delta, emit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 2 || got[0] != "Первое." || got[1] != " Второе предложение." {
+		t.Fatalf("native wire text must preserve the exact spaces: %q", got)
+	}
+	if strings.Join(got, "") != "Первое. Второе предложение." || b.pending != "" {
+		t.Fatalf("native chunks lost or duplicated text: chunks=%q pending=%q", got, b.pending)
 	}
 }
