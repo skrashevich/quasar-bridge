@@ -226,7 +226,7 @@ func main() {
 	var musicQueue *assistant.MusicQueue
 	var hc *home.Controller
 	if endpoint := os.Getenv("QUASAR_HOME_MCP_URL"); endpoint != "" {
-		hc = &home.Controller{Tools: &home.MCP{URL: endpoint}, Planner: lc}
+		hc = &home.Controller{Tools: &home.MCP{URL: endpoint}, Planner: lc, DefaultArea: cfg.HomeDefaultArea}
 		engine.Home = hc
 	}
 	if cfg.AssistantTools.Enabled {
@@ -309,13 +309,17 @@ func main() {
 	defer logs.Close()
 	proxy.Journal = logs
 	if cfg.Mode == "hybrid" {
-		if hc != nil && cfg.HomeWarmArea != "" {
+		warmArea := cfg.HomeWarmArea
+		if warmArea == "" {
+			warmArea = cfg.HomeDefaultArea
+		}
+		if hc != nil && warmArea != "" {
 			warmCtx, warmCancel := context.WithCancel(context.Background())
 			defer warmCancel()
 			go func() {
 				for {
 					ctx, cancel := context.WithTimeout(warmCtx, 90*time.Second)
-					err := hc.Warm(ctx, cfg.HomeWarmArea)
+					err := hc.Warm(ctx, warmArea)
 					cancel()
 					slog.Info("home_warm", "ready", err == nil)
 					select {
