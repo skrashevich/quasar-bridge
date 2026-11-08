@@ -9,6 +9,7 @@
   "llm_model": "your-model",
   "llm_api": "chat_completions",
   "llm_chat_parameters": {},
+  "llm_tts_markup": true,
   "llm_strip_prefixes": [
     "спроси у нейросети",
     "спроси нейросеть",
