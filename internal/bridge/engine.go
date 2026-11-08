@@ -163,45 +163,25 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		return Resolution{Route: "yandex"}, nil
 	}
 }
+// Fallback and FallbackStream share message construction, dialogue lifecycle,
+// cancellation checks and history commit. Only the model call differs.
 func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) {
-	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
-		text = webaddress.Normalize(text)
-	}
-	r := Resolution{Route: "llm"}
-	if e.LLM == nil && e.Assistant == nil {
-		return r, errors.New("LLM is not configured")
-	}
 	answerer := e.LLM
 	if e.Assistant != nil {
 		answerer = e.Assistant
 	}
-	ctx, snapshot, ticket := e.dialogue().Start(ctx)
-	if !e.dialogue().Current(ctx, ticket) {
-		return r, context.Canceled
+	if answerer == nil {
+		return Resolution{Route: "llm"}, errors.New("LLM is not configured")
 	}
-	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
-	messages = append(messages, snapshot.Messages...)
-	messages = append(messages, llm.Message{Role: "user", Content: text})
-	private := snapshot.PrivateHistory
-	var answer string
-	var err error
-	if contextual, ok := answerer.(interface {
-		CompleteDialogue(context.Context, []llm.Message, bool) (string, bool, error)
-	}); ok {
-		answer, private, err = contextual.CompleteDialogue(ctx, messages, private)
-	} else {
-		answer, err = answerer.Complete(ctx, messages, false)
-	}
-	if !e.dialogue().Current(ctx, ticket) {
-		return r, context.Canceled
-	}
-	if err == nil {
-		if !e.dialogue().Commit(ctx, ticket, text, answer, private) {
-			return r, context.Canceled
+	return e.runFallback(ctx, text, func(ctx context.Context, messages []llm.Message, private bool) (string, bool, error) {
+		if contextual, ok := answerer.(interface {
+			CompleteDialogue(context.Context, []llm.Message, bool) (string, bool, error)
+		}); ok {
+			return contextual.CompleteDialogue(ctx, messages, private)
 		}
-	}
-	r.Answer = answer
-	return r, err
+		answer, err := answerer.Complete(ctx, messages, false)
+		return answer, private, err
+	})
 }
 
 // SupportsSentenceStreaming is intentionally conservative: any configured
@@ -214,12 +194,20 @@ func (e *Engine) SupportsSentenceStreaming() bool {
 	return ok && streamer.SupportsSentenceStreaming()
 }
 
-// FallbackStream preserves the dialogue context and commits only the complete
-// answer to history. It never streams tool calls or structured classifications.
+// FallbackStream only changes how the model produces its answer. Dialogue
+// state and the exact system prompt remain identical to the non-streaming path.
 func (e *Engine) FallbackStream(ctx context.Context, text string, onDelta func(string) error) (Resolution, error) {
 	if !e.SupportsSentenceStreaming() {
 		return e.Fallback(ctx, text)
 	}
+	streamer := e.LLM.(StreamingCompleter)
+	return e.runFallback(ctx, text, func(ctx context.Context, messages []llm.Message, private bool) (string, bool, error) {
+		answer, err := streamer.CompleteStream(ctx, messages, false, onDelta)
+		return answer, private, err
+	})
+}
+
+func (e *Engine) runFallback(ctx context.Context, text string, complete func(context.Context, []llm.Message, bool) (string, bool, error)) (Resolution, error) {
 	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
 		text = webaddress.Normalize(text)
 	}
@@ -231,12 +219,11 @@ func (e *Engine) FallbackStream(ctx context.Context, text string, onDelta func(s
 	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
-	streamer := e.LLM.(StreamingCompleter)
-	answer, err := streamer.CompleteStream(ctx, messages, false, onDelta)
+	answer, private, err := complete(ctx, messages, snapshot.PrivateHistory)
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	if err == nil && !e.dialogue().Commit(ctx, ticket, text, answer, snapshot.PrivateHistory) {
+	if err == nil && !e.dialogue().Commit(ctx, ticket, text, answer, private) {
 		return r, context.Canceled
 	}
 	r.Answer = answer
