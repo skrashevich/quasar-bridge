@@ -6,12 +6,12 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	directive "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
-	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	stream "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/stream_control"
-	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
-	deferred "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
+	directive "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
+	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	stream "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/stream_control"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	deferred "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
 	"google.golang.org/protobuf/encoding/protowire"
 	"quasarbridge/internal/reply"
 	"quasarbridge/internal/wire"
@@ -147,7 +147,7 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	n.captureDelivered(p, text, last, len(base.Directives) > 0, true)
 	return nil
 }
-func (n *Native) finishDeferred(p *nativeRequest, text string) error {
+func (n *Native) finishDeferred(p *nativeRequest, text, speech string) error {
 	select {
 	case <-p.ctx.Done():
 		return p.ctx.Err()
@@ -166,7 +166,7 @@ func (n *Native) finishDeferred(p *nativeRequest, text string) error {
 	if err := n.deferredPart(p, text, true); err != nil {
 		return err
 	}
-	return n.synthesize(p, text)
+	return n.synthesize(p, speech)
 }
 
 // Content audio must start after the silent Dialog player releases its focus.

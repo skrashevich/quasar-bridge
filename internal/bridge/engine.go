@@ -37,6 +37,7 @@ type MusicStarter interface {
 }
 type Engine struct {
 	Configuration bool
+	Recovery      func(context.Context, string) (string, error)
 	AirPlay       AirPlayController
 	LLM           Completer
 	Assistant     Completer
@@ -44,6 +45,10 @@ type Engine struct {
 	Playback      PlaybackController
 	Music         MusicStarter
 	Dialogue      *dialogue.Store
+	TTSMarkup     bool
+	// StripPrefixes are model addresses removed only from outbound requests.
+	// An empty list disables stripping.
+	StripPrefixes []string
 	dialogueOnce  sync.Once
 	routing       atomic.Pointer[RoutingPolicy]
 }
@@ -99,6 +104,17 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "recovery":
+		action := configvoice.RecoveryAction(text)
+		if action == "" || e.Recovery == nil {
+			return result, errors.New("emergency recovery is unavailable")
+		}
+		answer, err := e.Recovery(ctx, action)
+		if err == nil {
+			reply.SuppressListening(ctx)
+		}
+		result.Answer = answer
+		return result, err
 	case "airplay":
 		if e.AirPlay == nil {
 			return Resolution{Route: "yandex"}, nil
@@ -154,7 +170,7 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
-		answer, err := e.Home.Handle(ctx, text)
+		answer, err := e.Home.Handle(ctx, e.stripModelPrefix(text))
 		result.Answer = answer
 		return result, err
 	case "llm":
@@ -163,6 +179,7 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		return Resolution{Route: "yandex"}, nil
 	}
 }
+
 // Fallback and FallbackStream share message construction, dialogue lifecycle,
 // cancellation checks and history commit. Only the model call differs.
 func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) {
@@ -187,7 +204,7 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 // SupportsSentenceStreaming is intentionally conservative: any configured
 // assistant/tool loop keeps its existing full-response behavior.
 func (e *Engine) SupportsSentenceStreaming() bool {
-	if e.Assistant != nil {
+	if e.Assistant != nil || e.TTSMarkup {
 		return false
 	}
 	streamer, ok := e.LLM.(StreamingCompleter)
@@ -216,18 +233,23 @@ func (e *Engine) runFallback(ctx context.Context, text string, complete func(con
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
+	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома." + e.ttsInstructions()}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
+	messages = e.modelMessages(messages)
 	answer, private, err := complete(ctx, messages, snapshot.PrivateHistory)
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	if err == nil && !e.dialogue().Commit(ctx, ticket, text, answer, private) {
-		return r, context.Canceled
+	if err != nil {
+		r.Answer = answer
+		return r, err
 	}
-	r.Answer = answer
-	return r, err
+	r.setModelAnswer(answer, e.TTSMarkup)
+	if !e.dialogue().Commit(ctx, ticket, text, r.Answer, private) {
+		return Resolution{Route: r.Route}, context.Canceled
+	}
+	return r, nil
 }
 
 func containsOne(text string, needles []string) bool {
@@ -278,6 +300,9 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.prepared = true
 	}()
 	p := e.policy()
+	if configvoice.RecoveryAction(text) != "" {
+		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
+	}
 	if e.Configuration && configvoice.InConversation(text, snapshot.Messages) {
 		return RouteDecision{Route: "llm", Source: "bridge_configuration"}
 	}

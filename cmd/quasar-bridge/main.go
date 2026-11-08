@@ -39,6 +39,7 @@ func main() {
 	route := flag.String("route", "", "explain a route without executing home actions or generating an answer")
 	validate := flag.Bool("check-config", false, "validate configuration without contacting backends")
 	listModels := flag.Bool("list-models", false, "list available LLM models as ID and quoted label (tab-separated); no model selection required")
+	probeCompat := flag.Bool("probe-llm-compat", false, "probe Chat Completions parameter compatibility and print a JSON override object without changing configuration")
 	chatGPTAuth := flag.String("chatgpt-auth", "", "manage ChatGPT subscription: login, status, logout or models")
 	chatGPTListen := flag.String("chatgpt-login-listen", "127.0.0.1:1455", "loopback address for ChatGPT browser sign-in (use SSH forwarding on a speaker)")
 	speakerAction := flag.String("speaker-endpoint", "", "apply or rollback the on-device loopback endpoint (requires writable firmware)")
@@ -85,6 +86,9 @@ func main() {
 	if *listModels {
 		diagnostics++
 	}
+	if *probeCompat {
+		diagnostics++
+	}
 	if diagnostics > 1 {
 		slog.Error("diagnostic flags are mutually exclusive")
 		os.Exit(2)
@@ -107,9 +111,31 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *probeCompat {
+		ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+		defer cancel()
+		parameters, err := newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY")).ProbeCompatibility(ctx, func(err error) {
+			writeLLMProviderError(os.Stderr, err)
+		})
+		if err != nil {
+			slog.Error("LLM compatibility check failed", "error", err)
+			os.Exit(1)
+		}
+		if parameters == nil {
+			parameters = map[string]any{}
+		}
+		data, err := json.Marshal(parameters, json.Deterministic(true))
+		if err != nil {
+			slog.Error("cannot encode LLM compatibility parameters")
+			os.Exit(1)
+		}
+		fmt.Println(string(data))
+		return
+	}
 	if *listModels {
 		if err := writeLLMModels(ctx, newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY")), os.Stdout); err != nil {
 			slog.Error("LLM model discovery failed", "error", err)
+			writeLLMProviderError(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
@@ -169,7 +195,18 @@ func main() {
 	}}
 	logs := new(journal.Writer)
 	lc := newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY"))
-	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
+	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext), StripPrefixes: cfg.LLMStripPrefixes, TTSMarkup: cfg.LLMTTSMarkup}
+	// Recovery is a direct command path, independent of assistant tool settings
+	// and of the availability of either the classifier or the dialogue model.
+	engine.Recovery = func(ctx context.Context, action string) (string, error) {
+		if _, err := update.New(*path).Recover(ctx, action); err != nil {
+			return "", err
+		}
+		if action == "observe" {
+			return "Режим наблюдения сохранён. Перезапуск Bridge запланирован после этого ответа. После перезапуска запросы будут идти в Яндекс.", nil
+		}
+		return "Аварийный откат запланирован после этого ответа. После успешного восстановления подключения к Яндексу колонка перезагрузится.", nil
+	}
 	configuration := &configurationControl{path: *path, active: cfg, engine: engine, logs: logs}
 	configuration.restart = func(ctx context.Context) (any, error) { return update.New(*path).Restart(ctx) }
 	engine.Configuration = cfg.AssistantTools.Enabled && cfg.AssistantTools.Configuration
@@ -218,7 +255,7 @@ func main() {
 			musicPlayback = assistant.NewMusicPlayback(musicQueue)
 			engine.Playback = musicPlayback
 		}
-		tools := &assistant.Tools{Updater: update.New(*path), Configuration: configuration, Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback}
+		tools := &assistant.Tools{Updater: update.New(*path), Configuration: configuration, Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback, TTSMarkup: cfg.LLMTTSMarkup}
 		if airPlay != nil {
 			tools.AirPlay = airPlay
 		}
@@ -240,7 +277,8 @@ func main() {
 		if *check {
 			_, err := lc.Complete(ctx, []llm.Message{{Role: "user", Content: "Ответь одним словом: связь"}}, false)
 			if err != nil {
-				slog.Error("LLM check failed")
+				slog.Error("LLM check failed", "error", err)
+				writeLLMProviderError(os.Stderr, err)
 				os.Exit(1)
 			}
 			if hc == nil {
@@ -294,6 +332,9 @@ func main() {
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
 			n.StreamSentences = cfg.SentenceTTS.Enabled
+			if n.StreamSentences && cfg.LLMTTSMarkup {
+				slog.Warn("sentence_tts disabled: llm_tts_markup=true; set llm_tts_markup=false to enable sentence streaming")
+			}
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond

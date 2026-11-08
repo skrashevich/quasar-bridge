@@ -6,32 +6,26 @@ import (
 	"strings"
 
 	"github.com/coder/websocket"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	"google.golang.org/protobuf/encoding/protowire"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	deferred "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/deferred_tts_generate"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	"quasarbridge/internal/wire"
 )
 
-// Both official event field IDs and payload numbers were verified on the
-// actual Yandex UniProxy server, using an isolated live protocol session.
-// The currently pinned Go protobuf package does not include this event.
+// Use the maintained official protobuf bindings for the native Yandex event.
+// No manually assembled unknown fields are necessary.
 func nativeDeferredTTSFrame(requestID, text string, chunk uint64, last bool) ([]byte, error) {
-	payload := protowire.AppendTag(nil, 1, protowire.BytesType)
-	payload = protowire.AppendString(payload, requestID)
-	payload = protowire.AppendTag(payload, 2, protowire.BytesType)
-	payload = protowire.AppendString(payload, text)
-	payload = protowire.AppendTag(payload, 3, protowire.VarintType)
-	if last {
-		payload = protowire.AppendVarint(payload, 1)
-	} else {
-		payload = protowire.AppendVarint(payload, 0)
+	event := &client.TClientMessage_TEvent{
+		Header: &header.TEventHeader{MessageId: newID()},
+		Event: &client.TClientMessage_TEvent_DeferredTtsGenerate{
+			DeferredTtsGenerate: &deferred.TDeferredTtsGenerate{
+				RequestMessageId: new(requestID),
+				Text:             new(text),
+				IsLast:           new(last),
+				ChunkNum:         new(chunk),
+			},
+		},
 	}
-	payload = protowire.AppendTag(payload, 4, protowire.VarintType)
-	payload = protowire.AppendVarint(payload, chunk)
-	event := &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}}
-	wireField := protowire.AppendTag(nil, 34, protowire.BytesType)
-	wireField = protowire.AppendBytes(wireField, payload)
-	event.ProtoReflect().SetUnknown(wireField)
 	frame := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: event}}
 	return (wire.Frame{Client: frame, Prefix: []byte("AAPI")}).Marshal()
 }

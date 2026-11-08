@@ -7,18 +7,18 @@ output=$(cd "$1" && pwd)
 source_dir="$output/source"
 mkdir -p "$source_dir"
 
-# kuyase 1.1.0, pinned to its source commit and archive digest.
+# kuyase 1.4.0, pinned to its source commit and archive digest.
 curl --fail --location --retry 3 --max-time 180 \
-  https://codeload.github.com/vypivshiy/kuyase/tar.gz/e83425131e24c7c461330d2a69a14ca7867d6622 \
+  https://codeload.github.com/vypivshiy/kuyase/tar.gz/0cd9adac36e167fc0dbc934ce9302590a4318856 \
   --output "$output/source.tar.gz"
-echo "597f232470ed6cb9535688e53e139b5b1f049f805e6756c8fca715f4f37b1d59  $output/source.tar.gz" | sha256sum --check --strict
+echo "4207c594f4c34b7c5da6c6f29e2e4d76749713fdefec61ef35e0852fd023412e  $output/source.tar.gz" | sha256sum --check --strict
 tar -xzf "$output/source.tar.gz" --strip-components=1 -C "$source_dir"
 
 # Only use the portable archive's ARM guest bridge and kernel, not its host CLI.
 curl --fail --location --retry 3 --max-time 180 \
-  https://github.com/vypivshiy/kuyase/releases/download/1.1.0/kuyase-linux64-portable.tar.gz \
+  https://github.com/vypivshiy/kuyase/releases/download/1.4.0/kuyase-linux64-portable.tar.gz \
   --output "$output/portable.tar.gz"
-echo "a65035617b5fb5bf77e53961f89e0d4751c6662d221467f4c273d82ca0b326bb  $output/portable.tar.gz" | sha256sum --check --strict
+echo "87292ceb4722db3710cbfc5457570bbbdc62b60950e76d64cae98589348800c9  $output/portable.tar.gz" | sha256sum --check --strict
 tar -xzf "$output/portable.tar.gz" -C "$output" qemu-hw-bridge kuyase-kernel-arm64.img
 mkdir -p "$source_dir/guest-init/bin"
 cp "$output/qemu-hw-bridge" "$source_dir/guest-init/bin/qemu-hw-bridge"

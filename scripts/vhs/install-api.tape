@@ -2,12 +2,12 @@ Source scripts/vhs/common.tape
 Output docs/images/install-api.gif
 
 Hide
-Type "cd runtime/vhs-kuyase; unset PROMPT_COMMAND; PS1='$ '; clear; echo 'QUASAR BRIDGE · УСТАНОВКА В КУЯСЭ'; echo 'Станция 2 · настоящая прошивка, SSH и нейросеть'; echo"
+Type "cd runtime/vhs-kuyase; unset PROMPT_COMMAND; PS1='$ '; clear; echo 'QUASAR BRIDGE · УСТАНОВКА'; echo 'Станция 2 · настоящая прошивка, SSH и нейросеть'; echo"
 Enter
 Sleep 500ms
 Show
 Sleep 2s
-Type "curl -fL -o install.sh https://github.com/skrashevich/quasar-bridge/releases/latest/download/install.sh"
+Type "curl -fsSL -o install.sh https://github.com/skrashevich/quasar-bridge/releases/latest/download/install.sh"
 Enter
 Wait /^\$$/
 Sleep 1s
@@ -20,15 +20,17 @@ Enter
 Wait /Ключ API/
 Sleep 800ms
 Enter
-Wait /Chat Completions/
+Wait /Тип API/
 Sleep 1s
 Enter
 Wait /Номер модели:/
 Sleep 2s
 Type "1"
 Enter
+# The compatibility result remains above this persistent prompt.
 Wait /Секретный URL Home Assistant/
-Sleep 1s
+Sleep 4s
+Screenshot runtime/vhs-kuyase/install-probe.png
 Enter
 Wait /Подключить Алису/
 Sleep 2s

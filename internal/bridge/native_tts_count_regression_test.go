@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	"quasarbridge/internal/wire"
 )
 
@@ -52,7 +52,7 @@ func TestNativeTTSCountingUsesOnlyOpeningClauseAndRemainingSentence(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = n.reply(p, r.Answer); err != nil {
+	if err = n.reply(p, r); err != nil {
 		t.Fatal(err)
 	}
 	tss := 0

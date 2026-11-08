@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	"google.golang.org/protobuf/encoding/protowire"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	"google.golang.org/protobuf/proto"
+	"quasarbridge/internal/llm"
 	"quasarbridge/internal/wire"
 )
 
@@ -30,66 +30,31 @@ func parseDeferredTTS(t *testing.T, raw []byte) (inspectedDeferredTTS, bool) {
 		t.Fatal(err)
 	}
 	e := event.GetEvent()
-	if e == nil {
+	if e == nil || e.GetDeferredTtsGenerate() == nil {
 		return inspectedDeferredTTS{}, false
 	}
-	b := e.ProtoReflect().GetUnknown()
-	for len(b) > 0 {
-		n, typ, sz := protowire.ConsumeTag(b)
-		if sz < 0 {
-			t.Fatalf("malformed event unknown: %d", sz)
-		}
-		b = b[sz:]
-		if typ != protowire.BytesType {
-			t.Fatal("non-bytes unknown event")
-		}
-		payload, sz := protowire.ConsumeBytes(b)
-		if sz < 0 {
-			t.Fatal("malformed deferred unknown bytes")
-		}
-		b = b[sz:]
-		if n != 34 {
-			continue
-		}
-		var got inspectedDeferredTTS
-		for len(payload) > 0 {
-			field, kind, step := protowire.ConsumeTag(payload)
-			if step < 0 {
-				t.Fatal("bad deferred field")
-			}
-			payload = payload[step:]
-			switch kind {
-			case protowire.BytesType:
-				value, k := protowire.ConsumeString(payload)
-				if k < 0 {
-					t.Fatal("invalid deferred string")
-				}
-				if field == 1 {
-					got.requestID = value
-				}
-				if field == 2 {
-					got.text = value
-				}
-				payload = payload[k:]
-			case protowire.VarintType:
-				value, k := protowire.ConsumeVarint(payload)
-				if k < 0 {
-					t.Fatal("invalid deferred varint")
-				}
-				if field == 3 {
-					got.isLast = value
-				}
-				if field == 4 {
-					got.chunk = value
-				}
-				payload = payload[k:]
-			default:
-				t.Fatal("unexpected deferred field type")
-			}
-		}
-		return got, true
+	part := e.GetDeferredTtsGenerate()
+	var last uint64
+	if part.GetIsLast() {
+		last = 1
 	}
-	return inspectedDeferredTTS{}, false
+	return inspectedDeferredTTS{
+		requestID: part.GetRequestMessageId(),
+		text:      part.GetText(),
+		chunk:     part.GetChunkNum(),
+		isLast:    last,
+	}, true
+}
+
+func TestSentenceStreamingRespectsTTSMarkupCompatibility(t *testing.T) {
+	e := &Engine{LLM: &llm.Client{}, TTSMarkup: true}
+	if e.SupportsSentenceStreaming() {
+		t.Fatal("streaming must not silently discard the new native TTS markup instructions")
+	}
+	e.TTSMarkup = false
+	if !e.SupportsSentenceStreaming() {
+		t.Fatal("ordinary Chat Completions should support sentence streaming")
+	}
 }
 
 type scriptedNativeStreamingResolver struct {
@@ -152,7 +117,7 @@ func TestNativeTTSOneSessionIncrementalBeforeLLMCompletes(t *testing.T) {
 	go func() {
 		res, err := n.streamSpeechNative(p, "расскажи длинную историю", provider)
 		if err == nil && p.streaming {
-			err = n.reply(p, res.Answer)
+			err = n.reply(p, res)
 		}
 		answerDone <- err
 	}()
@@ -167,13 +132,7 @@ func TestNativeTTSOneSessionIncrementalBeforeLLMCompletes(t *testing.T) {
 				if ts.GetText() != "" {
 					t.Fatalf("streaming TtsGenerate must have EMPTY text; initial text is ignored by Yandex: %q", ts.GetText())
 				}
-				got := ts.ProtoReflect().GetUnknown()
-				n, kind, step := protowire.ConsumeTag(got)
-				if step < 0 || n != 12 || kind != protowire.VarintType {
-					t.Fatalf("initial streaming flag missing: %x", got)
-				}
-				v, _ := protowire.ConsumeVarint(got[step:])
-				if v != 1 {
+				if !ts.GetIsStreaming() {
 					t.Fatal("native streaming flag not true")
 				}
 				firstID = f.Client.GetEvent().GetHeader().GetMessageId()
