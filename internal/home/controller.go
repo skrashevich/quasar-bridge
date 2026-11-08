@@ -24,9 +24,13 @@ type Planner interface {
 	Complete(context.Context, []llm.Message, bool) (string, error)
 }
 type Controller struct {
-	Tools        ToolCaller
-	Planner      Planner
-	Domains      []string
+	Tools   ToolCaller
+	Planner Planner
+	Domains []string
+	// DefaultArea is the Home Assistant area where this speaker stands. It is
+	// used only when a request names no room: devices in the area are marked
+	// here=true and the planner prefers them over the same devices elsewhere.
+	DefaultArea  string
 	exposureMu   sync.Mutex
 	guideMu      sync.Mutex
 	guidesLoaded bool
@@ -44,6 +48,8 @@ type Entity struct {
 	Area    string   `json:"area"`
 	Aliases []string `json:"aliases"`
 	Members []string `json:"member_entity_ids,omitempty"`
+	// Here marks devices in the speaker's own area for a request without a room.
+	Here bool `json:"here,omitzero"`
 }
 type Action struct {
 	Domain   string         `json:"domain"`
@@ -136,10 +142,13 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 		return "", err
 	}
 	scoped, roomSpecified := scopeRoomEntities(text, entities)
+	whole := wholeHome(text)
 	// Prefer a room in the current request; otherwise retain the latest user-specified room.
+	// A whole-home request since that room keeps the speaker's area out of the scope.
 	for i := len(history) - 1; !roomSpecified && i >= 0; i-- {
 		if history[i].Role == "user" {
 			scoped, roomSpecified = scopeRoomEntities(history[i].Content, entities)
+			whole = whole || wholeHome(history[i].Content)
 		}
 	}
 	entities = scoped
@@ -174,6 +183,10 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 		}
 	}
 	slog.Info("home_inventory", "exposed_entities", len(entities), "metadata_ms", time.Since(start).Milliseconds())
+	var areaHint string
+	if !roomSpecified && !whole {
+		entities, areaHint = markDefaultArea(c.DefaultArea, entities)
+	}
 	if len(entities) > 80 {
 		return "Уточните комнату и тип устройства: найдено слишком много устройств.", nil
 	}
@@ -189,7 +202,7 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 		return "Уточните комнату и тип устройства: найдено слишком много устройств.", nil
 	}
 	if stateQuestion(text) {
-		messages := []llm.Message{{Role: "system", Content: "Ответь на вопрос о состоянии умного дома по текущему списку HA. История нужна только для понимания уточнений; состояния бери из текущего списка, а не из прошлых ответов. Только 1–2 коротких предложения по-русски. Никаких действий. Для освещения учитывай группы и отдельные светильники; переключатели Adaptive Lighting — настройки автоматики, а не источники света. unavailable/unknown означает отсутствие данных. Не придумывай значения и единицы измерения. Называй устройства по friendly_name, никогда не упоминай entity_id в ответе: его читают вслух."}}
+		messages := []llm.Message{{Role: "system", Content: "Ответь на вопрос о состоянии умного дома по текущему списку HA. История нужна только для понимания уточнений; состояния бери из текущего списка, а не из прошлых ответов. Только 1–2 коротких предложения по-русски. Никаких действий. Для освещения учитывай группы и отдельные светильники; переключатели Adaptive Lighting — настройки автоматики, а не источники света. unavailable/unknown означает отсутствие данных. Не придумывай значения и единицы измерения. Называй устройства по friendly_name, никогда не упоминай entity_id в ответе: его читают вслух." + areaHint}}
 		messages = append(messages, history...)
 		messages = append(messages, llm.Message{Role: "user", Content: "Устройства: " + string(data) + "\nВопрос: " + text})
 		answer, err := c.Planner.Complete(ctx, messages, false)
@@ -204,7 +217,7 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 		services = append(services, name)
 	}
 	slices.Sort(services)
-	prompt += strings.Join(services, ", ") + ". История нужна для понимания последнего уточнения. Ответ «да» подтверждает только последнее заданное уточнение, «нет» отменяет его. Не повторяй уже выполненные действия из истории и не трактуй «да» как разрешение на новое действие без ожидающего подтверждения. Состояния и доступность бери только из текущего списка устройств."
+	prompt += strings.Join(services, ", ") + ". История нужна для понимания последнего уточнения. Ответ «да» подтверждает только последнее заданное уточнение, «нет» отменяет его. Не повторяй уже выполненные действия из истории и не трактуй «да» как разрешение на новое действие без ожидающего подтверждения. Состояния и доступность бери только из текущего списка устройств." + areaHint
 	messages := []llm.Message{{Role: "system", Content: prompt}}
 	messages = append(messages, history...)
 	messages = append(messages, llm.Message{Role: "user", Content: "Устройства: " + string(data) + "\nЗапрос: " + text})
@@ -363,6 +376,18 @@ func spokenAnswer(answer string, entities []Entity) string {
 	return strings.NewReplacer(pairs...).Replace(answer)
 }
 
+// wholeHome reports a request about the entire home, which the speaker's own
+// area must not narrow: "какая температура дома", "выключи свет в квартире".
+func wholeHome(text string) bool {
+	s := strings.ToLower(text)
+	for _, word := range []string{"дома", "в доме", "по дому", "всём доме", "всем доме", "квартир", "везде", "повсюду"} {
+		if strings.Contains(s, word) {
+			return true
+		}
+	}
+	return false
+}
+
 func controlDomains(text string) []string {
 	s := strings.ToLower(text)
 	domains := []string{}
@@ -408,12 +433,31 @@ func scopeEntities(text string, entities []Entity) []Entity {
 }
 
 func scopeRoomEntities(text string, entities []Entity) ([]Entity, bool) {
-	text = strings.ToLower(text)
 	// A whole-home answer explicitly replaces the room from the previous turn.
-	switch strings.Trim(strings.TrimSpace(text), " .,!?:;") {
+	switch strings.Trim(strings.TrimSpace(strings.ToLower(text)), " .,!?:;") {
 	case "во всей квартире", "по всей квартире", "во всём доме", "во всем доме", "по всему дому", "во всех комнатах", "везде":
 		return entities, true
 	}
+	stems := roomStems(text, entities)
+	if len(stems) == 0 {
+		return entities, false
+	}
+	var out []Entity
+	for _, e := range entities {
+		hay := strings.ToLower(e.Area + " " + e.Name + " " + strings.Join(e.Aliases, " "))
+		for _, stem := range stems {
+			if strings.Contains(hay, stem) {
+				out = append(out, e)
+				break
+			}
+		}
+	}
+	return out, true
+}
+
+// roomStems returns the stems of known area names mentioned in the request.
+func roomStems(text string, entities []Entity) []string {
+	text = strings.ToLower(text)
 	var stems []string
 	for _, e := range entities {
 		for _, word := range strings.FieldsFunc(strings.ToLower(e.Area), func(r rune) bool { return !unicode.IsLetter(r) }) {
@@ -433,20 +477,32 @@ func scopeRoomEntities(text string, entities []Entity) ([]Entity, bool) {
 			}
 		}
 	}
-	if len(stems) == 0 {
-		return entities, false
+	return stems
+}
+
+// markDefaultArea marks devices of the speaker's area for a request that names
+// no room and returns the prompt hint describing them. Devices elsewhere stay
+// in the inventory: "выключи пылесос" must still reach a vacuum in another room.
+// Only an inventory too large for the planner is narrowed to the speaker's area.
+func markDefaultArea(area string, entities []Entity) ([]Entity, string) {
+	area = strings.TrimSpace(area)
+	if area == "" {
+		return entities, ""
 	}
-	var out []Entity
-	for _, e := range entities {
-		hay := strings.ToLower(e.Area + " " + e.Name + " " + strings.Join(e.Aliases, " "))
-		for _, stem := range stems {
-			if strings.Contains(hay, stem) {
-				out = append(out, e)
-				break
-			}
+	matched := 0
+	for i := range entities {
+		entities[i].Here = strings.EqualFold(strings.TrimSpace(entities[i].Area), area)
+		if entities[i].Here {
+			matched++
 		}
 	}
-	return out, true
+	if matched == 0 {
+		return entities, ""
+	}
+	if len(entities) > 80 {
+		entities = slices.DeleteFunc(entities, func(e Entity) bool { return !e.Here })
+	}
+	return entities, " Колонка, которой задан запрос, стоит в области «" + area + "»; устройства этой области помечены here=true. Если комната в запросе не названа, выбирай устройства с here=true, а устройства других областей — только если подходящих среди here=true нет."
 }
 
 func (c *Controller) enrich(ctx context.Context, e Entity) (Entity, bool, error) {
