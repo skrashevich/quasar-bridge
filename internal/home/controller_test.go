@@ -276,3 +276,12 @@ func TestHomeAnswerNamesDevicesWithoutEntityIDs(t *testing.T) {
 		})
 	}
 }
+
+// User story: a sensor value like 27.26 was read aloud as a clock time
+// ("двадцать семь двадцать шесть"). Home answers use a decimal comma.
+func TestHomeAnswerReadsDecimalsAsNumbers(t *testing.T) {
+	got := spokenAnswer("В спальне 27.26 по датчику light.bedroom, версия 0.373.1", []Entity{{ID: "light.bedroom", Name: "Свет в спальне"}})
+	if got != "В спальне 27,26 по датчику Свет в спальне, версия 0,373,1" {
+		t.Fatalf("answer=%q", got)
+	}
+}
