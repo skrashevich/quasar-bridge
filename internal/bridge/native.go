@@ -159,6 +159,9 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			scope = "uuid:" + id
 		}
 		pctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
+		if tag := req.GetEventSource().GetId(); e.GetVoiceInput() != nil && tag != "" {
+			pctx = context.WithValue(pctx, wakewordTagKey{}, tag)
+		}
 		pctx = reply.WithPolicy(pctx)
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)

@@ -8,7 +8,10 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/update"
 	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 type RoutingConfig struct {
@@ -24,6 +27,7 @@ type RoutingRule struct {
 	Match    RoutingMatch `json:"match"`
 }
 type RoutingMatch struct {
+	WakeWords         []string   `json:"wake_words,omitempty"`
 	ContainsAny       []string   `json:"contains_any,omitempty"`
 	ContainsAllGroups [][]string `json:"contains_all_groups,omitempty"`
 	ContainsNone      []string   `json:"contains_none,omitempty"`
@@ -51,9 +55,19 @@ type RouteDecision struct {
 }
 type compiledRule struct {
 	name, route       string
+	wakewordTags      []string
 	any, none, prefix []string
 	groups            [][]string
 	regex             *regexp.Regexp
+}
+
+type wakewordTagKey struct{}
+
+// station-wakeword derives EventSource.Id from this namespace and the exact word ID.
+var stationWakewordNamespace = uuid.MustParse("95fb5d06-1707-4f93-a956-0c306fe57e1b")
+
+func stationWakewordTag(word string) string {
+	return uuid.NewSHA1(stationWakewordNamespace, []byte(word)).String()
 }
 
 // RoutingPolicy owns normalized copies. Once compiled it is immutable and safe
@@ -164,10 +178,16 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 			return fail("invalid route")
 		}
 		m := rule.Match
-		if len(m.ContainsAny) == 0 && len(m.ContainsAllGroups) == 0 && len(m.StartsWithAny) == 0 && m.Regex == "" {
+		if len(m.WakeWords) == 0 && len(m.ContainsAny) == 0 && len(m.ContainsAllGroups) == 0 && len(m.StartsWithAny) == 0 && m.Regex == "" {
 			return fail("at least one positive condition is required")
 		}
 		r := compiledRule{name: rule.Name, route: rule.Route}
+		for _, word := range m.WakeWords {
+			if strings.TrimSpace(word) == "" {
+				return fail("wake_words has an empty ID")
+			}
+			r.wakewordTags = append(r.wakewordTags, stationWakewordTag(word))
+		}
 		var err error
 		if r.any, err = foldTerms(m.ContainsAny, false); err != nil {
 			return fail("contains_any has an empty term")
@@ -216,9 +236,12 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	p.revision = fmt.Sprintf("%x", hash[:8])
 	return p, nil
 }
-func (p *RoutingPolicy) match(text string) (RouteDecision, bool) {
+func (p *RoutingPolicy) match(text, wakewordTag string) (RouteDecision, bool) {
 	lower := strings.ToLower(text)
 	for _, r := range p.rules {
+		if len(r.wakewordTags) > 0 && !slices.Contains(r.wakewordTags, wakewordTag) {
+			continue
+		}
 		if len(r.any) > 0 && !containsOne(lower, r.any) {
 			continue
 		}
@@ -260,8 +283,12 @@ func (p *RoutingPolicy) Revision() string { return p.revision }
 // Preview evaluates only static rules and the configured default. It never
 // calls a classifier, touches dialogue state or executes the selected handler.
 // Route=classify means that a real request would still need classification.
-func (p *RoutingPolicy) Preview(text string) RouteDecision {
-	if decision, ok := p.match(text); ok {
+func (p *RoutingPolicy) Preview(text, wakeWord string) RouteDecision {
+	var tag string
+	if wakeWord != "" {
+		tag = stationWakewordTag(wakeWord)
+	}
+	if decision, ok := p.match(text, tag); ok {
 		return decision
 	}
 	if p.classifierEnabled {

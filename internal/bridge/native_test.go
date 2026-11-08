@@ -30,6 +30,7 @@ import (
 	tts "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_speak"
 	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	eventsource "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/data/event_source"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
@@ -546,6 +547,92 @@ func TestVoiceRoutesOnlyAfterFinalASR(t *testing.T) {
 				t.Fatal("no decision")
 			}
 		})
+	}
+}
+
+func TestNativeRoutesByStationWakeword(t *testing.T) {
+	// UUIDs emitted by station-wakeword for these word IDs.
+	const jarvis = "1fb379a3-a415-567d-9bc5-977cd44928b3"
+	const house = "b4d13715-9d51-55e4-b3be-f26c7854284a"
+	cfg := DefaultRoutingConfig()
+	cfg.DefaultRoute = "yandex"
+	if err := json.Unmarshal([]byte(`[
+		{"name":"jarvis","route":"llm","match":{"wake_words":["джарвис"]}},
+		{"name":"house","route":"home","match":{"wake_words":["домовёнок"],"contains_any":["свет"]}}
+	]`), &cfg.Rules); err != nil {
+		t.Fatal(err)
+	}
+	var executed []string
+	e := &Engine{
+		LLM: completionFunc(func(_ context.Context, _ []llm.Message, _ bool) (string, error) {
+			executed = append(executed, "llm")
+			return "Готово", nil
+		}),
+		Home: homeFunc(func(_ context.Context, text string) (string, error) {
+			executed = append(executed, "home:"+text)
+			return "Готово", nil
+		}),
+	}
+	if err := e.SetRouting(cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	send := func(context.Context, websocket.MessageType, []byte) error { return nil }
+	n := NewNative(ctx, send, send, e)
+	defer n.Close()
+	decisions := make(chan [2]string, 8)
+	n.OnRoute = func(id, route string) { decisions <- [2]string{id, route} }
+
+	for _, tc := range []struct{ id, kind, tag, text, route string }{
+		{"tagged", "voice", jarvis, "включи свет", "llm"},
+		{"next", "voice", "", "включи свет", "yandex"},
+		{"other-word", "voice", house, "включи свет", "home"},
+		{"text-condition", "voice", house, "погода завтра", "yandex"},
+		{"unknown-tag", "voice", "93ed43e8-7215-5d99-87a0-c19266a62498", "джарвис, включи свет", "yandex"},
+		{"text-input", "text", jarvis, "включи свет", "yandex"},
+		{"speech-input", "speech", jarvis, "включи свет", "yandex"},
+	} {
+		req := &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{}}}
+		if tc.tag != "" {
+			req.EventSource = &eventsource.TEventSource{Id: new(tc.tag)}
+		}
+		input := &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: tc.id}}
+		switch tc.kind {
+		case "text":
+			req.Request.Event.Text = new(tc.text)
+			input.Event = &client.TClientMessage_TEvent_TextInput{TextInput: req}
+		case "speech":
+			input.Event = &client.TClientMessage_TEvent_SpeechInput{SpeechInput: req}
+		default:
+			input.Event = &client.TClientMessage_TEvent_VoiceInput{VoiceInput: req}
+		}
+		if err := n.Client(ctx, websocket.MessageBinary, aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: input}})); err != nil {
+			t.Fatal(err)
+		}
+		if tc.kind != "text" {
+			result := &server.TServerMessage_TEvent{
+				Header: &header.TEventHeader{RefMessageId: tc.id},
+				Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{
+					EndOfUtt:    new(true),
+					Recognition: []*recognition.TAsrRecognition{{Normalized: new(tc.text)}},
+				}},
+			}
+			if err := n.Server(ctx, websocket.MessageBinary, aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: result}})); err != nil {
+				t.Fatal(err)
+			}
+		}
+		select {
+		case got := <-decisions:
+			if got != [2]string{tc.id, tc.route} {
+				t.Fatalf("%s: decision %v, want %s", tc.id, got, tc.route)
+			}
+		case <-ctx.Done():
+			t.Fatalf("%s: no route decision", tc.id)
+		}
+	}
+	if !slices.Equal(executed, []string{"llm", "home:включи свет"}) {
+		t.Fatalf("unexpected backend calls: %v", executed)
 	}
 }
 
