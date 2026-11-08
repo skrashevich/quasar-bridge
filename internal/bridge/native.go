@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -33,6 +34,7 @@ import (
 type Resolution struct {
 	Route  string
 	Answer string
+	speech string // Optional TTS text with markup, separate from the displayed answer.
 }
 type Resolver interface {
 	Resolve(context.Context, string) (Resolution, error)
@@ -68,6 +70,7 @@ type nativeRequest struct {
 	continuation                    []byte
 	ttsID                           string
 	progressTTS                     string
+	markedTTS                       bool // <speaker> can produce chained Opus streams.
 	audio                           oggSpeech
 	audioIsProgress                 bool
 	audioStarted                    bool
@@ -286,7 +289,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			n.mu.Lock()
 			p := n.streams[binary.BigEndian.Uint32(data)]
 			drop := n.blocked[binary.BigEndian.Uint32(data)] != nil || (p != nil && p.canceled)
-			if p != nil && p.streaming && !drop {
+			if p != nil && (p.streaming || p.markedTTS) && !drop {
 				out, err := p.audio.feed(data[4:])
 				if err == nil && len(out) > 0 {
 					err = n.down(ctx, k, append(binary.BigEndian.AppendUint32(nil, p.audioStream), out...))
@@ -324,7 +327,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				n.mu.Unlock()
 				return nil
 			}
-			if p.streaming && sc.GetClose() != nil {
+			if (p.streaming || p.markedTTS) && sc.GetClose() != nil {
 				if err := p.audio.endSource(); err != nil {
 					p.cancel()
 					n.mu.Unlock()
@@ -407,11 +410,11 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		if e.GetTtsSpeak() != nil {
 			n.streams[uint32(e.Header.GetStreamId())] = p
-			if p.streaming {
+			if p.streaming || p.markedTTS {
 				if e.GetTtsSpeak().GetFormat() != "audio/opus" {
 					p.cancel()
 					n.mu.Unlock()
-					return errors.New("streaming progress requires Opus")
+					return errors.New("joining speech segments requires Opus")
 				}
 				p.audioIsProgress = p.ttsID == p.progressTTS
 				p.audio.next()
@@ -476,7 +479,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 					result.Answer = "Сейчас не получилось получить ответ локальной модели."
 				}
 				_ = n.sendCancel(p.ctx, p.id)
-				if err := n.reply(p, result.Answer); err != nil {
+				if err := n.reply(p, result); err != nil {
 					slog.Warn("native_reply_failed", "request", requestTag(p.id))
 				}
 				slog.Info("native_fallback", "request", requestTag(p.id), "route", "llm")
@@ -634,7 +637,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				return
 			}
 		}
-		if err := n.reply(p, result.Answer); err != nil {
+		if err := n.reply(p, result); err != nil {
 			slog.Warn("native_reply_failed", "request", requestTag(p.id))
 		}
 	})
@@ -647,9 +650,11 @@ func (n *Native) sendCancel(ctx context.Context, id string) error {
 	}
 	return n.up(ctx, websocket.MessageBinary, b)
 }
-func (n *Native) reply(p *nativeRequest, text string) error {
+func (n *Native) reply(p *nativeRequest, result Resolution) error {
+	text := result.Answer
+	speech := cmp.Or(result.speech, text)
 	if p.streaming {
-		return n.finishDeferred(p, text)
+		return n.finishDeferred(p, text, speech)
 	}
 	requestID := p.request.GetHeader().GetRequestId()
 	if requestID == "" {
@@ -680,9 +685,14 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	if silentPlayback {
 		return nil
 	}
-	return n.synthesize(p, text)
+	return n.synthesize(p, speech)
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
+	if strings.Contains(text, "<speaker") {
+		n.mu.Lock()
+		p.markedTTS = true
+		n.mu.Unlock()
+	}
 	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {

@@ -41,6 +41,7 @@ type Engine struct {
 	Playback      PlaybackController
 	Music         MusicStarter
 	Dialogue      *dialogue.Store
+	TTSMarkup     bool
 	// StripPrefixes are model addresses removed only from outbound requests.
 	// An empty list disables stripping.
 	StripPrefixes []string
@@ -190,7 +191,7 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."}}
+	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома." + e.ttsInstructions()}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	messages = e.modelMessages(messages)
@@ -207,13 +208,15 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	if err == nil {
-		if !e.dialogue().Commit(ctx, ticket, text, answer, private) {
-			return r, context.Canceled
-		}
+	if err != nil {
+		r.Answer = answer
+		return r, err
 	}
-	r.Answer = answer
-	return r, err
+	r.setModelAnswer(answer, e.TTSMarkup)
+	if !e.dialogue().Commit(ctx, ticket, text, r.Answer, private) {
+		return Resolution{Route: r.Route}, context.Canceled
+	}
+	return r, nil
 }
 func containsOne(text string, needles []string) bool {
 	for _, s := range needles {

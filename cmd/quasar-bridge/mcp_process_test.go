@@ -161,7 +161,7 @@ func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[strin
 // Inspect both API catalogs by name, independently of built-in/MCP ordering.
 func mcpProcessTool(t *testing.T, tools []llm.Tool, airPlayDisabled bool) string {
 	t.Helper()
-	expected := map[string]bool{}
+	expected := map[string]bool{"search_tts_catalog": true}
 	for _, name := range []string{"get_quasar_bridge_config", "set_quasar_bridge_config", "apply_quasar_bridge_config"} {
 		expected[name] = true
 	}

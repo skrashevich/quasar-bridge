@@ -144,7 +144,7 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	n.captureDelivered(p, text, last, len(base.Directives) > 0, true)
 	return nil
 }
-func (n *Native) finishDeferred(p *nativeRequest, text string) error {
+func (n *Native) finishDeferred(p *nativeRequest, text, speech string) error {
 	select {
 	case <-p.ctx.Done():
 		return p.ctx.Err()
@@ -163,7 +163,7 @@ func (n *Native) finishDeferred(p *nativeRequest, text string) error {
 	if err := n.deferredPart(p, text, true); err != nil {
 		return err
 	}
-	return n.synthesize(p, text)
+	return n.synthesize(p, speech)
 }
 
 // Content audio must start after the silent Dialog player releases its focus.
