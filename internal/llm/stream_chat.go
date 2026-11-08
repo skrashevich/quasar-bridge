@@ -32,21 +32,7 @@ func (c *Client) CompleteStream(ctx context.Context, messages []Message, structu
 	if c.API != "" && c.API != "chat_completions" {
 		return "", errors.New("streaming completion requires chat_completions API")
 	}
-	request := map[string]any{
-		"model": c.Model, "messages": messages, "stream": true,
-		"temperature": 0, "max_tokens": 1024,
-		"chat_template_kwargs": map[string]any{"enable_thinking": false},
-	}
-	for key, value := range c.ChatParameters {
-		if key == "response_format" {
-			continue
-		}
-		if value == nil {
-			delete(request, key)
-		} else {
-			request[key] = value
-		}
-	}
+	request := c.chatCompletionsRequest(messages, false, nil, true)
 	return c.chatCompletionsStream(ctx, request, onDelta)
 }
 
