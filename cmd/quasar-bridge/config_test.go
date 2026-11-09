@@ -253,3 +253,23 @@ func TestMCPExampleAndUnknownConfiguration(t *testing.T) {
 		t.Fatal("unknown MCP option accepted")
 	}
 }
+
+func TestExtraRulesKeepBuiltInRules(t *testing.T) {
+	cfg, err := readConfig(configFile(t, `{"routing":{"extra_rules":[{"name":"home_cleaning","route":"home","match":{"contains_any":["пропылес"]}}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.Routing.Rules, bridge.DefaultRoutingConfig().Rules) || len(cfg.Routing.ExtraRules) != 1 {
+		t.Fatalf("extra rules replaced built-in rules: %+v", cfg.Routing)
+	}
+	e := &bridge.Engine{}
+	if err := e.SetRouting(cfg.Routing); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Decide(t.Context(), "Пропылесось у Макса"); got.Rule != "home_cleaning" {
+		t.Fatal(got)
+	}
+	if _, err := readConfig(configFile(t, `{"routing":{"extra_rules":[{"name":"bad","route":"llm","match":{"typo":["x"]}}]}}`)); err == nil {
+		t.Fatal("invalid extra rule accepted")
+	}
+}
