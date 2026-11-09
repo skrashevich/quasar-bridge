@@ -501,7 +501,6 @@ mode: parallel
 max: 20
 fields:
   service:
-    required: true
     selector:
       text: {}
   entity_id:
@@ -519,12 +518,38 @@ fields:
   at:
     selector:
       text: {}
+  cancel:
+    selector:
+      boolean: {}
 sequence:
-  - delay:
-      seconds: >-
-        {% if at is defined and at %}{% set t = today_at(at) %}{{ ((t if t > now()
-        else t + timedelta(days=1)) - now()).total_seconds() | round(0, 'ceil') | int }}{% else %}{{
-        (after_minutes | int(0)) * 60 }}{% endif %}
+  - if: "{{ cancel | default(false) }}"
+    then:
+      - event: quasar_delayed_cancel
+        event_data:
+          entity_id: "{{ entity_id }}"
+          service: "{{ service | default('') }}"
+      - stop: cancel sent
+  - variables:
+      deadline: >-
+        {% if at is defined and at %}{% set t = today_at(at) %}{{ as_timestamp(t
+        if t > now() else t + timedelta(days=1)) }}{% else %}{{ as_timestamp(now())
+        + (after_minutes | int(0)) * 60 }}{% endif %}
+      cancelled: false
+  - repeat:
+      while: "{{ not cancelled and as_timestamp(now()) < deadline | float }}"
+      sequence:
+        - wait_for_trigger:
+            - trigger: event
+              event_type: quasar_delayed_cancel
+          timeout:
+            seconds: "{{ [0, deadline | float - as_timestamp(now())] | max | round(0, 'ceil') | int }}"
+          continue_on_timeout: true
+        - variables:
+            cancelled: >-
+              {{ wait.trigger is not none
+              and wait.trigger.event.data.entity_id == entity_id
+              and wait.trigger.event.data.service in ['', service] }}
+  - condition: "{{ not cancelled }}"
   - action: "{{ service }}"
     target:
       entity_id: "{{ entity_id }}"
@@ -550,9 +575,15 @@ QUASAR_HOME_DELAY_SCRIPT=script.delayed_action
 Телевизор.» или «В 23:00: Телевизор.». Одно устройство может получить в одном
 плане немедленное и отложенное действие.
 
-«Отмени отложенные команды» (правило `home_delayed_cancel`) вызывает
-`script.turn_off` без обращения к LLM и останавливает все ожидающие запуски
-скрипта. Ожидающие действия не переживают перезапуск Home Assistant.
+«Отмени включение света» или «не выключай телевизор» планировщик превращает в
+действие с `"cancel": true`: Bridge вызывает скрипт с переменными `cancel`,
+`entity_id` и `service`, скрипт посылает событие `quasar_delayed_cancel`, и
+ожидающие запуски этого сервиса на этом устройстве завершаются без действия.
+Колонка отвечает «Отменяю отложенное: Свет.»; есть ли такие запуски, Bridge не
+проверяет. «Отмени отложенные команды» без названия устройства (правило
+`home_delayed_cancel`) вызывает `script.turn_off` без обращения к LLM и
+останавливает все ожидающие запуски. Ожидающие действия не переживают
+перезапуск Home Assistant.
 
 ### Проверка обработчиков без колонки
 

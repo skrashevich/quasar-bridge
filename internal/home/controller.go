@@ -29,8 +29,9 @@ type Controller struct {
 	Domains []string
 	// DelayScript is the Home Assistant script that runs deferred actions. The
 	// bridge starts it with script.turn_on and the variables service, entity_id,
-	// data and either after_minutes or at; script.turn_off cancels every pending
-	// run. Empty disables deferred actions.
+	// data and either after_minutes or at; with cancel=true, entity_id and
+	// service it cancels the matching pending runs, and script.turn_off cancels
+	// every pending run. Empty disables deferred actions.
 	DelayScript  string
 	exposureMu   sync.Mutex
 	guideMu      sync.Mutex
@@ -58,11 +59,15 @@ type Action struct {
 	// AfterMinutes or At defer the action to the Controller's DelayScript.
 	AfterMinutes float64 `json:"after_minutes,omitzero"`
 	At           string  `json:"at,omitzero"`
+	// Cancel withdraws pending deferred runs of this service on this device.
+	Cancel bool `json:"cancel,omitzero"`
 }
 
 // timing tells deferred actions apart; it is empty for an immediate action.
 func (a Action) timing() string {
 	switch {
+	case a.Cancel:
+		return "Отменяю отложенное"
 	case a.At != "":
 		return "В " + a.At
 	case a.AfterMinutes != 0:
@@ -137,7 +142,7 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 	if err := c.guides(ctx); err != nil {
 		return "", err
 	}
-	if c.DelayScript != "" && cancelDelayed(text) {
+	if c.DelayScript != "" && cancelDelayed(text) && len(controlDomains(text)) == 0 {
 		if _, err := c.Tools.Call(ctx, "ha_call_service", map[string]any{"domain": "script", "service": "turn_off", "entity_id": c.DelayScript, "wait": false}); err != nil {
 			return "", fmt.Errorf("home action failed; no cloud retry: %w", err)
 		}
@@ -212,7 +217,7 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 	slices.Sort(services)
 	prompt += strings.Join(services, ", ") + "."
 	if c.DelayScript != "" {
-		prompt += ` Для отложенной команды («через 30 минут», «через час», «в 23:00») добавь в действие "after_minutes" — целое число минут от 1 до 1440 — или "at" — время "ЧЧ:ММ" в 24-часовом формате; у немедленного действия этих полей нет. «Включи на 10 минут» — немедленное включение и отложенное выключение того же устройства.`
+		prompt += ` Для отложенной команды («через 30 минут», «через час», «в 23:00») добавь в действие "after_minutes" — целое число минут от 1 до 1440 — или "at" — время "ЧЧ:ММ" в 24-часовом формате; у немедленного действия этих полей нет. «Включи на 10 минут» — немедленное включение и отложенное выключение того же устройства. Отмена отложенной команды («отмени включение света», «не выключай телевизор через час») — действие с отменяемым сервисом и "cancel": true, без after_minutes и at.`
 	}
 	answer, err := c.Planner.Complete(ctx, []llm.Message{{Role: "system", Content: prompt}, {Role: "user", Content: "Устройства: " + string(data) + "\nЗапрос: " + text}}, true)
 	if err != nil {
@@ -243,6 +248,9 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 			if !slices.Contains(fields, key) {
 				return "", errors.New("home service parameter not allowed")
 			}
+		}
+		if a.Cancel && (c.DelayScript == "" || a.AfterMinutes != 0 || a.At != "") {
+			return "", errors.New("home delay not allowed")
 		}
 		if a.AfterMinutes != 0 || a.At != "" {
 			// Models write "2.0" as readily as "2"; whole minutes are enough.
@@ -308,15 +316,20 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 	allConfirmed := true
 	for _, a := range plan.Actions {
 		if when := a.timing(); when != "" {
-			data := a.Data
-			if data == nil {
-				data = map[string]any{}
-			}
-			variables := map[string]any{"service": a.Domain + "." + a.Service, "entity_id": a.EntityID, "data": data}
-			if a.At != "" {
+			variables := map[string]any{"service": a.Domain + "." + a.Service, "entity_id": a.EntityID}
+			switch {
+			case a.Cancel:
+				variables["cancel"] = true
+			case a.At != "":
 				variables["at"] = a.At
-			} else {
+			default:
 				variables["after_minutes"] = int(a.AfterMinutes)
+			}
+			if !a.Cancel {
+				variables["data"] = a.Data
+				if a.Data == nil {
+					variables["data"] = map[string]any{}
+				}
 			}
 			if _, err := c.Tools.Call(ctx, "ha_call_service", map[string]any{"domain": "script", "service": "turn_on", "entity_id": c.DelayScript, "data": map[string]any{"variables": variables}, "wait": false}); err != nil {
 				return "", fmt.Errorf("home action failed; no cloud retry: %w", err)
