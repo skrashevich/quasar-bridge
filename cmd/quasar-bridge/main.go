@@ -46,7 +46,23 @@ func main() {
 	speakerConfig := flag.String("speaker-config", "/system/vendor/quasar/quasar.cfg", "firmware configuration path")
 	speakerBackup := flag.String("speaker-backup", "/data/opt/quasar-bridge/endpoint-backup.json", "persistent endpoint backup")
 	speakerURL := flag.String("speaker-url", "ws://127.0.0.1:8443/uni.ws", "on-device bridge URL")
+	wakeAction := flag.String("speaker-wake", "", "apply, rollback or status of the second wake word on the speaker (requires writable firmware for apply and rollback)")
+	wakeWord := flag.String("speaker-wake-word", "", "model of the second wake word, e.g. alisa or yandex; by default the one not chosen in the app")
+	wakeState := flag.String("speaker-wake-state", "/data/opt/quasar-bridge/second-wake-word", "persistent directory for the second wake word backup")
+	wakeModels := flag.String("speaker-models", "/system/vendor/quasar/spotter_models", "firmware spotter models directory")
+	wakeMaind := flag.String("speaker-maind", "/system/vendor/quasar/maind", "firmware voice daemon, checked for second wake word support")
+	wakeUserConfig := flag.String("speaker-user-config", "/data/quasar/data/user_config.dat", "account settings holding the wake word chosen in the app")
 	flag.Parse()
+	if *wakeAction != "" {
+		message, err := setSpeakerWake(speakerWakePaths{Config: *speakerConfig, Models: *wakeModels, Maind: *wakeMaind,
+			UserConfig: *wakeUserConfig, State: *wakeState}, *wakeAction, *wakeWord)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(message)
+		return
+	}
 	if *speakerAction != "" {
 		if err := setSpeakerEndpoint(*speakerConfig, *speakerBackup, *speakerURL, *speakerAction); err != nil {
 			fmt.Fprintln(os.Stderr, err)
