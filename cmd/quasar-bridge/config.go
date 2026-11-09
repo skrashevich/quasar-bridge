@@ -16,6 +16,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/speaker"
 )
 
 type progressConfig struct {
@@ -46,6 +47,7 @@ type config struct {
 	LLMChatParameters  map[string]any       `json:"llm_chat_parameters"`
 	LLMStripPrefixes   []string             `json:"llm_strip_prefixes"`
 	LLMTTSMarkup       bool                 `json:"llm_tts_markup"`
+	SpeakerContext     speaker.Config       `json:"speaker_context"`
 	HomeWarmArea       string               `json:"home_warm_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
@@ -66,7 +68,7 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 }
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true, SpeakerContext: speaker.DefaultConfig()}
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
@@ -139,6 +141,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 		if err := llm.ValidateChatParameters(cfg.LLMChatParameters); err != nil {
 			return cfg, err
 		}
+	}
+	if err := cfg.SpeakerContext.Validate(); err != nil {
+		return cfg, err
 	}
 	if cfg.LLMMaxOutputTokens <= 0 {
 		return cfg, errors.New("llm_max_output_tokens must be positive")
