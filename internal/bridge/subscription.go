@@ -8,12 +8,12 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
-	subscription "github.com/freequasar/quasar-go-genproto/proto/alice/megamind/protos/common/subscription_state"
-	device "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/common/device_state"
-	environment "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/common/environment_state"
-	endpoint "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint"
-	alicepro "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/alice_pro"
-	brick "github.com/freequasar/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/brick"
+	subscription "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common/subscription_state"
+	device "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/common/device_state"
+	environment "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/common/environment_state"
+	endpoint "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint"
+	alicepro "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/alice_pro"
+	brick "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/brick"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
@@ -273,6 +273,8 @@ func (s *subscriptionSession) capability(id string, cap *anypb.Any, holder *endp
 		}
 	case brick.TBrickCapability_BrickByTTL:
 		status = "blocked_by_ttl"
+	case brick.TBrickCapability_BrickStolen:
+		status = "blocked_stolen"
 	}
 	// DisabledReason and StatusUrl may contain private text or account links.
 	// They are deliberately excluded from both health responses and logs.
@@ -282,7 +284,7 @@ func (s *subscriptionSession) capability(id string, cap *anypb.Any, holder *endp
 	s.endpoints[id] = report
 	s.monitor.mu.Unlock()
 	if !exists || previous != report {
-		if status == "blocked_subscription" || status == "blocked_by_ttl" || status == "blocked" {
+		if status == "blocked_subscription" || status == "blocked_by_ttl" || status == "blocked_stolen" || status == "blocked" {
 			slog.Warn("speaker_subscription_state", "connection", s.id, "status", status, "brick_status", report.BrickStatus, "subscription_mode", report.SubscriptionMode, "subscription_status", report.SubscriptionStatus)
 		} else {
 			slog.Info("speaker_subscription_state", "connection", s.id, "status", status)

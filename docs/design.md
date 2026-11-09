@@ -21,9 +21,8 @@ History privacy carries across turns: external MCP calls are blocked after
 search_history unless that server explicitly allows private history. Discovery
 failure removes only that server's tools. Config changes require restart.
 
-Source schemas: freequasar/quasar-go-genproto at
-2f85025877ff367b10bc6e93e089207b8fca9a46.
-
+Source schemas: v3rt3p/quasar-protos, distributed as the separate Go module
+github.com/skrashevich/quasar-go-genproto
 Ruling: use a transparent WebSocket proxy with per-connection native state, not
 an HTTP backend replacement — actual speech uses uniproxy.alice.yandex.net/uni.ws.
 Unknown events, audio and ordinary cloud replies retain original bytes.

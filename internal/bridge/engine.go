@@ -33,6 +33,7 @@ type MusicStarter interface {
 }
 type Engine struct {
 	Configuration bool
+	Recovery      func(context.Context, string) (string, error)
 	AirPlay       AirPlayController
 	LLM           Completer
 	Assistant     Completer
@@ -41,6 +42,10 @@ type Engine struct {
 	Music         MusicStarter
 	Dialogue      *dialogue.Store
 	SystemPrompt  string
+	TTSMarkup     bool
+	// StripPrefixes are model addresses removed only from outbound requests.
+	// An empty list disables stripping.
+	StripPrefixes []string
 	dialogueOnce  sync.Once
 	routing       atomic.Pointer[RoutingPolicy]
 }
@@ -102,6 +107,17 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "recovery":
+		action := configvoice.RecoveryAction(text)
+		if action == "" || e.Recovery == nil {
+			return result, errors.New("emergency recovery is unavailable")
+		}
+		answer, err := e.Recovery(ctx, action)
+		if err == nil {
+			reply.SuppressListening(ctx)
+		}
+		result.Answer = answer
+		return result, err
 	case "airplay":
 		if e.AirPlay == nil {
 			return Resolution{Route: "yandex"}, nil
@@ -157,6 +173,7 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
+		text = e.stripModelPrefix(text)
 		if turn, ok := e.Home.(interface {
 			Turn(context.Context, string) (string, *bool, error)
 		}); ok {
@@ -190,10 +207,11 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	system := llm.AppendOperatorNote("Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома.", e.SystemPrompt)
+	system := llm.AppendOperatorNote("Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."+e.ttsInstructions(), e.SystemPrompt)
 	messages := []llm.Message{{Role: "system", Content: system}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
+	messages = e.modelMessages(messages)
 	private := snapshot.PrivateHistory
 	var answer string
 	var err error
@@ -207,13 +225,15 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	if err == nil {
-		if !e.dialogue().Commit(ctx, ticket, text, answer, private) {
-			return r, context.Canceled
-		}
+	if err != nil {
+		r.Answer = answer
+		return r, err
 	}
-	r.Answer = answer
-	return r, err
+	r.setModelAnswer(answer, e.TTSMarkup)
+	if !e.dialogue().Commit(ctx, ticket, text, r.Answer, private) {
+		return Resolution{Route: r.Route}, context.Canceled
+	}
+	return r, nil
 }
 func containsOne(text string, needles []string) bool {
 	for _, s := range needles {
@@ -284,6 +304,9 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.prepared = true
 	}()
 	p := e.policy()
+	if configvoice.RecoveryAction(text) != "" {
+		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
+	}
 	// Bridge configuration and an explicit AirPlay command stay ahead of the
 	// stop phrase. An active AirPlay sender also owns a whole playback
 	// command, including «Алиса, хватит». Otherwise that whole command still

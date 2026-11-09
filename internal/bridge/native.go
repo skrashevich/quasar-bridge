@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -12,17 +13,17 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
-	asrcommon "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
-	cancellation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	continuation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
-	ack "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/input_start_ack"
-	spotter "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/spotter_validation"
-	tts "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_generate"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	asrcommon "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
+	cancellation "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	continuation "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
+	ack "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/input_start_ack"
+	spotter "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/spotter_validation"
+	tts "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_generate"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/dialogue"
@@ -36,6 +37,7 @@ type Resolution struct {
 	Answer string
 	// Listen overrides the session listen-after-reply flag when set.
 	Listen *bool
+	speech string // Optional TTS text with markup, separate from the displayed answer.
 }
 type Resolver interface {
 	Resolve(context.Context, string) (Resolution, error)
@@ -54,6 +56,8 @@ type nativeRequest struct {
 	partial                         uint32
 	responseID                      string
 	final                           bool
+	aggregateSeen                   bool
+	aggregateFinalSeen              bool
 	header                          *header.TEventHeader
 	isText                          bool
 	ttsStarted                      bool
@@ -70,6 +74,7 @@ type nativeRequest struct {
 	continuation                    []byte
 	ttsID                           string
 	progressTTS                     string
+	markedTTS                       bool // <speaker> can produce chained Opus streams.
 	audio                           oggSpeech
 	audioIsProgress                 bool
 	audioStarted                    bool
@@ -296,7 +301,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			n.mu.Lock()
 			p := n.streams[binary.BigEndian.Uint32(data)]
 			drop := n.blocked[binary.BigEndian.Uint32(data)] != nil || (p != nil && p.canceled)
-			if p != nil && p.streaming && !drop {
+			if p != nil && (p.streaming || p.markedTTS) && !drop {
 				out, err := p.audio.feed(data[4:])
 				if err == nil && len(out) > 0 {
 					err = n.down(ctx, k, append(binary.BigEndian.AppendUint32(nil, p.audioStream), out...))
@@ -334,7 +339,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				n.mu.Unlock()
 				return nil
 			}
-			if p.streaming && sc.GetClose() != nil {
+			if (p.streaming || p.markedTTS) && sc.GetClose() != nil {
 				if err := p.audio.endSource(); err != nil {
 					p.cancel()
 					n.mu.Unlock()
@@ -417,11 +422,11 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		if e.GetTtsSpeak() != nil {
 			n.streams[uint32(e.Header.GetStreamId())] = p
-			if p.streaming {
+			if p.streaming || p.markedTTS {
 				if e.GetTtsSpeak().GetFormat() != "audio/opus" {
 					p.cancel()
 					n.mu.Unlock()
-					return errors.New("streaming progress requires Opus")
+					return errors.New("joining speech segments requires Opus")
 				}
 				p.audioIsProgress = p.ttsID == p.progressTTS
 				p.audio.next()
@@ -499,7 +504,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 					result.Answer = "Сейчас не получилось получить ответ локальной модели."
 				}
 				_ = n.sendCancel(p.ctx, p.id)
-				if err := n.reply(p, result.Answer); err != nil {
+				if err := n.reply(p, result); err != nil {
 					slog.Warn("native_reply_failed", "request", requestTag(p.id))
 				}
 				slog.Info("native_fallback", "request", requestTag(p.id), "route", "llm")
@@ -519,9 +524,15 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		slog.Info("native_server_ready", "request", requestTag(p.id))
 	case "AsrResult":
 		asr := e.GetAsrResult()
+		aggregate := asr.GetAggregatedRecognition()
+		if aggregate != nil && (!p.aggregateSeen || (aggregate.GetIsFinal() && !p.aggregateFinalSeen)) {
+			p.aggregateSeen = true
+			p.aggregateFinalSeen = p.aggregateFinalSeen || aggregate.GetIsFinal()
+			slog.Info("native_asr_aggregate", "request", requestTag(p.id), "end_of_utt", asr.GetEndOfUtt(), "aggregate_present", true, "aggregate_final", aggregate.GetIsFinal(), "aggregate_index", aggregate.GetIndex(), "aggregate_text_bytes", len(aggregate.GetRecognizedText()))
+		}
 		if asr.GetEndOfUtt() {
 			p.final = true
-			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String())
+			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String(), "aggregate_present", aggregate != nil, "aggregate_final", aggregate.GetIsFinal(), "aggregate_index", aggregate.GetIndex(), "aggregate_text_bytes", len(aggregate.GetRecognizedText()))
 		}
 		if asr.GetEndOfUtt() && len(asr.GetRecognition()) > 0 {
 			r := asr.GetRecognition()[0]
@@ -617,7 +628,10 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		if err != nil {
 			n.discardSound(p)
-			if result.Route == "home" {
+			if result.Route == "recovery" {
+				slog.Warn("native_recovery_failed", "request", requestTag(p.id), "error", err)
+				result.Answer = "Не удалось запланировать аварийное восстановление. Проверьте журнал Quasar Bridge и выполните восстановление по SSH."
+			} else if result.Route == "home" {
 				slog.Warn("home_command_failed", "error", err)
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
 			} else if result.Route == "airplay" {
@@ -678,7 +692,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				return
 			}
 		}
-		if err := n.reply(p, result.Answer); err != nil {
+		if err := n.reply(p, result); err != nil {
 			slog.Warn("native_reply_failed", "request", requestTag(p.id))
 		}
 	})
@@ -747,7 +761,7 @@ func (n *Native) finishSilent(p *nativeRequest) error {
 // route keeps Yandex's own election, and a drop never starts work.
 func waitsForSpotter(route string) bool {
 	switch route {
-	case "home", "llm", "music", "playback":
+	case "home", "llm", "music", "playback", "recovery":
 		return true
 	default:
 		return false
@@ -866,9 +880,11 @@ func (n *Native) wantListen(p *nativeRequest, silentPlayback bool) bool {
 	return n.ShouldListen
 }
 
-func (n *Native) reply(p *nativeRequest, text string) error {
+func (n *Native) reply(p *nativeRequest, result Resolution) error {
+	text := result.Answer
+	speech := cmp.Or(result.speech, text)
 	if p.streaming {
-		return n.finishDeferred(p, text)
+		return n.finishDeferred(p, text, speech)
 	}
 	requestID := p.request.GetHeader().GetRequestId()
 	if requestID == "" {
@@ -899,9 +915,14 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	if silentPlayback {
 		return nil
 	}
-	return n.synthesize(p, text)
+	return n.synthesize(p, speech)
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
+	if strings.Contains(text, "<speaker") {
+		n.mu.Lock()
+		p.markedTTS = true
+		n.mu.Unlock()
+	}
 	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {

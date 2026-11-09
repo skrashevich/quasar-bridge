@@ -4,31 +4,34 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json/v2"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"quasarbridge/internal/journal"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
-	common "github.com/freequasar/quasar-go-genproto/proto/alice/megamind/protos/common"
-	directives "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
-	asr "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result"
-	recognition "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
-	cancellation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	continuation "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
-	spotter "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/spotter_validation"
-	tts "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_speak"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
+	directives "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	asr "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result"
+	recognition "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
+	cancellation "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/cancel_request"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	continuation "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/continue_request"
+	spotter "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/spotter_validation"
+	tts "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_speak"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
@@ -75,6 +78,124 @@ func TestHomePipelineListenOverride(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNativeFinalASRLogsOnlyAggregateMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		aggregate *recognition.TAggregatedRecognition
+		present   bool
+		index     float64
+		textBytes float64
+	}{
+		{name: "absent"},
+		{name: "present", aggregate: &recognition.TAggregatedRecognition{Index: new(uint64(7)), RecognizedText: new("личный текст"), IsFinal: new(true)}, present: true, index: 7, textBytes: 23},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			var forwarded []byte
+			n := NewNative(t.Context(), func(context.Context, websocket.MessageType, []byte) error { return nil }, func(_ context.Context, _ websocket.MessageType, data []byte) error {
+				forwarded = bytes.Clone(data)
+				return nil
+			}, nil)
+			t.Cleanup(n.Close)
+			voice := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "asr-log"}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: new(common.EEventType_voice_input)}}}}}}}
+			if err := n.Client(t.Context(), websocket.MessageBinary, aa(voice)); err != nil {
+				t.Fatal(err)
+			}
+			result := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: "asr-log"}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(true), AggregatedRecognition: tc.aggregate}}}}}
+			raw := protowire.AppendString(protowire.AppendTag(aa(result), 777, protowire.BytesType), "future-asr-field")
+			if err := n.Server(t.Context(), websocket.MessageBinary, raw); err != nil {
+				t.Fatal(err)
+			}
+			n.Close()
+			if !bytes.Equal(forwarded, raw) {
+				t.Fatal("ASR frame or unknown fields changed in transit")
+			}
+			if strings.Contains(logs.String(), "личный текст") {
+				t.Fatal("aggregate transcript leaked into diagnostics")
+			}
+			found := false
+			for line := range strings.SplitSeq(logs.String(), "\n") {
+				if line == "" {
+					continue
+				}
+				var event map[string]any
+				if err := json.Unmarshal([]byte(line), &event); err != nil {
+					t.Fatal(err)
+				}
+				if event["msg"] == "native_asr_final" {
+					found = true
+					if event["aggregate_present"] != tc.present || event["aggregate_final"] != tc.present || event["aggregate_index"] != tc.index || event["aggregate_text_bytes"] != tc.textBytes {
+						t.Fatalf("aggregate metadata=%v", event)
+					}
+				}
+				if event["msg"] == "native_asr_aggregate" && event["end_of_utt"] != true {
+					t.Fatalf("completed ASR aggregate boundary=%v", event["end_of_utt"])
+				}
+			}
+			if !found {
+				t.Fatal("final ASR diagnostic missing")
+			}
+		})
+	}
+}
+
+func TestNativeAggregateDiagnosticsAreBoundedPerRequest(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	n := NewNative(t.Context(), func(context.Context, websocket.MessageType, []byte) error { return nil }, func(context.Context, websocket.MessageType, []byte) error { return nil }, nil)
+	t.Cleanup(n.Close)
+	for _, id := range []string{"aggregate-a", "aggregate-b"} {
+		voice := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: id}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: new(common.EEventType_voice_input)}}}}}}}
+		if err := n.Client(t.Context(), websocket.MessageBinary, aa(voice)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, packet := range []struct {
+		id    string
+		index uint64
+		final bool
+	}{
+		{"aggregate-a", 0, false},
+		{"aggregate-a", 1, false},
+		{"aggregate-a", 2, true},
+		{"aggregate-a", 3, true},
+		{"aggregate-b", 7, true},
+	} {
+		result := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: packet.id}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{AggregatedRecognition: &recognition.TAggregatedRecognition{Index: new(packet.index), RecognizedText: new("do not log this"), IsFinal: new(packet.final)}}}}}}
+		if err := n.Server(t.Context(), websocket.MessageBinary, aa(result)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n.Close()
+	if strings.Contains(logs.String(), "do not log this") {
+		t.Fatal("aggregate transcript leaked into diagnostics")
+	}
+	var indexes []float64
+	for line := range strings.SplitSeq(logs.String(), "\n") {
+		if line == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["msg"] == "native_asr_aggregate" {
+			if event["end_of_utt"] != false {
+				t.Fatalf("partial ASR aggregate boundary=%v", event["end_of_utt"])
+			}
+			indexes = append(indexes, event["aggregate_index"].(float64))
+		}
+	}
+	if !slices.Equal(indexes, []float64{0, 2, 7}) {
+		t.Fatalf("aggregate observations=%v; want first presence/final only per request", indexes)
 	}
 }
 

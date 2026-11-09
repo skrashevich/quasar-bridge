@@ -236,8 +236,8 @@ func TestUnknownToHome(t *testing.T) {
 		{"включи песню", "yandex", "yandex_services", "rule"},
 		{"о чем мы говорили", "llm", "assistant_readonly", "rule"},
 		{"спроси нейросеть о море", "home", "complex_queries", "unknown"},
-		{"Спроси у нейросети, почему небо голубое", "home", "", "unknown"},
-		{"спроси у своей модели, который час", "home", "yandex_services", "unknown"},
+		{"Спроси у нейросети, почему небо голубое", "home", "complex_queries", "unknown"},
+		{"спроси у своей модели, который час", "home", "complex_queries", "unknown"},
 		{"поставь таймер на 10 секунд", "yandex", "yandex_services", "rule"},
 		{"таймер на пять минут", "yandex", "yandex_services", "rule"},
 		{"таймер на паузу", "yandex", "yandex_services", "rule"},
@@ -260,8 +260,8 @@ func TestUnknownToHome(t *testing.T) {
 	if got := plain.Decide(t.Context(), "отмени таймер"); got.Route != "yandex" || got.Source != "rule" {
 		t.Fatal("timer redirected without the option", got)
 	}
-	if got := plain.Decide(t.Context(), "Спроси у нейросети почему"); got.Route != "yandex" || got.Source != "classifier_error" {
-		t.Fatal("ask-model phrase no longer reaches the classifier", got)
+	if got := plain.Decide(t.Context(), "Спроси у нейросети почему"); got.Route != "llm" || got.Rule != "complex_queries" || got.Source != "rule" {
+		t.Fatal("ask-model phrase missed the model rule", got)
 	}
 	if _, err := e.Resolve(t.Context(), "напиши код сортировки"); err != nil {
 		t.Fatal(err)
@@ -464,6 +464,69 @@ func TestShortHistoryRequestsSkipClassifier(t *testing.T) {
 	for _, text := range []string{"о чем мы сегодня общались", "О чём мы сегодня общались?", "что мы обсуждали сегодня"} {
 		if d := e.Decide(t.Context(), text); d.Route != "llm" || d.Source != "rule" {
 			t.Errorf("%q: %+v", text, d)
+		}
+	}
+}
+
+func TestDefaultTTSRequestsRouteToLLMBeforeOtherRules(t *testing.T) {
+	e := &Engine{LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		t.Error("explicit TTS request reached classifier")
+		return `{"route":"yandex"}`, nil
+	})}
+	for _, text := range []string{
+		"Ответь голосом Захара и добавь мяуканье",
+		"Произнесите фразу с эффектом мегафона",
+		"Скажи голосом Оксаны, почему горит свет",
+		"Расскажи сказку другим голосом",
+		"Прочитай через мегафон",
+		"Добавь звук мяуканья в ответ",
+		"Можешь сказать голосом Джейн, который час?",
+		"Какая завтра погода? Ответь голосом Захара.",
+		"Объяви отправление поезда с эффектом вокзального громкоговорителя",
+		"Объяви шепотом отправление поезда",
+		"Объяви шепотом отправление поезда с эффектом вокзального громкоговорителя",
+		"Алиса, пожалуйста, скажи шёпотом, какая завтра погода",
+	} {
+		d := e.Decide(t.Context(), text)
+		if d.Route != "llm" || d.Rule != "tts_markup" || d.Source != "rule" {
+			t.Errorf("%q: %+v", text, d)
+		}
+	}
+}
+
+func TestDefaultNativeWhisperCommandsGoToYandex(t *testing.T) {
+	e := &Engine{LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		t.Error("plain whisper reached classifier")
+		return `{"route":"llm"}`, nil
+	})}
+	for _, text := range []string{
+		"Скажи шепотом",
+		"Алиса, пожалуйста, скажи шёпотом привет",
+		"Скажи что-нибудь шёпотом",
+		"Говори шепотом",
+	} {
+		if d := e.Decide(t.Context(), text); d.Route != "yandex" || d.Rule != "tts_whisper" || d.Source != "rule" {
+			t.Errorf("%q: %+v", text, d)
+		}
+	}
+	if d := e.Decide(t.Context(), "Спроси нейросеть, скажи шёпотом привет"); d.Route != "llm" {
+		t.Errorf("explicit request to use the model: %+v", d)
+	}
+}
+
+func TestDefaultTTSRuleLeavesOtherRequestsToExistingRoutes(t *testing.T) {
+	for _, tc := range []struct{ text, route string }{
+		{"Какие голоса поддерживает Алиса?", "classify"},
+		{"Расскажи, как произнести фразу с эффектом мегафона", "classify"},
+		{"Ответь голосом, какая завтра погода", "yandex"},
+		{"Не отвечай голосом Захара", "classify"},
+		{"Скажи не голосом Захара, какая завтра погода", "yandex"},
+		{"Включи музыку", "yandex"},
+		{"Включи свет", "home"},
+	} {
+		d := builtInRouting.Preview(tc.text)
+		if d.Route != tc.route || d.Rule == "tts_markup" {
+			t.Errorf("%q: %+v, want route %s", tc.text, d, tc.route)
 		}
 	}
 }
