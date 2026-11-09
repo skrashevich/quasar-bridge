@@ -329,3 +329,37 @@ func TestBridgeUpdateRequestsNeverReachHomeClassifier(t *testing.T) {
 		}
 	}
 }
+
+func TestExtraRulesPrecedeRules(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.ExtraRules = []RoutingRule{
+		{Name: "home_cleaning", Route: "home", Match: RoutingMatch{ContainsAllGroups: [][]string{{"пропылес", "убери"}, {"макс", "детск"}}, ContainsNone: []string{"будильник", "таймер"}}},
+		{Name: "off", Route: "llm", Disabled: true, Match: RoutingMatch{ContainsAny: []string{"погода"}}},
+	}
+	cfg.DefaultRoute = "yandex"
+	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) { return "", nil })}
+	if err := e.SetRouting(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ text, route, rule string }{
+		{"Убери у Макса", "home", "home_cleaning"},
+		{"Убери будильник в детской", "yandex", "yandex_services"},
+		{"Какая погода", "yandex", "yandex_services"},
+		{"Включи свет у Макса", "home", "home_devices"},
+	} {
+		if got := e.Decide(t.Context(), tc.text); got.Route != tc.route || got.Rule != tc.rule {
+			t.Errorf("%q: %+v", tc.text, got)
+		}
+	}
+	for name, extra := range map[string]RoutingRule{
+		"name_of_a_rule":     {Name: "home_devices", Route: "home", Match: RoutingMatch{ContainsAny: []string{"x"}}},
+		"only_contains_none": {Name: "none", Route: "home", Match: RoutingMatch{ContainsNone: []string{"x"}}},
+		"bad_route":          {Name: "route", Route: "classify", Match: RoutingMatch{ContainsAny: []string{"x"}}},
+	} {
+		bad := DefaultRoutingConfig()
+		bad.ExtraRules = []RoutingRule{extra}
+		if _, err := CompileRouting(bad); err == nil {
+			t.Errorf("%s: invalid extra rule accepted", name)
+		}
+	}
+}

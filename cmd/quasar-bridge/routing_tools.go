@@ -51,7 +51,7 @@ func (c *configurationControl) GetRouting(ctx context.Context) (any, error) {
 		Order          string               `json:"order"`
 		ActiveBehavior routingBehavior      `json:"active_behavior"`
 		SavedBehavior  routingBehavior      `json:"saved_behavior"`
-	}{c.active.Routing, next.Routing, active.Revision(), saved.Revision(), !reflect.DeepEqual(c.active.Routing, next.Routing), "first enabled matching rule wins; Bridge configuration administration has priority over these rules", effectiveRoutingBehavior(c.active.Routing), effectiveRoutingBehavior(next.Routing)}, nil
+	}{c.active.Routing, next.Routing, active.Revision(), saved.Revision(), !reflect.DeepEqual(c.active.Routing, next.Routing), "extra_rules are checked before rules; first enabled matching rule wins; Bridge configuration administration has priority over these rules", effectiveRoutingBehavior(c.active.Routing), effectiveRoutingBehavior(next.Routing)}, nil
 }
 
 func (c *configurationControl) MutateRouting(ctx context.Context, mutation assistant.RoutingMutation) (any, error) {
@@ -81,7 +81,7 @@ func (c *configurationControl) MutateRouting(ctx context.Context, mutation assis
 	if !reflect.DeepEqual(cfg.Routing, c.active.Routing) {
 		return nil, errors.New("routing has unapplied saved changes; explicitly apply or discard them before editing an individual rule")
 	}
-	rules := cfg.Routing.Rules
+	rules := cfg.Routing.AllRules()
 	name := mutation.Name
 	var rule bridge.RoutingRule
 	if mutation.Action == "upsert" {
@@ -133,14 +133,37 @@ func (c *configurationControl) MutateRouting(ctx context.Context, mutation assis
 		}
 		rules = slices.Insert(rules, position, moving)
 	}
-	cfg.Routing.Rules = rules
+	// Built-in rules (no rules in the file) stay unsaved while the change
+	// leaves them intact at the end of the list: it goes to extra_rules, and the
+	// built-in rules keep following the running version. Any other change saves
+	// the whole list to rules, as an explicit rules array always is.
+	changes := map[string]jsontext.Value{}
+	base := cfg.Routing.Rules
+	if cut := len(rules) - len(base); !explicitRoutingRules(raw) && cut >= 0 && slices.EqualFunc(rules[cut:], base, func(a, b bridge.RoutingRule) bool { return reflect.DeepEqual(a, b) }) {
+		cfg.Routing.ExtraRules = slices.Clone(rules[:cut])
+		changes["routing.extra_rules"] = nil
+	} else {
+		if len(cfg.Routing.ExtraRules) > 0 {
+			cfg.Routing.ExtraRules = []bridge.RoutingRule{}
+			changes["routing.extra_rules"] = nil
+		}
+		cfg.Routing.Rules = rules
+		changes["routing.rules"] = nil
+	}
 	// The regular configuration writer validates the whole candidate and keeps
 	// its existing atomic backup, external-edit detection and permissions.
-	encoded, err := json.Marshal(rules)
-	if err != nil {
-		return nil, errors.New("cannot encode routing rules")
+	for path := range changes {
+		value := cfg.Routing.Rules
+		if path == "routing.extra_rules" {
+			value = cfg.Routing.ExtraRules
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, errors.New("cannot encode routing rules")
+		}
+		changes[path] = encoded
 	}
-	result, err := c.applyRoutingChangesLocked(ctx, cfg, raw, map[string]jsontext.Value{"routing.rules": encoded})
+	result, err := c.applyRoutingChangesLocked(ctx, cfg, raw, changes)
 	if err != nil {
 		return nil, err
 	}
@@ -250,4 +273,17 @@ func (c *configurationControl) TestRouting(ctx context.Context, text string) (an
 		ClassifierCalled bool                 `json:"classifier_called"`
 		Scope            string               `json:"scope"`
 	}{a, b, false, "static rules and Bridge administration; special media/dialogue handlers are not simulated"}, nil
+}
+
+// explicitRoutingRules reports whether the configuration file sets
+// routing.rules instead of relying on the built-in rules.
+func explicitRoutingRules(raw []byte) bool {
+	var doc struct {
+		Routing map[string]jsontext.Value `json:"routing"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return true
+	}
+	_, ok := doc.Routing["rules"]
+	return ok
 }
