@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -345,6 +346,8 @@ func followupContext(request, question string) string {
 	return "\nПредыдущий запрос: " + request + "\nТвой уточняющий вопрос: " + question
 }
 
+var bareWaterHeaterSetpoint = regexp.MustCompile(`(?i)(?:^|\s)(?:сделай|установи|выставь|поставь)\s+(?:газовую\s+)?колонк[а-яё]*\s+(?:на\s+)?[0-9]+(?:[.,][0-9]+)?[.!?]?\s*$`)
+
 func controlDomains(text string) []string {
 	s := strings.ToLower(text)
 	domains := []string{}
@@ -376,10 +379,9 @@ func controlDomains(text string) []string {
 	if strings.Contains(s, "телевизор") {
 		add("media_player")
 	}
-	// "Колонка" is both a gas water heater and a smart speaker; with degrees
-	// or a bare number ("сделай колонку 37") it can only be a setpoint, so
-	// speakers are left out of the inventory.
-	if strings.Contains(s, "градус") || (strings.Contains(s, "колонк") && strings.ContainsAny(s, "0123456789")) || strings.Contains(s, "котел") || strings.Contains(s, "котёл") || strings.Contains(s, "отоплен") || strings.Contains(s, "горяч") {
+	// Only a bare setpoint command ("сделай колонку 37") selects climate;
+	// volume percentages and numbers in device names must not exclude speakers.
+	if strings.Contains(s, "градус") || bareWaterHeaterSetpoint.MatchString(s) || strings.Contains(s, "котел") || strings.Contains(s, "котёл") || strings.Contains(s, "отоплен") || strings.Contains(s, "горяч") {
 		add("climate")
 	} else if strings.Contains(s, "колонк") {
 		add("climate", "media_player")
