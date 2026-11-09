@@ -127,6 +127,7 @@ func DefaultRoutingConfig() RoutingConfig {
 					{"включ", "выключ", "открой", "закрой", "установ", "постав", "сделай", "прибав", "убав", "температур", "влажност", "состояни", "проверь", "горит", "работает"},
 				}, ContainsNone: []string{"песню", "песни", "музыку", "радио", "трек"},
 			}},
+			{Name: "home_delayed_cancel", Route: "home", Match: RoutingMatch{ContainsAllGroups: [][]string{{"отмен", "сбрось", "удали"}, {"отложенн"}}}},
 			{Name: "complex_queries", Route: "llm", Match: RoutingMatch{ContainsAny: append(DefaultStripPrefixes(), "напиши код", "напиши программу", "реши задачу", "проанализируй", "сравни варианты", "объясни подробно")}},
 			{Name: "yandex_services", Route: "yandex", Match: RoutingMatch{ContainsAny: []string{"погода", "погоду", "таймер", "будильник", "музыку", "радио", "песню", "трек", "который час", "день недели"}}},
 		},

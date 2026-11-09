@@ -21,6 +21,7 @@
   "llm_max_output_tokens": 4096,
   "llm_hosted_tools": [],
   "home_warm_area": "",
+  "home_delay_script": "",
   "listen_after_reply": true,
   "airplay": {
     "disabled": false
@@ -190,6 +191,22 @@
             "музыку",
             "радио",
             "трек"
+          ]
+        }
+      },
+      {
+        "name": "home_delayed_cancel",
+        "route": "home",
+        "match": {
+          "contains_all_groups": [
+            [
+              "отмен",
+              "сбрось",
+              "удали"
+            ],
+            [
+              "отложенн"
+            ]
           ]
         }
       },

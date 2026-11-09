@@ -276,3 +276,176 @@ func TestHomeAnswerNamesDevicesWithoutEntityIDs(t *testing.T) {
 		})
 	}
 }
+
+type delayFixture struct {
+	calls []map[string]any
+	state map[string]string
+}
+
+func (f *delayFixture) Call(_ context.Context, name string, args map[string]any) (jsontext.Value, error) {
+	var v any = map[string]any{"success": true}
+	switch name {
+	case "ha_search":
+		v = map[string]any{"entities": []Entity{{ID: "light.office", Name: "Свет", State: f.state["light.office"]}, {ID: "media_player.tv", Name: "Телевизор", State: f.state["media_player.tv"]}}}
+	case "ha_get_entity_exposure":
+		v = map[string]any{"exposed_to": map[string]any{"conversation": true}}
+	case "ha_get_state":
+		v = map[string]any{"data": map[string]any{"state": f.state[args["entity_id"].(string)]}}
+	case "ha_call_service":
+		f.calls = append(f.calls, args)
+		if args["domain"] == "light" {
+			f.state[args["entity_id"].(string)] = strings.TrimPrefix(args["service"].(string), "turn_")
+		}
+	}
+	b, _ := json.Marshal(v)
+	return b, nil
+}
+
+func newDelayFixture() *delayFixture {
+	return &delayFixture{state: map[string]string{"light.office": "off", "media_player.tv": "on"}}
+}
+
+func planOf(actions ...Action) Planner {
+	return plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		b, err := json.Marshal(Plan{Actions: actions})
+		return string(b), err
+	})
+}
+
+func TestDeferredActionStartsDelayScriptInsteadOfDevice(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		action     Action
+		wantTiming map[string]any
+		wantAnswer string
+	}{
+		{"after_minutes", Action{Domain: "media_player", Service: "turn_off", EntityID: "media_player.tv", AfterMinutes: 30}, map[string]any{"after_minutes": float64(30)}, "Через 30 минут: Телевизор."},
+		{"fractional_minutes_rounded", Action{Domain: "media_player", Service: "turn_off", EntityID: "media_player.tv", AfterMinutes: 1.6}, map[string]any{"after_minutes": float64(2)}, "Через 2 минуты: Телевизор."},
+		{"at_normalized", Action{Domain: "media_player", Service: "turn_off", EntityID: "media_player.tv", At: "9:05"}, map[string]any{"at": "09:05"}, "В 09:05: Телевизор."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDelayFixture()
+			c := Controller{Tools: f, Domains: []string{"media_player"}, DelayScript: "script.delayed_action", Planner: planOf(tc.action)}
+			answer, err := c.Handle(t.Context(), "Выключи телевизор позже")
+			if err != nil || answer != tc.wantAnswer {
+				t.Fatalf("answer=%q err=%v", answer, err)
+			}
+			if len(f.calls) != 1 {
+				t.Fatalf("calls=%v", f.calls)
+			}
+			raw, _ := json.Marshal(f.calls[0])
+			var got map[string]any
+			_ = json.Unmarshal(raw, &got)
+			variables := map[string]any{"service": "media_player.turn_off", "entity_id": "media_player.tv", "data": map[string]any{}}
+			for k, v := range tc.wantTiming {
+				variables[k] = v
+			}
+			want := map[string]any{"domain": "script", "service": "turn_on", "entity_id": "script.delayed_action", "data": map[string]any{"variables": variables}, "wait": false}
+			wantRaw, _ := json.Marshal(want, json.Deterministic(true))
+			gotRaw, _ := json.Marshal(got, json.Deterministic(true))
+			if string(gotRaw) != string(wantRaw) {
+				t.Fatalf("call=%s want=%s", gotRaw, wantRaw)
+			}
+		})
+	}
+}
+
+func TestDelayPromptOnlyWithDelayScript(t *testing.T) {
+	for _, script := range []string{"", "script.delayed_action"} {
+		var system string
+		c := Controller{Tools: newDelayFixture(), Domains: []string{"media_player"}, DelayScript: script, Planner: plannerFunc(func(_ context.Context, m []llm.Message, _ bool) (string, error) {
+			system = m[0].Content
+			return `{"answer":"Какой телевизор?","actions":[]}`, nil
+		})}
+		if _, err := c.Handle(t.Context(), "Выключи телевизор через час"); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(system, "after_minutes") != (script != "") {
+			t.Fatalf("script=%q prompt mentions delay=%v", script, !strings.Contains(system, "after_minutes"))
+		}
+	}
+}
+
+func TestDeferredActionRejectedBeforeAnyCall(t *testing.T) {
+	tv := Action{Domain: "media_player", Service: "turn_off", EntityID: "media_player.tv"}
+	with := func(edit func(*Action)) Action {
+		a := tv
+		edit(&a)
+		return a
+	}
+	for _, tc := range []struct {
+		name   string
+		script string
+		action Action
+	}{
+		{"no_delay_script", "", with(func(a *Action) { a.AfterMinutes = 30 })},
+		{"both_timings", "script.delayed_action", with(func(a *Action) { a.AfterMinutes = 30; a.At = "23:00" })},
+		{"negative", "script.delayed_action", with(func(a *Action) { a.AfterMinutes = -5 })},
+		{"over_a_day", "script.delayed_action", with(func(a *Action) { a.AfterMinutes = 1441 })},
+		{"under_a_minute", "script.delayed_action", with(func(a *Action) { a.AfterMinutes = 0.4 })},
+		{"bad_hour", "script.delayed_action", with(func(a *Action) { a.At = "25:00" })},
+		{"seconds", "script.delayed_action", with(func(a *Action) { a.At = "23:00:00" })},
+		{"service_not_allowed", "script.delayed_action", with(func(a *Action) { a.Service = "media_play"; a.AfterMinutes = 30 })},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDelayFixture()
+			c := Controller{Tools: f, Domains: []string{"media_player"}, DelayScript: tc.script, Planner: planOf(tc.action)}
+			if answer, err := c.Handle(t.Context(), "Выключи телевизор позже"); err == nil || len(f.calls) != 0 {
+				t.Fatalf("answer=%q err=%v calls=%v", answer, err, f.calls)
+			}
+		})
+	}
+}
+
+func TestTurnOnForAWhileIsNotOverlap(t *testing.T) {
+	f := newDelayFixture()
+	c := Controller{Tools: f, Domains: []string{"light"}, DelayScript: "script.delayed_action", Planner: planOf(
+		Action{Domain: "light", Service: "turn_on", EntityID: "light.office"},
+		Action{Domain: "light", Service: "turn_off", EntityID: "light.office", AfterMinutes: 10},
+	)}
+	answer, err := c.Handle(t.Context(), "Включи свет на 10 минут")
+	if err != nil || answer != "Готово: Свет. Через 10 минут: Свет." || len(f.calls) != 2 {
+		t.Fatalf("answer=%q err=%v calls=%v", answer, err, f.calls)
+	}
+
+	f = newDelayFixture()
+	c.Tools = f
+	c.Planner = planOf(
+		Action{Domain: "light", Service: "turn_on", EntityID: "light.office", AfterMinutes: 10},
+		Action{Domain: "light", Service: "turn_off", EntityID: "light.office", AfterMinutes: 10},
+	)
+	if _, err := c.Handle(t.Context(), "Включи и выключи свет через 10 минут"); err == nil || len(f.calls) != 0 {
+		t.Fatalf("same-time actions accepted: err=%v calls=%v", err, f.calls)
+	}
+}
+
+func TestCancelDelayedStopsScriptWithoutPlanner(t *testing.T) {
+	for _, text := range []string{"Отмени отложенные команды", "Сбрось отложенное выключение телевизора", "Удали отложенные действия"} {
+		f := newDelayFixture()
+		c := Controller{Tools: f, Domains: []string{"light"}, DelayScript: "script.delayed_action", Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+			t.Fatalf("%q: planner called for cancellation", text)
+			return "", nil
+		})}
+		answer, err := c.Handle(t.Context(), text)
+		if err != nil || answer != "Отложенные команды отменены." || len(f.calls) != 1 || f.calls[0]["domain"] != "script" || f.calls[0]["service"] != "turn_off" || f.calls[0]["entity_id"] != "script.delayed_action" {
+			t.Fatalf("%q: answer=%q err=%v calls=%v", text, answer, err, f.calls)
+		}
+	}
+
+	planned := false
+	c := Controller{Tools: newDelayFixture(), Domains: []string{"light"}, Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		planned = true
+		return `{"answer":"Не нашла отложенных команд.","actions":[]}`, nil
+	})}
+	if _, err := c.Handle(t.Context(), "Отмени отложенные команды"); err != nil || !planned {
+		t.Fatalf("without a delay script the request must reach the planner: err=%v", err)
+	}
+}
+
+func TestSpokenMinutes(t *testing.T) {
+	for minutes, want := range map[int]string{1: "1 минуту", 2: "2 минуты", 5: "5 минут", 11: "11 минут", 12: "12 минут", 21: "21 минуту", 22: "22 минуты", 90: "90 минут", 60: "1 час", 120: "2 часа", 300: "5 часов", 1260: "21 час", 1440: "24 часа"} {
+		if got := spokenMinutes(minutes); got != want {
+			t.Errorf("%d: got %q want %q", minutes, got, want)
+		}
+	}
+}
