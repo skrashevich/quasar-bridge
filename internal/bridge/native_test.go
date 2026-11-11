@@ -584,18 +584,27 @@ func TestNativeRoutesByStationWakeword(t *testing.T) {
 	decisions := make(chan [2]string, 8)
 	n.OnRoute = func(id, route string) { decisions <- [2]string{id, route} }
 
-	for _, tc := range []struct{ id, kind, tag, text, route string }{
-		{"tagged", "voice", jarvis, "включи свет", "llm"},
-		{"next", "voice", "", "включи свет", "yandex"},
-		{"other-word", "voice", house, "включи свет", "home"},
-		{"text-condition", "voice", house, "погода завтра", "yandex"},
-		{"unknown-tag", "voice", "93ed43e8-7215-5d99-87a0-c19266a62498", "джарвис, включи свет", "yandex"},
-		{"text-input", "text", jarvis, "включи свет", "yandex"},
-		{"speech-input", "speech", jarvis, "включи свет", "yandex"},
+	for _, tc := range []struct {
+		id, kind, tag, text, route string
+		stockSource                bool
+	}{
+		{"tagged", "voice", jarvis, "включи свет", "llm", false},
+		{"upstream-v0.4.0", "voice", jarvis, "погода завтра", "llm", true},
+		{"next", "voice", "", "включи свет", "yandex", false},
+		{"other-word", "voice", house, "включи свет", "home", false},
+		{"text-condition", "voice", house, "погода завтра", "yandex", false},
+		{"unknown-tag", "voice", "93ed43e8-7215-5d99-87a0-c19266a62498", "джарвис, включи свет", "yandex", false},
+		{"text-input", "text", jarvis, "включи свет", "yandex", false},
+		{"speech-input", "speech", jarvis, "включи свет", "yandex", false},
 	} {
 		req := &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{}}}
 		if tc.tag != "" {
 			req.EventSource = &eventsource.TEventSource{Id: new(tc.tag)}
+		}
+		if tc.stockSource {
+			req.EventSource.Event = eventsource.TEventSource_Click
+			req.EventSource.Source = eventsource.TEventSource_Hardware
+			req.EventSource.Type = eventsource.TEventSource_Voice
 		}
 		input := &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: tc.id}}
 		switch tc.kind {
@@ -631,7 +640,7 @@ func TestNativeRoutesByStationWakeword(t *testing.T) {
 			t.Fatalf("%s: no route decision", tc.id)
 		}
 	}
-	if !slices.Equal(executed, []string{"llm", "home:включи свет"}) {
+	if !slices.Equal(executed, []string{"llm", "llm", "home:включи свет"}) {
 		t.Fatalf("unexpected backend calls: %v", executed)
 	}
 }
