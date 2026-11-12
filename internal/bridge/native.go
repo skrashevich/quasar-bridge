@@ -715,17 +715,16 @@ func (n *Native) reply(p *nativeRequest, result Resolution) error {
 	return n.synthesize(p, speech)
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
+	if p.inputWhisper {
+		text = `<speaker is_whisper="true">` + text
+		slog.Info("tts_whisper_enabled", "request", requestTag(p.id))
+	}
 	if strings.Contains(text, "<speaker") {
 		n.mu.Lock()
 		p.markedTTS = true
 		n.mu.Unlock()
 	}
 	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
-	if p.inputWhisper {
-		t.GetEvent().GetTtsGenerate().Text = new(`<speaker is_whisper="true">` + text)
-		slog.Info("tts_whisper_enabled", "request", requestTag(p.id))
-	}
-
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err
