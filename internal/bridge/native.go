@@ -67,6 +67,9 @@ type nativeRequest struct {
 	ctx                             context.Context
 	cancel                          context.CancelFunc
 	started, canceled, local, cloud bool
+	outputPending                   bool
+	cloudFrames                     []cloudFrame
+	cloudBytes                      int
 	continuation                    []byte
 	ttsID                           string
 	progressTTS                     string
@@ -89,10 +92,13 @@ type Native struct {
 	up, down         Sender
 	resolver         Resolver
 	mu               sync.Mutex
+	serverMu         sync.Mutex // Orders inbound output and pending response replay.
 	requests         map[string]*nativeRequest
 	tts              map[string]*nativeRequest
 	streams          map[uint32]*nativeRequest
 	blocked          map[uint32]*nativeRequest
+	cloudStreams     map[uint32]*nativeRequest
+	cloudBytes       int
 	wg               sync.WaitGroup
 	OnRoute          func(id, route string)
 	GateText         bool
@@ -104,7 +110,7 @@ type Native struct {
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}}
+	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}, cloudStreams: map[uint32]*nativeRequest{}}
 }
 func (n *Native) Close() {
 	n.cancel()
@@ -113,11 +119,15 @@ func (n *Native) Close() {
 		p.canceled = true
 		p.cancel()
 		p.expires.Stop()
+		n.takeCloudLocked(p, false)
 	}
 	n.mu.Unlock()
 	n.wg.Wait()
 }
 func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byte) error {
+	if err := n.ctx.Err(); err != nil {
+		return err
+	}
 	f := wire.Decode(data, wire.ClientToServer)
 	if f.Client == nil || f.Client.GetEvent() == nil {
 		return n.up(ctx, k, data)
@@ -166,7 +176,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)
 		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
-		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel}
+		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel, outputPending: true}
 		p.ctx = sound.WithPlayer(p.ctx, func(ctx context.Context, request sound.Request) error {
 			return n.queueSound(ctx, p, request)
 		})
@@ -193,10 +203,18 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			p.ctx = preparer.Prepare(p.ctx)
 		}
 		p.expires = time.AfterFunc(90*time.Second, func() {
+			n.serverMu.Lock()
+			defer n.serverMu.Unlock()
 			n.mu.Lock()
 			defer n.mu.Unlock()
 			p.canceled = true
 			p.cancel()
+			if len(p.cloudFrames) > 0 || n.hasCloudStreamLocked(p) {
+				// Expiry cannot release an orphaned TTS stream to the speaker.
+				// Fail this connection closed instead of keeping unbounded tombstones.
+				n.cancel()
+			}
+			n.takeCloudLocked(p, false)
 			delete(n.requests, p.id)
 			delete(n.tts, p.ttsID)
 			delete(n.tts, p.progressTTS)
@@ -252,6 +270,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		if p != nil {
 			p.canceled = true
 			p.cancel()
+			n.takeCloudLocked(p, true)
 			ttsID = p.ttsID
 		}
 		n.mu.Unlock()
@@ -283,6 +302,18 @@ func (n *Native) findLocked(h *header.TEventHeader) (*nativeRequest, bool) {
 	return nil, false
 }
 func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byte) error {
+	n.serverMu.Lock()
+	defer n.serverMu.Unlock()
+	if err := n.ctx.Err(); err != nil {
+		return err
+	}
+	if held, err := n.holdCloud(wire.Decode(data, wire.ServerToClient), k, data); held || err != nil {
+		return err
+	}
+	return n.server(ctx, k, data)
+}
+
+func (n *Native) server(ctx context.Context, k websocket.MessageType, data []byte) error {
 	f := wire.Decode(data, wire.ServerToClient)
 	if f.Server == nil {
 		if len(data) >= 4 {
@@ -310,7 +341,9 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 	if sc := f.Server.GetStreamControl(); sc != nil {
 		n.mu.Lock()
 		if n.blocked[uint32(sc.GetStreamId())] != nil {
-			delete(n.blocked, uint32(sc.GetStreamId()))
+			if sc.GetClose() != nil {
+				delete(n.blocked, uint32(sc.GetStreamId()))
+			}
 			n.mu.Unlock()
 			return nil
 		}
@@ -439,8 +472,12 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 
 	if f.Kind() == "TtsSpeak" {
 		p.ttsStarted = true
+		stream := uint32(e.GetHeader().GetStreamId())
+		if n.cloudStreams[stream] == nil && !p.local && !p.canceled {
+			n.cloudStreams[stream] = p
+		}
 		if p.local || p.canceled {
-			n.blocked[uint32(e.GetHeader().GetStreamId())] = p
+			n.blocked[stream] = p
 		}
 	}
 	if p.local || p.canceled {
@@ -489,12 +526,6 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 	}
 	emptyFinal := false
 	switch f.Kind() {
-	case "AliceResponse":
-		if !p.cloud {
-			p.canceled = true
-			p.cancel()
-			slog.Warn("native_approval_not_honored", "request", requestTag(p.id))
-		}
 	case "ServerRequestReady":
 		slog.Info("native_server_ready", "request", requestTag(p.id))
 	case "AsrResult":
@@ -595,17 +626,34 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				result.Answer = "Сейчас не получилось получить ответ локальной модели."
 			}
 		}
+		n.serverMu.Lock()
 		n.mu.Lock()
 		if p.canceled {
 			n.mu.Unlock()
+			n.serverMu.Unlock()
 			return
 		}
 		if n.OnRoute != nil {
 			n.OnRoute(p.id, result.Route)
 		}
 		p.route = result.Route
+		p.outputPending = false
 		if result.Route == "yandex" {
+			if p.streaming {
+				// A local player is already open and the cloud request was canceled.
+				// Switching executors here would leave two incompatible streams.
+				p.canceled = true
+				p.cancel()
+				n.takeCloudLocked(p, true)
+				n.cancel()
+				n.mu.Unlock()
+				n.serverMu.Unlock()
+				slog.Warn("native_cloud_route_after_local_stream", "request", requestTag(p.id))
+				return
+			}
+			p.local = false
 			p.cloud = true
+			frames := n.takeCloudLocked(p, false)
 			var err error
 			if p.gated {
 				control := p.continuation
@@ -622,15 +670,25 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				}
 			}
 			n.mu.Unlock()
+			if err == nil {
+				err = n.replayCloud(p.ctx, p, frames)
+			}
+			if err != nil {
+				p.cancel()
+				n.cancel()
+			}
+			n.serverMu.Unlock()
 			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil)
 			return
 		}
 		p.local = true
+		n.takeCloudLocked(p, true)
 		if !p.streaming {
 			p.ttsID = newID()
 			n.tts[p.ttsID] = p
 		}
 		n.mu.Unlock()
+		n.serverMu.Unlock()
 		slog.Info("native_route", "request", requestTag(p.id), "route", result.Route)
 		if p.gated && !p.streaming {
 			if err := n.sendCancel(p.ctx, p.id); err != nil {
@@ -748,6 +806,7 @@ func (n *Native) discardStale(p *nativeRequest) {
 	n.mu.Lock()
 	p.canceled = true
 	p.cancel()
+	n.takeCloudLocked(p, true)
 	n.mu.Unlock()
 	_ = n.sendCancel(n.ctx, p.id)
 }
