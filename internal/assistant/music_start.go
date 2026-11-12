@@ -10,12 +10,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/webaddress"
 )
 
-var musicStartCommand = regexp.MustCompile(`(?i)^(?:(?:алиса|пожалуйста|спроси нейросеть|спроси свою модель)[\s,;:]+)*(?:включи(?:те)?|проиграй(?:те)?|воспроизведи(?:те)?|поставь(?:те)?|запусти(?:те)?|сыграй(?:те)?)(?:\s|$)`)
-var musicTrackNoun = regexp.MustCompile(`(?i)^(?:(?:пожалуйста|мне)[\s,;:]+)*(?:трек|песню|песня)(?:\s+|$)`)
 var musicSourceSeparator = regexp.MustCompile(`(?i)(?:^|\s+)(?:со|с|на)(?:\s+(?:сайта|сайте|страницы|странице))?`)
 
 // CanStartMusic recognizes a current explicit command without consulting history.
@@ -31,20 +28,15 @@ func musicStartSource(text string) string {
 // Separate a requested title before normalizing addresses: titles such as
 // Love.com are metadata, not another website to fetch.
 func musicStartRequest(text string) (source, title string, named bool) {
-	if !webaddress.MusicRequest(text) || !musicStartCommand.MatchString(dialogue.Normalize(text)) {
+	rest, ok := webaddress.MusicCommandTail(text)
+	if !ok || !webaddress.MusicRequest(text) {
 		return "", "", false
 	}
-	raw := strings.TrimLeft(strings.TrimSpace(text), " .,!?:;«»\"")
-	command := musicStartCommand.FindStringIndex(raw)
-	if command == nil {
-		return "", "", false
-	}
-	rest := strings.TrimSpace(raw[command[1]:])
-	noun := musicTrackNoun.FindStringIndex(rest)
-	if noun == nil {
+	rest, ok = webaddress.MusicTitleTail(rest)
+	if !ok {
 		return musicRequestSource(text), "", false
 	}
-	rest = strings.TrimSpace(rest[noun[1]:])
+	rest = strings.TrimSpace(rest)
 	if quoted, tail, ok := musicQuotedTitle(rest); ok {
 		if source := musicRequestSource(tail); source != "" {
 			return source, quoted, true

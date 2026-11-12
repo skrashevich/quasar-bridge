@@ -27,6 +27,10 @@ var dots = regexp.MustCompile(`(?i)` + spokenDot)
 var slashes = regexp.MustCompile(`(?i)` + spokenSlash)
 var absoluteAddress = regexp.MustCompile(`(?i)https?://`)
 var playbackVerb = regexp.MustCompile(`(?i)(?:^|[\s,;:])(?:включи(?:те)?|проиграй(?:те)?|воспроизведи(?:те)?|поставь(?:те)?|запусти(?:те)?|сыграй(?:те)?)(?:\s|$)`)
+var musicNegation = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}_])не\s+(?:включ|проигр|воспроиз|став|постав|запус|сыгр|надо|нужно|хочу)`)
+var musicStartCommand = regexp.MustCompile(`(?i)^(?:(?:алиса|пожалуйста|спроси нейросеть|спроси свою модель)[\s,;:]+)*(?:включи(?:те)?|проиграй(?:те)?|воспроизведи(?:те)?|поставь(?:те)?|запусти(?:те)?|сыграй(?:те)?)(?:\s|$)`)
+var musicTitleNoun = regexp.MustCompile(`(?i)^(?:(?:пожалуйста|мне)[\s,;:]+)*(?:трек|песню|песня)(?:\s+|$)`)
+var musicTitleSource = regexp.MustCompile(`(?i)\s+(?:со|с|на)(?:\s+(?:сайта|сайте|страницы|странице))?\s+`)
 var musicTerm = regexp.MustCompile(`(?i)(?:^|[\s,;:])(?:музык|аудио|песн|трек|радио|звук)`)
 
 var suffixAliases = map[string]string{
@@ -148,13 +152,68 @@ func transliterate(label string) string {
 // MusicRequest excludes ordinary Yandex music and negated playback commands.
 func MusicRequest(text string) bool {
 	lower := strings.ToLower(strings.ReplaceAll(text, "ё", "е"))
-	for _, negative := range []string{"не включ", "не проигр", "не воспроиз", "не став", "не постав", "не запус", "не сыгр", "не надо", "не нужно", "не хочу"} {
-		if strings.Contains(lower, negative) {
-			return false
-		}
+	if musicNegation.MatchString(musicCommandText(lower)) {
+		return false
 	}
 	if !playbackVerb.MatchString(lower) || !musicTerm.MatchString(lower) {
 		return false
 	}
 	return strings.Contains(lower, "сайт") || strings.Contains(lower, "страниц") || absoluteAddress.MatchString(Normalize(text))
+}
+
+// A requested song title is metadata, even when it contains "не надо". Keep
+// everything before and after its span so command negation still takes effect.
+func musicCommandText(text string) string {
+	rest, ok := MusicCommandTail(text)
+	if !ok {
+		return text
+	}
+	rest, ok = MusicTitleTail(rest)
+	if !ok {
+		return text
+	}
+	start := len(text) - len(rest)
+	opening, size := utf8.DecodeRuneInString(rest)
+	closing := map[rune]rune{'"': '"', '\'': '\'', '«': '»', '“': '”', '„': '“', '‘': '’'}[opening]
+	if closing != 0 {
+		if end := strings.IndexRune(rest[size:], closing); end >= 0 {
+			return text[:start] + " " + rest[size+end+utf8.RuneLen(closing):]
+		}
+		return text
+	}
+	// The last address allows an unquoted domain-like title before the source.
+	spans := addresses.FindAllStringIndex(rest, -1)
+	if len(spans) == 0 {
+		return text
+	}
+	end := spans[len(spans)-1][0]
+	separators := musicTitleSource.FindAllStringIndex(rest[:end], -1)
+	if len(separators) > 0 {
+		end = separators[len(separators)-1][0]
+	}
+	return text[:start] + " " + rest[end:]
+}
+
+// MusicCommandTail consumes only an explicit command at the start, retaining
+// an exact suffix of text so title spans can also be used for negation checks.
+func MusicCommandTail(text string) (string, bool) {
+	raw := strings.TrimLeftFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(" .,!?:;«»\"", r)
+	})
+	command := musicStartCommand.FindStringIndex(raw)
+	if command == nil {
+		return "", false
+	}
+	return raw[command[1]:], true
+}
+
+// MusicTitleTail consumes the optional modifiers and song/track noun immediately
+// after a command. A later noun in a generic music request does not name a title.
+func MusicTitleTail(text string) (string, bool) {
+	text = strings.TrimLeftFunc(text, unicode.IsSpace)
+	noun := musicTitleNoun.FindStringIndex(text)
+	if noun == nil {
+		return "", false
+	}
+	return text[noun[1]:], true
 }

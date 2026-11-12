@@ -16,6 +16,9 @@ import (
 type WebLink struct {
 	URL   string `json:"url"`
 	Title string `json:"title,omitempty"`
+	// Exact selection uses private metadata; display and JSON titles stay bounded.
+	fullTitle    string
+	titleTooLong bool
 }
 
 type mediaCollector struct {
@@ -62,20 +65,25 @@ func addWebLink(items *[]WebLink, raw, title string, limit int) {
 	if raw == "" {
 		return
 	}
-	title = strings.Join(strings.Fields(title), " ")
-	if runes := []rune(title); len(runes) > 160 {
-		title = string(runes[:160])
+	link := WebLink{URL: raw, Title: strings.Join(strings.Fields(title), " ")}
+	if runes := []rune(link.Title); len(runes) > 160 {
+		if len(runes) <= maxMusicTitleRunes {
+			link.fullTitle = link.Title
+		} else {
+			link.titleTooLong = true
+		}
+		link.Title = string(runes[:160])
 	}
 	for i := range *items {
 		if (*items)[i].URL == raw {
 			if (*items)[i].Title == "" {
-				(*items)[i].Title = title
+				(*items)[i] = link
 			}
 			return
 		}
 	}
 	if len(*items) < limit {
-		*items = append(*items, WebLink{URL: raw, Title: title})
+		*items = append(*items, link)
 	}
 }
 

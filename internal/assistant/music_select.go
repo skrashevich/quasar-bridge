@@ -1,6 +1,7 @@
 package assistant
 
 import (
+	"cmp"
 	"errors"
 	"strings"
 	"unicode"
@@ -30,7 +31,7 @@ func selectMusicTitle(tracks []WebLink, title string) ([]WebLink, error) {
 	want := normalizeMusicTitle(title)
 	var match *WebLink
 	for _, track := range tracks {
-		if want == "" || normalizeMusicTitle(track.Title) != want {
+		if track.titleTooLong || want == "" || normalizeMusicTitle(cmp.Or(track.fullTitle, track.Title)) != want {
 			continue
 		}
 		if match != nil && match.URL != track.URL {

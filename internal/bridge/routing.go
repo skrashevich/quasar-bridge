@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/update"
+	"quasarbridge/internal/webaddress"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -54,6 +56,7 @@ type RouteDecision struct {
 	Source   string `json:"source"`
 }
 type compiledRule struct {
+	musicFromSite     bool // Only the unchanged shipped rule uses semantic music negation.
 	name, route       string
 	wakewordTags      []string
 	any, none, prefix []string
@@ -111,6 +114,17 @@ const ttsNativeWhisperPattern = `^[\s\p{Z}]*(?:алиса[\s\p{Z},:]+)?(?:пож
 	`(?:скажи[\s\p{Z}]+(?:ш[её]потом(?:[\s\p{Z}]+привет)?|что[-\s\p{Z}]+нибудь[\s\p{Z}]+ш[её]потом)|говори[\s\p{Z}]+ш[её]потом)` +
 	`(?:[\s\p{Z},]+пожалуйста)?[\s\p{Z},.!?]*$`
 
+func defaultMusicFromSiteRule() RoutingRule {
+	return RoutingRule{Name: "music_from_site", Route: "llm", Match: RoutingMatch{
+		ContainsAllGroups: [][]string{
+			{"включи", "проиграй", "воспроизведи", "поставь", "запусти", "сыграй"},
+			{"музык", "аудио", "песн", "трек", "радио", "звук"},
+		},
+		ContainsNone: []string{"не включ", "не проигр", "не воспроиз", "не став", "не постав", "не запус", "не сыгр", "не надо", "не нужно", "не хочу", "как включить", "как проиграть", "как воспроизвести"},
+		Regex:        `https?://|сайт|страниц|[\p{L}\p{N}-]+\.[\p{L}]{2,}|\s(?:точка|dot)\s`,
+	}}
+}
+
 func DefaultRoutingConfig() RoutingConfig {
 	ttsHowTo := []string{
 		"скажи как ", "скажи, как ", "скажите как ", "скажите, как ",
@@ -121,14 +135,7 @@ func DefaultRoutingConfig() RoutingConfig {
 		Rules: []RoutingRule{
 			{Name: "bridge_updates", Route: "llm", Match: RoutingMatch{Regex: update.RequestPattern}},
 			{Name: "speaker_playback", Route: "yandex", Match: RoutingMatch{Regex: `^\s*(?:алиса[,\s]+)?(?:пожалуйста[,\s]+)?(?:хватит|стоп|пауза|останови(?:те)?|(?:останови(?:те)?|выключи(?:те)?|прекрати(?:те)?) (?:музыку|воспроизведение|песню|песни|трек|радио)|поставь(?:те)? на паузу|(?:продолжи(?:те)?|возобнови(?:те)?) (?:музыку|воспроизведение|песню|трек))[,\s]*(?:пожалуйста)?[.!?]*\s*$`}},
-			{Name: "music_from_site", Route: "llm", Match: RoutingMatch{
-				ContainsAllGroups: [][]string{
-					{"включи", "проиграй", "воспроизведи", "поставь", "запусти", "сыграй"},
-					{"музык", "аудио", "песн", "трек", "радио", "звук"},
-				},
-				ContainsNone: []string{"не включ", "не проигр", "не воспроиз", "не став", "не постав", "не запус", "не сыгр", "не надо", "не нужно", "не хочу", "как включить", "как проиграть", "как воспроизвести"},
-				Regex:        `https?://|сайт|страниц|[\p{L}\p{N}-]+\.[\p{L}]{2,}|\s(?:точка|dot)\s`,
-			}},
+			defaultMusicFromSiteRule(),
 			{Name: "assistant_readonly", Route: "llm", Match: RoutingMatch{ContainsAny: []string{"о чем мы", "о чём мы", "что мы обсуждали", "в истории", "истории сообщени", "истории диалога", "найди в истории", "что я спрашивал", "когда я спрашивал", "что я просил", "когда я просил", "что ты отвечал", "что ты ответил", "истории запросов", "историю запросов", "прочитай страницу", "открой страницу", "прочитай веб-страницу", "открой веб-страницу", "посмотри сайт", "открой сайт", "http://", "https://"}}},
 			{Name: "tts_whisper", Route: "yandex", Match: RoutingMatch{Regex: ttsNativeWhisperPattern}},
 			{Name: "tts_markup", Route: "llm", Match: RoutingMatch{
@@ -191,6 +198,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	}
 	p := &RoutingPolicy{defaultRoute: cfg.DefaultDestination(), classifier: cfg.Classifier, classifierEnabled: cfg.ClassifierEnabled(), refusalEnabled: cfg.Refusal.Enabled}
 	names := map[string]bool{}
+	defaultMusic := defaultMusicFromSiteRule()
 	for i, rule := range cfg.Rules {
 		fail := func(reason string) (*RoutingPolicy, error) { return nil, fmt.Errorf("routing rule %d: %s", i, reason) }
 		if strings.TrimSpace(rule.Name) == "" || names[rule.Name] {
@@ -237,6 +245,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 				return fail("invalid regex")
 			}
 		}
+		r.musicFromSite = reflect.DeepEqual(rule, defaultMusic)
 		if !rule.Disabled {
 			p.rules = append(p.rules, r)
 		}
@@ -268,7 +277,11 @@ func (p *RoutingPolicy) match(text, wakewordTag string) (RouteDecision, bool) {
 		if len(r.any) > 0 && !containsOne(lower, r.any) {
 			continue
 		}
-		if containsOne(lower, r.none) {
+		if r.musicFromSite {
+			if !webaddress.MusicRequest(text) {
+				continue
+			}
+		} else if containsOne(lower, r.none) {
 			continue
 		}
 		matched := true
