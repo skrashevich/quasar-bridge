@@ -1,9 +1,9 @@
 package wire
 
 import (
-	speechkit "github.com/freequasar/quasar-go-genproto/proto/alice/cuttlefish/library/speechkit_proto"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	speechkit "github.com/skrashevich/quasar-go-genproto/proto/alice/cuttlefish/library/speechkit_proto"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )

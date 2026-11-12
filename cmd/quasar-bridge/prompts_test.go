@@ -26,9 +26,10 @@ func TestConfiguredPromptsProcess(t *testing.T) {
 		for _, enabled := range []bool{false, true} {
 			for _, tc := range []struct {
 				name, system, tools string
+				markup              bool
 			}{
 				{name: "custom", system: "Answer in English.\nExplain in detail.", tools: "Use tools only when necessary."},
-				{name: "custom_general", system: "Answer in English.\nExplain in detail."},
+				{name: "custom_general", system: "Answer in English.\nExplain in detail.", markup: true},
 			} {
 				t.Run(api+"/tools_"+map[bool]string{false: "off", true: "on"}[enabled]+"/"+tc.name, func(t *testing.T) {
 					var calls atomic.Int64
@@ -51,6 +52,9 @@ func TestConfiguredPromptsProcess(t *testing.T) {
 							return
 						}
 						prompt := messages[0].Content
+						if got := strings.Contains(prompt, `<speaker is_whisper="true">`); got != tc.markup {
+							t.Errorf("TTS instructions enabled = %v, want %v", got, tc.markup)
+						}
 						if !strings.Contains(prompt, tc.system) || strings.Contains(prompt, "Отвечай по-русски") || strings.Contains(prompt, "Отвечай кратко по-русски") {
 							t.Errorf("custom system prompt was lost or conflicts with default style: %q", prompt)
 						}
@@ -73,7 +77,7 @@ func TestConfiguredPromptsProcess(t *testing.T) {
 						}
 					}))
 					defer server.Close()
-					body, err := json.Marshal(map[string]any{"mode": "hybrid", "airplay": map[string]bool{"disabled": true}, "llm_api": api, "llm_base_url": server.URL + "/v1", "llm_model": "fixture", "llm_system_prompt": tc.system, "assistant_tools": map[string]any{"enabled": enabled, "system_prompt": tc.tools, "web": false, "history": false, "time": false, "updates": false}})
+					body, err := json.Marshal(map[string]any{"mode": "hybrid", "airplay": map[string]bool{"disabled": true}, "llm_api": api, "llm_base_url": server.URL + "/v1", "llm_model": "fixture", "llm_system_prompt": tc.system, "llm_tts_markup": tc.markup, "assistant_tools": map[string]any{"enabled": enabled, "system_prompt": tc.tools, "web": false, "history": false, "time": false, "updates": false}})
 					if err != nil {
 						t.Fatal(err)
 					}

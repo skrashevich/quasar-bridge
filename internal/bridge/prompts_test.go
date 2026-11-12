@@ -49,3 +49,45 @@ func TestSystemPromptAppliesToFollowupAndRetry(t *testing.T) {
 		})
 	}
 }
+
+// Removing the TTS suffix from either completion path must fail this test:
+// custom style instructions still need the synthesizer's markup vocabulary.
+func TestCustomSystemPromptPreservesTTSInstructions(t *testing.T) {
+	const custom = "Answer in English."
+	for _, markup := range []bool{false, true} {
+		t.Run(map[bool]string{false: "disabled", true: "enabled"}[markup], func(t *testing.T) {
+			calls := 0
+			e := &Engine{SystemPrompt: custom, TTSMarkup: markup, LLM: completionFunc(func(_ context.Context, messages []llm.Message, structured bool) (string, error) {
+				if structured {
+					return `{"safe":true}`, nil
+				}
+				calls++
+				system := messages[0].Content
+				if !strings.HasPrefix(system, custom) {
+					t.Errorf("custom prompt missing on completion %d: %q", calls, system)
+				}
+				if got := strings.Contains(system, `<speaker is_whisper="true">`); got != markup {
+					t.Errorf("completion %d TTS instructions enabled = %v, want %v", calls, got, markup)
+				}
+				return `<speaker is_whisper="true">Answer`, nil
+			})}
+			for _, question := range []string{"первый вопрос", "следующий вопрос"} {
+				result, err := e.Fallback(t.Context(), question)
+				if err != nil || result.Answer != "Answer" {
+					t.Fatalf("fallback = %+v, err = %v", result, err)
+				}
+				if got := result.speech != ""; got != markup {
+					t.Errorf("synthesis markup enabled = %v, want %v", got, markup)
+				}
+			}
+			e.RecordDelivered(t.Context(), "следующий вопрос", "Answer", true, false)
+			result, err := e.Resolve(t.Context(), "используй нейросеть")
+			if err != nil || result.Answer != "Answer" || calls != 3 {
+				t.Fatalf("retry = %+v, calls = %d, err = %v", result, calls, err)
+			}
+			if got := result.speech != ""; got != markup {
+				t.Errorf("retry synthesis markup enabled = %v, want %v", got, markup)
+			}
+		})
+	}
+}

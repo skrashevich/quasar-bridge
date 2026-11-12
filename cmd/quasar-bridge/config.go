@@ -46,6 +46,7 @@ type config struct {
 	LLMHostedTools     []string             `json:"llm_hosted_tools"`
 	LLMChatParameters  map[string]any       `json:"llm_chat_parameters"`
 	LLMStripPrefixes   []string             `json:"llm_strip_prefixes"`
+	LLMTTSMarkup       bool                 `json:"llm_tts_markup"`
 	HomeWarmArea       string               `json:"home_warm_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
@@ -66,7 +67,7 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 }
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes()}
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
@@ -81,6 +82,13 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	} {
 		if value, ok := os.LookupEnv(name); ok {
 			*target = value
+		}
+	}
+	if value, ok := os.LookupEnv("QUASAR_LLM_CHAT_PARAMETERS"); ok {
+		// Replace the complete map: {} also clears parameters from config.json.
+		cfg.LLMChatParameters = nil
+		if !strings.HasPrefix(strings.TrimSpace(value), "{") || json.Unmarshal([]byte(value), &cfg.LLMChatParameters) != nil {
+			return cfg, errors.New("QUASAR_LLM_CHAT_PARAMETERS must be a JSON object")
 		}
 	}
 	if value, ok := os.LookupEnv("QUASAR_ALLOWED_IPS"); ok {
