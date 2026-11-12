@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	opus "github.com/skrashevich/go-opus"
 	"math"
 	"os"
-	"sort"
+	"slices"
+
+	opus "github.com/skrashevich/go-opus"
 )
 
 // Experimental acoustic heuristic calibrated on this speaker. No audio is
@@ -20,6 +21,11 @@ func (n *Native) collectWhisperAudio(data []byte) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for _, p := range n.requests {
+		if p.canceled || p.ctx.Err() != nil {
+			p.audioInput = nil
+			p.audioInputDone = true
+			continue
+		}
 		if p.header == nil || p.header.GetStreamId() != stream || p.audioInputDone {
 			continue
 		}
@@ -51,14 +57,14 @@ func decodeWhisperOpus(b []byte) (pcm []float32, err error) {
 		}
 		count := int(b[26])
 		if len(b) < 27+count {
-			break
+			return nil, errors.New("truncated ogg lacing")
 		}
 		size := 27 + count
 		for _, v := range b[27 : 27+count] {
 			size += int(v)
 		}
 		if len(b) < size {
-			break
+			return nil, errors.New("truncated ogg page")
 		}
 		page := b[:size]
 		b = b[size:]
@@ -113,6 +119,9 @@ func decodeWhisperOpus(b []byte) (pcm []float32, err error) {
 			headers++
 			packet = nil
 		}
+	}
+	if len(b) != 0 || len(packet) != 0 {
+		return nil, errors.New("truncated ogg stream")
 	}
 	if headers < 3 {
 		return nil, errors.New("no audio")
@@ -189,8 +198,8 @@ func acousticWhisper(pcm []float32) whisperMetrics {
 	if m.Active < 35 {
 		return m
 	}
-	sort.Float64s(zcrs)
-	sort.Float64s(corrs)
+	slices.Sort(zcrs)
+	slices.Sort(corrs)
 	m.ZCR = zcrs[len(zcrs)/2]
 	m.Periodicity = corrs[len(corrs)/2]
 	m.Voiced = float64(voiced) / float64(m.Active)
