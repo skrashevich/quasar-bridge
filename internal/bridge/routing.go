@@ -198,7 +198,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 		if len(m.ContainsAny) == 0 && len(m.ContainsAllGroups) == 0 && len(m.StartsWithAny) == 0 && m.Regex == "" {
 			return fail("at least one positive condition is required")
 		}
-		r := compiledRule{name: rule.Name, route: rule.Route, musicFromSite: reflect.DeepEqual(rule, defaultMusic)}
+		r := compiledRule{name: rule.Name, route: rule.Route}
 		var err error
 		if r.any, err = foldTerms(m.ContainsAny, false); err != nil {
 			return fail("contains_any has an empty term")
@@ -225,6 +225,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 				return fail("invalid regex")
 			}
 		}
+		r.musicFromSite = reflect.DeepEqual(rule, defaultMusic)
 		if !rule.Disabled {
 			p.rules = append(p.rules, r)
 		}
