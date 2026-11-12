@@ -24,6 +24,7 @@ require (
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/skrashevich/go-aac v0.1.1-0.20261014125626-800d9fa00267 // indirect
+	github.com/skrashevich/go-opus v0.1.1 // indirect
 	github.com/tadglines/go-pkgs v0.0.0-20210623144937-b983b20f54f9 // indirect
 	github.com/xiam/to v0.0.0-20200126224905-d60d31e03561 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
