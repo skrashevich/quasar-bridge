@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -310,18 +311,24 @@ func twoRoomTools(called *[]string) ToolCaller {
 
 func markedHere(t *testing.T, m []llm.Message) []string {
 	t.Helper()
-	body, _, _ := strings.Cut(strings.TrimPrefix(m[1].Content, "Устройства: "), "\n")
-	var devices []Entity
-	if err := json.Unmarshal([]byte(body), &devices); err != nil {
-		t.Fatalf("devices: %v", err)
-	}
 	var here []string
-	for _, d := range devices {
+	for _, d := range plannedDevices(t, m) {
 		if d.Here {
 			here = append(here, d.ID)
 		}
 	}
 	return here
+}
+
+// plannedDevices returns the inventory the planner received.
+func plannedDevices(t *testing.T, m []llm.Message) []Entity {
+	t.Helper()
+	body, _, _ := strings.Cut(strings.TrimPrefix(m[1].Content, "Устройства: "), "\n")
+	var devices []Entity
+	if err := json.Unmarshal([]byte(body), &devices); err != nil {
+		t.Fatalf("devices: %v", err)
+	}
+	return devices
 }
 
 func TestDefaultAreaGuidesRequestWithoutRoom(t *testing.T) {
@@ -391,5 +398,71 @@ func TestWholeHomeRequestIgnoresDefaultArea(t *testing.T) {
 		if _, err := c.Handle(t.Context(), q); err != nil {
 			t.Fatalf("%q: %v", q, err)
 		}
+	}
+}
+
+func TestRoomStemsRecognizeDeclinedAreaNames(t *testing.T) {
+	for _, tc := range []struct{ area, text string }{
+		{"Кухня", "включи свет на кухне"}, {"Кухня", "пропылесось кухню"},
+		{"Спальня", "выключи свет в спальне"}, {"Зал", "свет в зале"},
+		{"Ванная", "включи свет в ванной"}, {"Гостиная", "свет в гостиной"},
+		{"Прихожая", "свет в прихожей"},
+	} {
+		if stems := roomStems(tc.text, []Entity{{Area: tc.area}}); len(stems) == 0 {
+			t.Errorf("%q must name area %q", tc.text, tc.area)
+		}
+	}
+	if stems := roomStems("включи свет", []Entity{{Area: "Кухня"}, {Area: "Спальня"}}); len(stems) != 0 {
+		t.Errorf("request without a room named %v", stems)
+	}
+}
+
+// User story: the speaker stands in the bedroom. A request that names the
+// kitchen or covers every room must not be narrowed to the bedroom, whether
+// the inventory is small or larger than the planner limit.
+func spreadTools(others int) ToolCaller {
+	entities := []Entity{{ID: "light.bedroom", Name: "Свет", State: "off", Area: "Спальня"}, {ID: "light.kitchen", Name: "Свет", State: "off", Area: "Кухня"}}
+	for i := range others {
+		entities = append(entities, Entity{ID: fmt.Sprintf("light.office_%d", i), Name: "Свет", State: "off", Area: "Кабинет"})
+	}
+	return toolFunc(func(_ context.Context, name string, _ map[string]any) (jsontext.Value, error) {
+		var v any = map[string]any{"success": true}
+		switch name {
+		case "ha_search":
+			v = map[string]any{"entities": entities}
+		case "ha_get_entity_exposure":
+			v = map[string]any{"exposed_to": map[string]any{"conversation": true}}
+		}
+		b, _ := json.Marshal(v)
+		return b, nil
+	})
+}
+
+func TestDefaultAreaKeepsNamedKitchenAndEveryRoom(t *testing.T) {
+	for _, others := range []int{0, 79} {
+		t.Run(fmt.Sprintf("%d devices", others+2), func(t *testing.T) {
+			var planned []Entity
+			c := Controller{Tools: spreadTools(others), Domains: []string{"light"}, DefaultArea: "Спальня", Planner: plannerFunc(func(_ context.Context, m []llm.Message, _ bool) (string, error) {
+				if strings.Contains(m[0].Content, "Спальня") || len(markedHere(t, m)) != 0 {
+					t.Fatalf("request got the speaker area hint: %s", m[0].Content)
+				}
+				planned = plannedDevices(t, m)
+				return `{"answer":"Уточните","actions":[]}`, nil
+			})}
+			if _, err := c.Handle(t.Context(), "Включи свет на кухне"); err != nil || len(planned) != 1 || planned[0].ID != "light.kitchen" {
+				t.Fatalf("kitchen request: err=%v planned=%+v", err, planned)
+			}
+			planned = nil
+			answer, err := c.Handle(t.Context(), "Выключи свет во всех комнатах")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if others == 0 && len(planned) != 2 {
+				t.Fatalf("every room request must keep all rooms: %+v", planned)
+			}
+			if others > 0 && (planned != nil || !strings.HasPrefix(answer, "Уточните комнату")) {
+				t.Fatalf("oversized every room request must ask to clarify, got %q planned=%d", answer, len(planned))
+			}
+		})
 	}
 }

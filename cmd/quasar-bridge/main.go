@@ -309,17 +309,13 @@ func main() {
 	defer logs.Close()
 	proxy.Journal = logs
 	if cfg.Mode == "hybrid" {
-		warmArea := cfg.HomeWarmArea
-		if warmArea == "" {
-			warmArea = cfg.HomeDefaultArea
-		}
-		if hc != nil && warmArea != "" {
+		if hc != nil && cfg.HomeWarmArea != "" {
 			warmCtx, warmCancel := context.WithCancel(context.Background())
 			defer warmCancel()
 			go func() {
 				for {
 					ctx, cancel := context.WithTimeout(warmCtx, 90*time.Second)
-					err := hc.Warm(ctx, warmArea)
+					err := hc.Warm(ctx, cfg.HomeWarmArea)
 					cancel()
 					slog.Info("home_warm", "ready", err == nil)
 					select {

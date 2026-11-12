@@ -338,10 +338,10 @@ func spokenAnswer(answer string, entities []Entity) string {
 }
 
 // wholeHome reports a request about the entire home, which the speaker's own
-// area must not narrow: "какая температура дома", "выключи свет в квартире".
+// area must not narrow: "какая температура дома", "выключи свет во всех комнатах".
 func wholeHome(text string) bool {
 	s := strings.ToLower(text)
-	for _, word := range []string{"дома", "в доме", "по дому", "всём доме", "всем доме", "квартир", "везде", "повсюду"} {
+	for _, word := range []string{"дома", "в доме", "по дому", "всём доме", "всем доме", "весь дом", "всему дому", "квартир", "всех комнат", "всем комнатам", "везде", "всюду"} {
 		if strings.Contains(s, word) {
 			return true
 		}
@@ -421,6 +421,10 @@ func roomStems(text string, entities []Entity) []string {
 			}
 			if len(runes) >= 6 {
 				runes = runes[:len(runes)-2]
+			} else if len(runes) >= 4 && strings.ContainsRune("аеёиоуыэюяйь", runes[len(runes)-1]) {
+				// A short name changes its last letter when declined:
+				// "кухня" is said as "на кухне", "в кухню".
+				runes = runes[:len(runes)-1]
 			}
 			stem := string(runes)
 			if strings.Contains(text, stem) && !slices.Contains(stems, stem) {
