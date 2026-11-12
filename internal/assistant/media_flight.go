@@ -38,7 +38,7 @@ func (c *mediaCollector) flight(stream string) {
 			}
 			size, err := strconv.ParseUint(stream[start:comma], 16, 64)
 			pos = comma + 1
-			if err != nil || size > uint64(math.MaxInt) || size > uint64(len(stream)-pos) {
+			if err != nil || size > math.MaxInt32 || size > uint64(len(stream)-pos) {
 				return
 			}
 			pos += int(size)
