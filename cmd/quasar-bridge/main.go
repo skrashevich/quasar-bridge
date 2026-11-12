@@ -32,6 +32,7 @@ import (
 )
 
 func main() {
+	version := flag.Bool("v", false, "print version and exit")
 	path := flag.String("config", "config.json", "configuration file")
 	query := flag.String("query", "", "run one text query for backend diagnostics")
 	check := flag.Bool("check-backends", false, "check LLM and configured Home Assistant connectivity")
@@ -47,6 +48,10 @@ func main() {
 	speakerBackup := flag.String("speaker-backup", "/data/opt/quasar-bridge/endpoint-backup.json", "persistent endpoint backup")
 	speakerURL := flag.String("speaker-url", "ws://127.0.0.1:8443/uni.ws", "on-device bridge URL")
 	flag.Parse()
+	if *version {
+		fmt.Println(update.Version)
+		return
+	}
 	if *speakerAction != "" {
 		if err := setSpeakerEndpoint(*speakerConfig, *speakerBackup, *speakerURL, *speakerAction); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -58,6 +63,7 @@ func main() {
 	diagnosticLogs := newDiagnosticLog(1 << 20)
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stderr, diagnosticLogs), nil))
 	slog.SetDefault(logger)
+	slog.Info("quasar-bridge starting", "version", update.Version)
 	cfg, err := readConfigForCommand(*path, *listModels || *chatGPTAuth != "")
 	if err != nil {
 		slog.Error("configuration rejected", "error", err)
