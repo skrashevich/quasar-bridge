@@ -616,6 +616,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			} else if result.Route == "airplay" {
 				result.Answer = "Не удалось изменить состояние AirPlay. Проверьте журнал Quasar Bridge."
 			} else if result.Route == "music" {
+				slog.Warn("native_music_failed", "request", requestTag(p.id), "error", err)
 				result.Answer = "Не удалось включить музыку с этой страницы."
 			} else {
 				result.Route = "llm"

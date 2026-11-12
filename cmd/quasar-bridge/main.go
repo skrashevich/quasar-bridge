@@ -33,7 +33,7 @@ import (
 
 func main() {
 	path := flag.String("config", "config.json", "configuration file")
-	query := flag.String("query", "", "run one text query for backend diagnostics")
+	query := flag.String("query", "", "run one text query for diagnostics with simulated speaker audio playback")
 	check := flag.Bool("check-backends", false, "check LLM and configured Home Assistant connectivity")
 	checkMCP := flag.Bool("check-mcp", false, "connect to configured MCP servers and list tools without executing them")
 	route := flag.String("route", "", "explain a route without executing home actions or generating an answer")
@@ -239,7 +239,12 @@ func main() {
 		}
 		reader := assistant.NewWebReader(cfg.AssistantTools)
 		if cfg.AssistantTools.PlaySound && cfg.AssistantTools.Web {
-			if base := musicBaseURL(cfg); base != "" {
+			base := musicBaseURL(cfg)
+			if base == "" && *query != "" {
+				// Query captures playback without opening a queue server.
+				base = "https://query.invalid"
+			}
+			if base != "" {
 				var err error
 				musicQueue, err = assistant.NewMusicQueue(base, reader)
 				if err != nil {
@@ -267,7 +272,7 @@ func main() {
 		os.Exit(1)
 	}
 	if *query != "" || *check || *route != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
 		defer cancel()
 		if *route != "" {
 			data, _ := json.Marshal(engine.Decide(ctx, *route))
@@ -293,7 +298,7 @@ func main() {
 			fmt.Printf("LLM: ok; Home Assistant: %d entities\n", len(entities))
 			return
 		}
-		r, err := engine.Resolve(ctx, *query)
+		r, err := resolveQuery(ctx, engine, musicQueue, *query)
 		if err != nil {
 			slog.Error("query failed", "route", r.Route, "error", err)
 			os.Exit(1)
