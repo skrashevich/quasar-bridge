@@ -119,8 +119,9 @@ func (c *mediaCollector) json(data []byte) {
 	}
 }
 
-func extractPageMedia(data []byte, base *url.URL) ([]WebLink, []WebLink) {
+func extractPageMedia(data []byte, base *url.URL) ([]WebLink, []WebLink, pageMusic) {
 	c := newMediaCollector(base)
+	var music pageMusic
 	z := html.NewTokenizer(bytes.NewReader(data))
 	var framework strings.Builder
 	var script strings.Builder
@@ -155,6 +156,7 @@ func extractPageMedia(data []byte, base *url.URL) ([]WebLink, []WebLink) {
 				finishAnchor()
 				anchor, anchorText = attrs["href"], attrs["title"]
 			case "audio":
+				music.player = true
 				inAudio = kind == html.StartTagToken
 				c.addAudio(attrs["src"], attrs["title"], true)
 			case "source":
@@ -164,6 +166,12 @@ func extractPageMedia(data []byte, base *url.URL) ([]WebLink, []WebLink) {
 					c.addAudio(attrs["content"], "", false)
 				}
 			case "script":
+				if raw := c.resolve(attrs["src"]); raw != "" && len(music.scripts) < 3 && !slices.Contains(music.scripts, raw) {
+					u, _ := url.Parse(raw)
+					if sameWebOrigin(base, u) {
+						music.scripts = append(music.scripts, raw)
+					}
+				}
 				inScript = true
 				script.Reset()
 			}
@@ -196,6 +204,7 @@ func extractPageMedia(data []byte, base *url.URL) ([]WebLink, []WebLink) {
 					}
 				} else {
 					c.json([]byte(body))
+					c.script(body)
 				}
 			}
 		}
@@ -206,5 +215,6 @@ func extractPageMedia(data []byte, base *url.URL) ([]WebLink, []WebLink) {
 			c.json([]byte(payload))
 		}
 	}
-	return c.links, c.audio
+	music.base = c.base.Clone()
+	return c.links, c.audio, music
 }

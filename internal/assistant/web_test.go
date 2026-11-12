@@ -2,6 +2,8 @@ package assistant
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -43,6 +45,44 @@ func TestWebDialRejectsDNSRebindingAndRedirects(t *testing.T) {
 	req, _ := http.NewRequest("GET", "http://127.0.0.1/", nil)
 	if reader.http.CheckRedirect(req, []*http.Request{{}}) == nil {
 		t.Fatal("private redirect accepted")
+	}
+}
+
+func TestWebReaderReportsSafeFailureCauses(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		lookup     func(context.Context, string) ([]net.IPAddr, error)
+		transport  http.RoundTripper
+	}{
+		{name: "DNS", want: "web DNS lookup failed", lookup: func(context.Context, string) ([]net.IPAddr, error) {
+			return nil, errors.New("secret resolver details")
+		}},
+		{name: "private DNS", want: "web DNS resolved to a private or reserved address", lookup: func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+		}},
+		{name: "HTTP", want: "web page returned HTTP 403", transport: roundTripper(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader("secret response body")), Header: make(http.Header)}, nil
+		})},
+		{name: "TLS", want: "web TLS certificate verification failed", transport: roundTripper(func(*http.Request) (*http.Response, error) {
+			return nil, &tls.CertificateVerificationError{Err: errors.New("secret certificate details")}
+		})},
+		{name: "transport", want: "web request failed or target blocked", transport: roundTripper(func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("secret " + req.URL.String())
+		})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := NewWebReader(DefaultConfig())
+			if tc.lookup != nil {
+				reader.lookup = tc.lookup
+			}
+			if tc.transport != nil {
+				reader.http.Transport = tc.transport
+			}
+			_, err := reader.Read(t.Context(), "https://audio.example/private-path?token=secret")
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("error=%v want=%q", err, tc.want)
+			}
+		})
 	}
 }
 

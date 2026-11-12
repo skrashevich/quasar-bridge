@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -302,6 +303,52 @@ func TestMusicQueueLimitsAndExpiration(t *testing.T) {
 	}
 	if _, err := queue.Register([]WebLink{{URL: "https://audio.example/test.mp3"}}); err != nil {
 		t.Fatal("expired queues retained capacity")
+	}
+}
+
+func TestMusicQueueTracksSnapshot(t *testing.T) {
+	reader := NewWebReader(DefaultConfig())
+	reader.http.Transport = roundTripper(func(*http.Request) (*http.Response, error) {
+		t.Fatal("reading registered source tracks must not fetch pages or audio")
+		return nil, nil
+	})
+	queue, err := NewMusicQueue("https://bridge.example", reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	queue.now = func() time.Time { return now }
+	want := []WebLink{
+		{URL: "https://audio.example/one.mp3?version=first&token=one", Title: "First track"},
+		{URL: "https://audio.example/two.mp3?version=second&token=two", Title: "Second track"},
+	}
+	stream, err := queue.Register(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := queue.Tracks(stream)
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("source tracks=%+v error=%v", got, err)
+	}
+	got[0].URL, got[0].Title = "https://other.example/replaced.mp3", "Replaced title"
+	if again, err := queue.Tracks(stream); err != nil || !slices.Equal(again, want) {
+		t.Fatalf("returned slice changed the queue: tracks=%+v error=%v", again, err)
+	}
+	if remaining, err := queue.Tracks(stream + "?start=1"); err != nil || !slices.Equal(remaining, want[1:]) {
+		t.Fatalf("wrong remaining source tracks: tracks=%+v error=%v", remaining, err)
+	}
+	for _, invalid := range []string{
+		strings.Replace(stream, "bridge.example", "other.example", 1),
+		stream + "?start=2",
+		"https://bridge.example/music-stream/missing.mp3",
+	} {
+		if tracks, err := queue.Tracks(invalid); err == nil || len(tracks) != 0 {
+			t.Fatalf("invalid stream returned sources: tracks=%+v error=%v", tracks, err)
+		}
+	}
+	now = now.Add(musicQueueTTL + time.Second)
+	if tracks, err := queue.Tracks(stream); err == nil || len(tracks) != 0 {
+		t.Fatalf("expired stream returned sources: tracks=%+v error=%v", tracks, err)
 	}
 }
 

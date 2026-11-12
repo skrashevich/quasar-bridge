@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
-	"net/url"
 	"strings"
 
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/sound"
-	"quasarbridge/internal/webaddress"
 )
 
 func musicDefinition() llm.Tool {
@@ -23,44 +21,18 @@ func (t *Tools) playMusic(ctx context.Context, args string) (any, error) {
 	if json.Unmarshal([]byte(args), &p, json.RejectUnknownMembers(true)) != nil || p.Source == "" || len(p.Source) > 2048 {
 		return nil, errors.New("invalid play_music source: provide the page or audio URL")
 	}
-	raw := webaddress.Normalize(strings.TrimSpace(p.Source))
-	u, err := url.Parse(raw)
-	if err != nil || validateWebURL(u) != nil || u.Fragment != "" {
-		return nil, errors.New("invalid play_music source: public HTTP/HTTPS URL required")
+	raw, err := normalizeMusicSource(p.Source)
+	if err != nil {
+		return nil, err
 	}
 	if !sound.HasPlayer(ctx) {
 		return nil, errors.New("play_music requires a current speaker request")
 	}
-	tracks := []WebLink{{URL: u.String()}}
-	if mediaExtension(raw) == "" {
-		page, err := t.WebReader.Read(ctx, raw)
-		if err != nil {
-			return nil, err
-		}
-		tracks = page.Audio
-		if len(tracks) == 0 {
-			base, _ := url.Parse(page.URL)
-			attempts := 0
-			for _, link := range page.Links {
-				next, err := url.Parse(link.URL)
-				if err != nil || !strings.EqualFold(next.Host, base.Host) || next.Scheme != base.Scheme || next.String() == base.String() || !musicNavigation(link) {
-					continue
-				}
-				attempts++
-				section, err := t.WebReader.Read(ctx, link.URL)
-				if err == nil && len(section.Audio) > 0 {
-					tracks = section.Audio
-					break
-				}
-				if attempts >= 3 {
-					break
-				}
-			}
-		}
+	resolution, err := t.WebReader.ResolveMusic(ctx, raw)
+	if err != nil {
+		return nil, err
 	}
-	if len(tracks) == 0 {
-		return nil, errors.New("no playable audio links found on the page; a JavaScript-only player may require a direct audio URL")
-	}
+	tracks := resolution.Tracks
 	if err := t.Playback.Start(ctx, tracks); err != nil {
 		return nil, err
 	}
