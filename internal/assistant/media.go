@@ -210,11 +210,7 @@ func extractPageMedia(data []byte, base *url.URL) ([]WebLink, []WebLink, pageMus
 		}
 	}
 	finishAnchor()
-	for record := range strings.SplitSeq(framework.String(), "\n") {
-		if _, payload, ok := strings.Cut(record, ":"); ok {
-			c.json([]byte(payload))
-		}
-	}
+	c.flight(framework.String())
 	music.base = c.base.Clone()
 	return c.links, c.audio, music
 }
