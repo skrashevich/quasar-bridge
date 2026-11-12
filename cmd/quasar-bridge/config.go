@@ -24,8 +24,14 @@ type progressConfig struct {
 	IntervalMS int  `json:"interval_ms"`
 }
 
+type diagnosticsConfig struct {
+	NetworkAccess bool `json:"network_access"`
+	Port          int  `json:"port"`
+}
+
 type config struct {
 	AirPlay            airPlayConfig        `json:"airplay"`
+	Diagnostics        diagnosticsConfig    `json:"diagnostics"`
 	DialogueContext    dialogue.Config      `json:"dialogue_context"`
 	LocalProgress      progressConfig       `json:"local_progress"`
 	AssistantTools     assistant.Config     `json:"assistant_tools"`
@@ -66,7 +72,7 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 }
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
+	cfg := config{Diagnostics: diagnosticsConfig{Port: 8080}, DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
@@ -201,6 +207,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	}
 	if cfg.LocalProgress.AfterMS < 100 || cfg.LocalProgress.AfterMS > 10000 || cfg.LocalProgress.IntervalMS < 1000 || cfg.LocalProgress.IntervalMS > 10000 {
 		return cfg, errors.New("invalid local_progress timing")
+	}
+	if cfg.Diagnostics.Port < 1 || cfg.Diagnostics.Port > 65535 {
+		return cfg, errors.New("diagnostics.port must be in 1..65535")
 	}
 	if err := cfg.DialogueContext.Validate(); err != nil {
 		return cfg, err

@@ -30,6 +30,8 @@ type voiceSetting struct {
 // Explicit leaves prevent a parent-object update from smuggling in credentials,
 // process commands, network endpoints or filesystem paths.
 var voiceSettings = []voiceSetting{
+	{"mode", "Режим Bridge: observe передаёт запросы Яндексу; hybrid включает локальные маршруты и LLM и требует настроенные llm_base_url и llm_model. Смена режима требует перезапуска.", "QUASAR_MODE", true},
+	{"diagnostics.network_access", "Логическое: разрешить доступ к веб-панели диагностики по сети. По умолчанию false: доступ только через localhost. Применяется reload без перезапуска.", "", false},
 	{"llm_model", "Модель LLM; непустая строка в hybrid. Наличие модели на сервере отдельно не проверяется.", "QUASAR_LLM_MODEL", true},
 	{"llm_api", "API: chat_completions, responses или chatgpt. Зависимые параметры меняй одним вызовом.", "QUASAR_LLM_API", true},
 	{"llm_reasoning_effort", "Усилие рассуждения: пустая строка, none, minimal, low, medium, high, xhigh, max; только responses/chatgpt.", "QUASAR_LLM_REASONING_EFFORT", true},
@@ -79,13 +81,14 @@ var voiceSettings = []voiceSetting{
 }
 
 type configurationControl struct {
-	mu          sync.Mutex
-	path        string
-	active      config
-	engine      *bridge.Engine
-	logs        *journal.Writer
-	restart     func(context.Context) (any, error)
-	restartDone <-chan struct{}
+	mu               sync.Mutex
+	path             string
+	active           config
+	engine           *bridge.Engine
+	logs             *journal.Writer
+	applyDiagnostics func(bool) error
+	restart          func(context.Context) (any, error)
+	restartDone      <-chan struct{}
 }
 
 type configurationResult struct {
@@ -99,6 +102,7 @@ type configurationResult struct {
 func requiresRestart(active, next config) bool {
 	active.Routing, next.Routing = bridge.RoutingConfig{}, bridge.RoutingConfig{}
 	active.ConversationLog, next.ConversationLog = journal.Config{}, journal.Config{}
+	active.Diagnostics.NetworkAccess, next.Diagnostics.NetworkAccess = false, false
 	return !reflect.DeepEqual(active, next)
 }
 
@@ -265,11 +269,22 @@ func (c *configurationControl) Apply(ctx context.Context, action string) (any, e
 		if err := applyReload(next, c.active, c.engine, c.logs); err != nil {
 			return nil, err
 		}
+		if c.applyDiagnostics != nil && next.Diagnostics.NetworkAccess != c.active.Diagnostics.NetworkAccess {
+			if err := c.applyDiagnostics(next.Diagnostics.NetworkAccess); err != nil {
+				return nil, errors.Join(err, applyReload(c.active, next, c.engine, c.logs))
+			}
+		}
 		c.active = next
 		return c.result("applied", next), nil
 	default:
 		return nil, errors.New("configuration action must be reload or restart")
 	}
+}
+
+func (c *configurationControl) diagnosticsNetworkAccess() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.active.Diagnostics.NetworkAccess
 }
 
 func configValue(cfg config, path string) jsontext.Value {

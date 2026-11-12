@@ -346,7 +346,6 @@ func main() {
 		}
 	}
 	mux := http.NewServeMux()
-	registerDiagnostics(mux, diagnosticLogs, func() map[string]any { return airPlayHealth(airPlay) })
 	if musicQueue != nil {
 		mux.Handle("/music-stream/", musicQueue)
 	}
@@ -358,10 +357,36 @@ func main() {
 			}
 		}
 	}
+	startedAt := time.Now()
+	var panel *diagnosticsListener
+	status := func() map[string]any {
+		state := engine.RoutingStatus()
+		return map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()}
+	}
+	panelStatus := func() map[string]any {
+		result := status()
+		result["run"] = diagnosticLogs.run
+		result["version"], result["llm_model"], result["llm_api"] = update.Version, cfg.LLMModel, cfg.LLMAPI
+		result["uptime_seconds"] = int64(time.Since(startedAt).Seconds())
+		result["diagnostics"] = map[string]any{"network_access": configuration.diagnosticsNetworkAccess(), "port": cfg.Diagnostics.Port, "address": panel.Address()}
+		return result
+	}
+	panelControl := diagnosticControl{Configuration: configuration, Engine: engine, Logs: logs, Status: panelStatus, AirPlay: airPlay, Network: configuration.diagnosticsNetworkAccess, QueryBusy: new(atomic.Bool)}
+	registerPanel := func(m *http.ServeMux) {
+		registerDiagnostics(m, diagnosticLogs, func() map[string]any { return airPlayHealth(airPlay) }, configuration.diagnosticsNetworkAccess)
+		registerDiagnosticsAPI(m, panelControl)
+	}
+	registerPanel(mux)
+	panelMux := http.NewServeMux()
+	registerPanel(panelMux)
+	panelMux.HandleFunc("GET /{$}", diagnosticsAccess(configuration.diagnosticsNetworkAccess, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/diagnostics/", http.StatusTemporaryRedirect)
+	}))
+	panel = newDiagnosticsListener(cfg.Diagnostics.Port, panelMux)
+	configuration.applyDiagnostics = panel.SetNetworkAccess
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()})
+		data, _ := json.Marshal(status())
 		_, _ = w.Write(data)
 	})
 	mux.Handle("/uni.ws", proxy)
@@ -383,10 +408,16 @@ func main() {
 		mux.ServeHTTP(w, r)
 	})
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	listenersReady := make(chan struct{})
 	reloads := make(chan os.Signal, 1)
 	signal.Notify(reloads, syscall.SIGHUP)
 	defer signal.Stop(reloads)
 	go func() {
+		select {
+		case <-listenersReady:
+		case <-ctx.Done():
+			return
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -406,9 +437,10 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
+		_ = panel.Shutdown(shutdownCtx)
 	}()
 	slog.Info("listening", "address", cfg.Listen, "mode", cfg.Mode, "routing_revision", engine.RoutingStatus().Revision)
-	err = serveBridgeHTTP(server, cfg.TLSCert, cfg.TLSKey, cleanupAirPlay)
+	err = serveBridgeHTTPWithDiagnostics(server, cfg.TLSCert, cfg.TLSKey, cleanupAirPlay, panel, cfg.Diagnostics.NetworkAccess, func() { close(listenersReady) })
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("listener failed")
 		os.Exit(1)
@@ -418,9 +450,37 @@ func main() {
 // Keep resource cleanup inside the serving call: main may exit after a listener
 // failure, and os.Exit does not run main's deferred functions.
 func serveBridgeHTTP(server *http.Server, cert, key string, cleanup func()) error {
+	return serveBridgeHTTPWithDiagnostics(server, cert, key, cleanup, nil, false)
+}
+
+func serveBridgeHTTPWithDiagnostics(server *http.Server, cert, key string, cleanup func(), panel *diagnosticsListener, network bool, ready ...func()) error {
 	defer cleanup()
-	if cert != "" && key != "" {
-		return server.ListenAndServeTLS(cert, key)
+	// Reserve the existing service's address first: the new optional panel must
+	// never steal port 8080 from an installation already using it for UniProxy.
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return err
 	}
-	return server.ListenAndServe()
+	defer listener.Close()
+	if panel != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = panel.Shutdown(shutdownCtx)
+		}()
+		if err := panel.SetNetworkAccess(network); err != nil {
+			slog.Error("diagnostics listener unavailable", "error", err)
+		} else {
+			slog.Info("diagnostics listening", "address", panel.Address(), "network_access", network)
+		}
+	}
+	// Queued startup reloads must run only after the initial bindings have been
+	// installed, so they cannot be overwritten by the original config snapshot.
+	for _, notify := range ready {
+		notify()
+	}
+	if cert != "" && key != "" {
+		return server.ServeTLS(listener, cert, key)
+	}
+	return server.Serve(listener)
 }
