@@ -229,7 +229,7 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 		if c.API == "chatgpt" {
 			return nil, chatGPTHTTPError(resp)
 		}
-		return nil, fmt.Errorf("LLM returned HTTP %d", resp.StatusCode)
+		return nil, llmHTTPError(resp)
 	}
 	if c.API == "chatgpt" {
 		data, err := readResponseStream(resp.Body)

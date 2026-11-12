@@ -126,6 +126,7 @@ CONFIG
   setting QUASAR_LLM_MODEL "$model"
   setting QUASAR_LLM_API "$api"
   setting QUASAR_LLM_API_KEY "$key"
+  setting QUASAR_LLM_CHAT_PARAMETERS "$chat_parameters"
   if [ "$api" = chatgpt ]; then
    setting QUASAR_LLM_CHATGPT_AUTH_FILE "$state/chatgpt-auth.json"
   fi
@@ -191,6 +192,22 @@ choose_model() {
   warn 'Такого номера в списке нет.'
  done
 }
+probe_compatibility() {
+ info 'Подбор совместимых параметров API…'
+ if sh "$package/start.sh" -probe-llm-compat > "$saved/parameters" &&
+    [ -s "$saved/parameters" ]; then
+  chat_parameters=$(cat "$saved/parameters")
+  ok 'Совместимые параметры API подобраны.'
+  if [ "$chat_parameters" = '{}' ]; then
+   info 'Подходят стандартные параметры.'
+  else
+   info "$chat_parameters"
+  fi
+ else
+  error 'Не удалось подобрать совместимые параметры API.'
+  return 1
+ fi
+}
 configure=true
 section 'Quasar Bridge · установка и обновление'
 info 'Enter выбирает вариант в квадратных скобках. Ctrl+C отменяет установку.'
@@ -234,8 +251,17 @@ if [ "$configure" = true ]; then
    done
   fi
   model=
+  # A different provider or API must not inherit the previous compatibility profile.
+  chat_parameters='{}'
   save_configuration
   if ! choose_model; then
+   ask 'Ввести настройки подключения заново? [Y/n]'
+   answer=${answer:-y}
+   yes || exit 1
+   continue
+  fi
+  save_configuration
+  if [ "$api" = chat_completions ] && ! probe_compatibility; then
    ask 'Ввести настройки подключения заново? [Y/n]'
    answer=${answer:-y}
    yes || exit 1

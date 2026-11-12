@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	common "github.com/freequasar/quasar-go-genproto/proto/alice/megamind/protos/common"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
-	stream "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/stream_control"
-	tts "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_speak"
-	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	stream "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/stream_control"
+	tts "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/tts_speak"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/encoding/protowire"
 	"quasarbridge/internal/wire"
 )
@@ -194,7 +194,10 @@ func feedSpeech(t *testing.T, n *Native, id string, streamID uint32, omitID bool
 	}
 	source := speechFixture(streamID)
 	if len(packet) > 0 {
-		source = speechPacketFixture(streamID, packet[0])
+		source = nil
+		for i, p := range packet {
+			source = append(source, speechPacketFixture(streamID+uint32(i), p)...)
+		}
 	}
 	audio := append(binary.BigEndian.AppendUint32(nil, streamID), source...)
 	if err := n.Server(t.Context(), websocket.MessageBinary, audio); err != nil {

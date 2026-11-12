@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	device "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/common/device_state"
-	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
+	device "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/common/device_state"
+	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/sound"
