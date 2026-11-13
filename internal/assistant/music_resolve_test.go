@@ -11,7 +11,7 @@ import (
 )
 
 func TestResolveMusicRPFMWithoutSpeaker(t *testing.T) {
-	for _, source := range []string{"https://rpfm.ru", "rpfm точка ru", "Алиса, включи музыку с сайта rpfm точка ru"} {
+	for _, source := range []string{"https://rpfm.ru", "rpfm точка ru", "Алиса, включи музыку с сайта rpfm точка ru", "Включи музыку с сайта rp fm точка ru", "Включи музыку с сайта рп фм точка ру"} {
 		t.Run(source, func(t *testing.T) {
 			reader := NewWebReader(DefaultConfig())
 			reader.http.Transport = roundTripper(func(r *http.Request) (*http.Response, error) {
