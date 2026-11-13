@@ -287,7 +287,8 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}
 	}
-	if d, ok := p.match(text); ok {
+	wakewordTag, _ := ctx.Value(wakewordTagKey{}).(string)
+	if d, ok := p.match(text, wakewordTag); ok {
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
 			d.Route = "music"
 		}
