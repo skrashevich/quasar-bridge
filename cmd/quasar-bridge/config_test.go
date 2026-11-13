@@ -253,3 +253,30 @@ func TestMCPExampleAndUnknownConfiguration(t *testing.T) {
 		t.Fatal("unknown MCP option accepted")
 	}
 }
+
+func TestReadConfigSpeakerContext(t *testing.T) {
+	cfg, err := readConfig(configFile(t, `{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SpeakerContext.Enabled {
+		t.Fatal("speaker_context must be disabled by default")
+	}
+	cfg, err = readConfig(configFile(t, `{"speaker_context":{"enabled":true,"min_confidence":0.9}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := cfg.SpeakerContext
+	if !sc.Enabled || sc.MinConfidence != 0.9 || !sc.IncludeGuestStatus || sc.PromptTemplate == "" {
+		t.Fatalf("unexpected defaults: %+v", sc)
+	}
+	for _, body := range []string{
+		`{"speaker_context":{"min_confidence":0.5}}`,
+		`{"speaker_context":{"min_confidence":1.5}}`,
+		`{"speaker_context":{"unknown":true}}`,
+	} {
+		if _, err := readConfig(configFile(t, body)); err == nil {
+			t.Fatalf("%s accepted", body)
+		}
+	}
+}

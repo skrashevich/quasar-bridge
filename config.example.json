@@ -10,6 +10,12 @@
   "llm_api": "chat_completions",
   "llm_chat_parameters": {},
   "llm_tts_markup": true,
+  "speaker_context": {
+    "enabled": false,
+    "prompt_template": "Сейчас говорит: {{age}}{{gender}}{{guest}}. Уверенность: {{confidence}}.",
+    "min_confidence": 0.7,
+    "include_guest_status": true
+  },
   "llm_strip_prefixes": [
     "спроси у нейросети",
     "спроси нейросеть",
