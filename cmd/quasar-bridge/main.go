@@ -201,7 +201,7 @@ func main() {
 	}}
 	logs := new(journal.Writer)
 	lc := newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY"))
-	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext), StripPrefixes: cfg.LLMStripPrefixes, TTSMarkup: cfg.LLMTTSMarkup}
+	engine := &bridge.Engine{LLM: lc, SystemPrompt: cfg.LLMSystemPrompt, Dialogue: dialogue.New(cfg.DialogueContext), StripPrefixes: cfg.LLMStripPrefixes, TTSMarkup: cfg.LLMTTSMarkup}
 	// Recovery is a direct command path, independent of assistant tool settings
 	// and of the availability of either the classifier or the dialogue model.
 	engine.Recovery = func(ctx context.Context, action string) (string, error) {
@@ -266,7 +266,7 @@ func main() {
 			tools.AirPlay = airPlay
 		}
 		engine.Music = tools
-		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
+		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, SystemPrompt: cfg.AssistantTools.SystemPrompt, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 	}
 	if err := engine.SetRouting(cfg.Routing); err != nil {
 		slog.Error("routing rejected", "error", err)

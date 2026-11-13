@@ -7,6 +7,7 @@
   "allowed_ips": [],
   "llm_base_url": "https://llm.example.invalid/v1",
   "llm_model": "your-model",
+  "llm_system_prompt": "",
   "llm_api": "chat_completions",
   "llm_chat_parameters": {},
   "llm_tts_markup": true,
@@ -283,6 +284,7 @@
   },
   "assistant_tools": {
     "enabled": true,
+    "system_prompt": "",
     "web": true,
     "history": true,
     "time": true,
