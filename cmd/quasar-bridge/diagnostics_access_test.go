@@ -19,7 +19,7 @@ func TestDiagnosticsNetworkAccessAppliesThroughVoiceTools(t *testing.T) {
 	registerDiagnostics(mux, newDiagnosticLog(1024), func() map[string]any { return nil }, c.diagnosticsNetworkAccess)
 	checkAccess := func(want int) {
 		t.Helper()
-		req := httptest.NewRequest("GET", "http://192.0.2.10:8080/diagnostics/logs", nil)
+		req := httptest.NewRequest("GET", "http://192.0.2.10:2704/diagnostics/logs", nil)
 		req.RemoteAddr = "192.0.2.20:12345"
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
@@ -72,7 +72,7 @@ func TestDiagnosticsNetworkAccessAppliesThroughVoiceTools(t *testing.T) {
 
 func TestDiagnosticsConfigurationDefaultsAndValidation(t *testing.T) {
 	cfg, err := parseConfig([]byte(`{}`), false)
-	if err != nil || cfg.Diagnostics.NetworkAccess || cfg.Diagnostics.Port != 8080 {
+	if err != nil || cfg.Diagnostics.NetworkAccess || cfg.Diagnostics.Port != 2704 {
 		t.Fatalf("unsafe diagnostics default: %+v, %v", cfg.Diagnostics, err)
 	}
 	for _, body := range []string{
@@ -103,7 +103,7 @@ func TestDiagnosticsPortRequiresRestartAndCannotBeChangedByVoice(t *testing.T) {
 	if _, err := c.Apply(t.Context(), "reload"); err == nil {
 		t.Fatal("port change was falsely reported as live")
 	}
-	if c.active.Diagnostics.Port != 8080 {
+	if c.active.Diagnostics.Port != 2704 {
 		t.Fatal("failed reload changed active port")
 	}
 }
@@ -133,8 +133,8 @@ func TestDiagnosticsListenerFailureRollsBackRoutingAndAccess(t *testing.T) {
 }
 
 func TestDiagnosticsRejectsForeignOrigin(t *testing.T) {
-	for _, origin := range []string{"http://attacker.example", "http://localhost:8081", "https://localhost:8080", "null"} {
-		req := httptest.NewRequest("GET", "http://localhost:8080/diagnostics/logs", nil)
+	for _, origin := range []string{"http://attacker.example", "http://localhost:2705", "https://localhost:2704", "null"} {
+		req := httptest.NewRequest("GET", "http://localhost:2704/diagnostics/logs", nil)
 		req.RemoteAddr = "127.0.0.1:12345"
 		req.Header.Set("Origin", origin)
 		w := httptest.NewRecorder()
@@ -151,18 +151,18 @@ func TestDiagnosticsNetworkGuard(t *testing.T) {
 		network                               bool
 		want                                  int
 	}{
-		{name: "local default", remote: "127.0.0.1:12345", host: "localhost:8080", want: 204},
-		{name: "local IPv6", remote: "[::1]:12345", host: "[::1]:8080", want: 204},
-		{name: "mapped loopback", remote: "[::ffff:127.0.0.1]:12345", host: "127.0.0.1:8080", want: 204},
-		{name: "network denied by default", remote: "192.0.2.20:12345", host: "192.0.2.10:8080", want: 403},
-		{name: "local peer network host denied", remote: "127.0.0.1:12345", host: "192.0.2.10:8080", want: 403},
-		{name: "network enabled", remote: "192.0.2.20:12345", host: "192.0.2.10:8080", network: true, want: 204},
-		{name: "network IPv6", remote: "[2001:db8::20]:12345", host: "[2001:db8::10]:8080", network: true, want: 204},
-		{name: "matching Origin", remote: "192.0.2.20:12345", host: "192.0.2.10:8080", origin: "http://192.0.2.10:8080", network: true, want: 204},
-		{name: "foreign Origin", remote: "192.0.2.20:12345", host: "192.0.2.10:8080", origin: "http://attacker.example", network: true, want: 403},
-		{name: "cross site", remote: "192.0.2.20:12345", host: "192.0.2.10:8080", fetchSite: "cross-site", network: true, want: 403},
-		{name: "DNS rebinding host", remote: "192.0.2.20:12345", host: "attacker.example:8080", network: true, want: 403},
-		{name: "malformed peer", remote: "unknown", host: "192.0.2.10:8080", network: true, want: 403},
+		{name: "local default", remote: "127.0.0.1:12345", host: "localhost:2704", want: 204},
+		{name: "local IPv6", remote: "[::1]:12345", host: "[::1]:2704", want: 204},
+		{name: "mapped loopback", remote: "[::ffff:127.0.0.1]:12345", host: "127.0.0.1:2704", want: 204},
+		{name: "network denied by default", remote: "192.0.2.20:12345", host: "192.0.2.10:2704", want: 403},
+		{name: "local peer network host denied", remote: "127.0.0.1:12345", host: "192.0.2.10:2704", want: 403},
+		{name: "network enabled", remote: "192.0.2.20:12345", host: "192.0.2.10:2704", network: true, want: 204},
+		{name: "network IPv6", remote: "[2001:db8::20]:12345", host: "[2001:db8::10]:2704", network: true, want: 204},
+		{name: "matching Origin", remote: "192.0.2.20:12345", host: "192.0.2.10:2704", origin: "http://192.0.2.10:2704", network: true, want: 204},
+		{name: "foreign Origin", remote: "192.0.2.20:12345", host: "192.0.2.10:2704", origin: "http://attacker.example", network: true, want: 403},
+		{name: "cross site", remote: "192.0.2.20:12345", host: "192.0.2.10:2704", fetchSite: "cross-site", network: true, want: 403},
+		{name: "DNS rebinding host", remote: "192.0.2.20:12345", host: "attacker.example:2704", network: true, want: 403},
+		{name: "malformed peer", remote: "unknown", host: "192.0.2.10:2704", network: true, want: 403},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "http://"+tc.host+"/diagnostics/logs", nil)
@@ -186,7 +186,7 @@ func TestDiagnosticsRequestsDuringNetworkReload(t *testing.T) {
 	for range 4 {
 		requests.Go(func() {
 			for range 50 {
-				req := httptest.NewRequest("GET", "http://192.0.2.10:8080/diagnostics/logs", nil)
+				req := httptest.NewRequest("GET", "http://192.0.2.10:2704/diagnostics/logs", nil)
 				req.RemoteAddr = "192.0.2.20:12345"
 				w := httptest.NewRecorder()
 				handler(w, req)

@@ -459,7 +459,7 @@ func serveBridgeHTTP(server *http.Server, cert, key string, cleanup func()) erro
 func serveBridgeHTTPWithDiagnostics(server *http.Server, cert, key string, cleanup func(), panel *diagnosticsListener, network bool, ready ...func()) error {
 	defer cleanup()
 	// Reserve the existing service's address first: the new optional panel must
-	// never steal port 8080 from an installation already using it for UniProxy.
+	// never steal the primary port from an existing UniProxy installation.
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
 		return err
