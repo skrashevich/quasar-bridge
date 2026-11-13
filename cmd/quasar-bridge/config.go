@@ -47,6 +47,7 @@ type config struct {
 	LLMStripPrefixes   []string             `json:"llm_strip_prefixes"`
 	LLMTTSMarkup       bool                 `json:"llm_tts_markup"`
 	HomeWarmArea       string               `json:"home_warm_area"`
+	HomeDefaultArea    string               `json:"home_default_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
 }
@@ -76,7 +77,7 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 		"QUASAR_MODE": &cfg.Mode, "QUASAR_LLM_BASE_URL": &cfg.LLMBaseURL,
 		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
 		"QUASAR_LLM_API": &cfg.LLMAPI, "QUASAR_LLM_REASONING_EFFORT": &cfg.LLMReasoningEffort,
-		"QUASAR_LLM_CHATGPT_AUTH_FILE": &cfg.LLMChatGPTAuthFile,
+		"QUASAR_LLM_CHATGPT_AUTH_FILE": &cfg.LLMChatGPTAuthFile, "QUASAR_HOME_DEFAULT_AREA": &cfg.HomeDefaultArea,
 	} {
 		if value, ok := os.LookupEnv(name); ok {
 			*target = value

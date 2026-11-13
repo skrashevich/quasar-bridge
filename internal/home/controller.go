@@ -24,9 +24,13 @@ type Planner interface {
 	Complete(context.Context, []llm.Message, bool) (string, error)
 }
 type Controller struct {
-	Tools        ToolCaller
-	Planner      Planner
-	Domains      []string
+	Tools   ToolCaller
+	Planner Planner
+	Domains []string
+	// DefaultArea is the Home Assistant area where this speaker stands. It is
+	// used only when a request names no room: devices in the area are marked
+	// here=true and the planner prefers them over the same devices elsewhere.
+	DefaultArea  string
 	exposureMu   sync.Mutex
 	guideMu      sync.Mutex
 	guidesLoaded bool
@@ -44,6 +48,8 @@ type Entity struct {
 	Area    string   `json:"area"`
 	Aliases []string `json:"aliases"`
 	Members []string `json:"member_entity_ids,omitempty"`
+	// Here marks devices in the speaker's own area for a request without a room.
+	Here bool `json:"here,omitzero"`
 }
 type Action struct {
 	Domain   string         `json:"domain"`
@@ -125,6 +131,7 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	roomNamed := len(roomStems(text, entities)) > 0
 	entities = scopeEntities(text, entities)
 	start := time.Now()
 	enriched := make([]Entity, len(entities))
@@ -157,6 +164,10 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 		}
 	}
 	slog.Info("home_inventory", "exposed_entities", len(entities), "metadata_ms", time.Since(start).Milliseconds())
+	var areaHint string
+	if !roomNamed && !wholeHome(text) {
+		entities, areaHint = markDefaultArea(c.DefaultArea, entities)
+	}
 	if len(entities) > 80 {
 		return "Уточните комнату и тип устройства: найдено слишком много устройств.", nil
 	}
@@ -172,7 +183,7 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 		return "Уточните комнату и тип устройства: найдено слишком много устройств.", nil
 	}
 	if stateQuestion(text) {
-		answer, err := c.Planner.Complete(ctx, []llm.Message{{Role: "system", Content: "Ответь на вопрос о состоянии умного дома по текущему списку HA. Только 1–2 коротких предложения по-русски. Никаких действий. Для освещения учитывай группы и отдельные светильники; переключатели Adaptive Lighting — настройки автоматики, а не источники света. unavailable/unknown означает отсутствие данных. Не придумывай значения и единицы измерения. Называй устройства по friendly_name, никогда не упоминай entity_id в ответе: его читают вслух."}, {Role: "user", Content: "Устройства: " + string(data) + "\nВопрос: " + text}}, false)
+		answer, err := c.Planner.Complete(ctx, []llm.Message{{Role: "system", Content: "Ответь на вопрос о состоянии умного дома по текущему списку HA. Только 1–2 коротких предложения по-русски. Никаких действий. Для освещения учитывай группы и отдельные светильники; переключатели Adaptive Lighting — настройки автоматики, а не источники света. unavailable/unknown означает отсутствие данных. Не придумывай значения и единицы измерения. Называй устройства по friendly_name, никогда не упоминай entity_id в ответе: его читают вслух." + areaHint}, {Role: "user", Content: "Устройства: " + string(data) + "\nВопрос: " + text}}, false)
 		if err != nil {
 			return "", err
 		}
@@ -184,7 +195,7 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 		services = append(services, name)
 	}
 	slices.Sort(services)
-	answer, err := c.Planner.Complete(ctx, []llm.Message{{Role: "system", Content: prompt + strings.Join(services, ", ")}, {Role: "user", Content: "Устройства: " + string(data) + "\nЗапрос: " + text}}, true)
+	answer, err := c.Planner.Complete(ctx, []llm.Message{{Role: "system", Content: prompt + strings.Join(services, ", ") + "." + areaHint}, {Role: "user", Content: "Устройства: " + string(data) + "\nЗапрос: " + text}}, true)
 	if err != nil {
 		return "", err
 	}
@@ -326,6 +337,18 @@ func spokenAnswer(answer string, entities []Entity) string {
 	return strings.NewReplacer(pairs...).Replace(answer)
 }
 
+// wholeHome reports a request about the entire home, which the speaker's own
+// area must not narrow: "какая температура дома", "выключи свет во всех комнатах".
+func wholeHome(text string) bool {
+	s := strings.ToLower(text)
+	for _, word := range []string{"дома", "в доме", "по дому", "всём доме", "всем доме", "весь дом", "всему дому", "квартир", "всех комнат", "всем комнатам", "везде", "всюду"} {
+		if strings.Contains(s, word) {
+			return true
+		}
+	}
+	return false
+}
+
 func controlDomains(text string) []string {
 	s := strings.ToLower(text)
 	domains := []string{}
@@ -366,26 +389,7 @@ func controlDomains(text string) []string {
 // Scope by explicit room names, retaining fixtures that are named for the room
 // even when their HA area is missing. Ambiguous matches remain for clarification.
 func scopeEntities(text string, entities []Entity) []Entity {
-	text = strings.ToLower(text)
-	var stems []string
-	for _, e := range entities {
-		for _, word := range strings.FieldsFunc(strings.ToLower(e.Area), func(r rune) bool { return !unicode.IsLetter(r) }) {
-			if word == "этаж" || word == "floor" {
-				continue
-			}
-			runes := []rune(word)
-			if len(runes) < 3 {
-				continue
-			}
-			if len(runes) >= 6 {
-				runes = runes[:len(runes)-2]
-			}
-			stem := string(runes)
-			if strings.Contains(text, stem) && !slices.Contains(stems, stem) {
-				stems = append(stems, stem)
-			}
-		}
-	}
+	stems := roomStems(text, entities)
 	if len(stems) == 0 {
 		return entities
 	}
@@ -400,6 +404,60 @@ func scopeEntities(text string, entities []Entity) []Entity {
 		}
 	}
 	return out
+}
+
+// roomStems returns the stems of known area names mentioned in the request.
+func roomStems(text string, entities []Entity) []string {
+	text = strings.ToLower(text)
+	var stems []string
+	for _, e := range entities {
+		for _, word := range strings.FieldsFunc(strings.ToLower(e.Area), func(r rune) bool { return !unicode.IsLetter(r) }) {
+			if word == "этаж" || word == "floor" {
+				continue
+			}
+			runes := []rune(word)
+			if len(runes) < 3 {
+				continue
+			}
+			if len(runes) >= 6 {
+				runes = runes[:len(runes)-2]
+			} else if len(runes) >= 4 && strings.ContainsRune("аеёиоуыэюяйь", runes[len(runes)-1]) {
+				// A short name changes its last letter when declined:
+				// "кухня" is said as "на кухне", "в кухню".
+				runes = runes[:len(runes)-1]
+			}
+			stem := string(runes)
+			if strings.Contains(text, stem) && !slices.Contains(stems, stem) {
+				stems = append(stems, stem)
+			}
+		}
+	}
+	return stems
+}
+
+// markDefaultArea marks devices of the speaker's area for a request that names
+// no room and returns the prompt hint describing them. Devices elsewhere stay
+// in the inventory: "выключи пылесос" must still reach a vacuum in another room.
+// Only an inventory too large for the planner is narrowed to the speaker's area.
+func markDefaultArea(area string, entities []Entity) ([]Entity, string) {
+	area = strings.TrimSpace(area)
+	if area == "" {
+		return entities, ""
+	}
+	matched := 0
+	for i := range entities {
+		entities[i].Here = strings.EqualFold(strings.TrimSpace(entities[i].Area), area)
+		if entities[i].Here {
+			matched++
+		}
+	}
+	if matched == 0 {
+		return entities, ""
+	}
+	if len(entities) > 80 {
+		entities = slices.DeleteFunc(entities, func(e Entity) bool { return !e.Here })
+	}
+	return entities, " Колонка, которой задан запрос, стоит в области «" + area + "»; устройства этой области помечены here=true. Если комната в запросе не названа, выбирай устройства с here=true, а устройства других областей — только если подходящих среди here=true нет."
 }
 
 func (c *Controller) enrich(ctx context.Context, e Entity) (Entity, bool, error) {
