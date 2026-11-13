@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libx11-dev libxi-dev libxkbcommon-dev libgl1-mesa-dev libwayland-dev
           rustup toolchain install stable --profile minimal
-      - name: Build kuyase 1.1.0 for Ubuntu 24.04
+      - name: Build kuyase 1.4.0 for Ubuntu 24.04
         run: bash scripts/kuyase/build-emulator.sh "$RUNNER_TEMP/kuyase-build"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -49,7 +49,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Test ASR controller
+      - name: Test E2E controller and backend fixtures
         run: go test -race ./scripts/kuyase/control -count=1 -timeout=60s
       - name: Test emulator preparation diagnostics
         run: python3 -m unittest discover -s scripts/kuyase -p 'test_*.py'
@@ -69,13 +69,15 @@ jobs:
           retention-days: 3
 
   emulator:
+    name: E2E (${{ matrix.board }}, ${{ matrix.arch }})
     needs: [build, build-emulator]
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         board: [yandexmini, station2]
+        arch: [arm64, armv7]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,18 +108,19 @@ jobs:
           "$RUNNER_TEMP/kuyase-venv/bin/python" scripts/kuyase/prepare.py \
             --board "$BOARD" --emulator-dir "$RUNNER_TEMP/kuyase" \
             --output "$RUNNER_TEMP/kuyase-input"
-      - name: Test Bridge in station VM
+      - name: Run core function E2E scenarios in station VM
         env:
           BOARD: ${{ matrix.board }}
+          PACKAGE_ARCH: ${{ matrix.arch }}
         run: |
-          python3 scripts/kuyase/run.py --board "$BOARD" \
+          python3 scripts/kuyase/run.py --board "$BOARD" --arch "$PACKAGE_ARCH" \
             --emulator-dir "$RUNNER_TEMP/kuyase" --build-dir dist \
-            --output "dist/kuyase-results/$BOARD"
+            --output "dist/kuyase-results/$BOARD-$PACKAGE_ARCH"
       - name: Keep emulator diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: kuyase-${{ matrix.board }}-logs
+          name: kuyase-${{ matrix.board }}-${{ matrix.arch }}-logs
           path: |
             dist/kuyase-results/
             ${{ runner.temp }}/kuyase-input/prepare.log
