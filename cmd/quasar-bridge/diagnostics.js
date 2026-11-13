@@ -445,7 +445,10 @@ async function loadHistory(event) {
       const entry = element("article", "history-item"); const meta = element("div", "history-meta");
       const time = element("time", "", timeText(item.time)); time.dateTime = item.time; meta.append(time);
       if (item.route) meta.append(element("span", "badge", routeName(item.route)));
-      entry.append(meta, element("h3", "history-query", item.query || "Запрос без текста"), element("p", "history-answer", item.answer || "Ответ не записан."));
+      const status = { interrupted: "Запрос прерван", incomplete: "Неполная запись", no_answer: "Без текста ответа" }[item.status];
+      if (status) meta.append(element("span", "badge", status));
+      const missing = item.status === "interrupted" ? "Запрос прерван. Текст ответа в журнале отсутствует." : "Текст ответа отсутствует в журнале. Это не означает, что колонка не ответила.";
+      entry.append(meta, element("h3", "history-query", item.query), element("p", "history-answer", item.answer || missing));
       return entry;
     }));
     if (!items.length) byId("history-items").append(element("p", "empty-state", "Записей не найдено. Измените текст поиска или период."));

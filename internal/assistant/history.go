@@ -26,6 +26,7 @@ type HistoryItem struct {
 	Query  string    `json:"query"`
 	Answer string    `json:"answer"`
 	Route  string    `json:"route,omitempty"`
+	Status string    `json:"status,omitempty"`
 }
 type HistoryResult struct {
 	Timezone  string        `json:"timezone,omitempty"`
@@ -36,6 +37,11 @@ type HistoryResult struct {
 type historyFile struct {
 	file         *os.File
 	offset, size int64
+}
+
+type historyTurn struct {
+	HistoryItem
+	final, interrupted bool
 }
 
 func SearchHistory(ctx context.Context, c journal.Config, q HistoryQuery, maxScanMB int) (HistoryResult, error) {
@@ -109,7 +115,7 @@ func SearchHistory(ctx context.Context, c journal.Config, q HistoryQuery, maxSca
 		files = append(files, historyFile{file: f, offset: offset, size: size})
 		budget -= size
 	}
-	pending := map[string]HistoryItem{}
+	pending := map[string]historyTurn{}
 	hits := map[string]HistoryItem{}
 	normalize := func(s string) string { return strings.ReplaceAll(strings.ToLower(s), "ё", "е") }
 	keywords := strings.Fields(normalize(q.Query))
@@ -121,6 +127,10 @@ func SearchHistory(ctx context.Context, c journal.Config, q HistoryQuery, maxSca
 		return s
 	}
 	add := func(key string, item HistoryItem) {
+		// Replies to internal device events are not user conversations.
+		if strings.TrimSpace(item.Query) == "" {
+			return
+		}
 		if item.Time.Before(since) || (!until.IsZero() && !item.Time.Before(until)) {
 			return
 		}
@@ -142,6 +152,21 @@ func SearchHistory(ctx context.Context, c journal.Config, q HistoryQuery, maxSca
 			}
 			delete(hits, oldest)
 		}
+	}
+	finish := func(key string, p historyTurn) {
+		// Exclude the question currently waiting for its own history tool result.
+		if !p.final && !p.interrupted && time.Since(p.Time) <= 90*time.Second {
+			return
+		}
+		switch {
+		case p.interrupted:
+			p.Status = "interrupted"
+		case !p.final:
+			p.Status = "incomplete"
+		case p.Answer == "":
+			p.Status = "no_answer"
+		}
+		add(key, p.HistoryItem)
 	}
 	for i := len(files) - 1; i >= 0; i-- {
 		f := files[i]
@@ -169,32 +194,48 @@ func SearchHistory(ctx context.Context, c journal.Config, q HistoryQuery, maxSca
 			}
 			key := e.Session + ":" + e.Request
 			p := pending[key]
+			if p.Time.IsZero() {
+				p.Time = e.Time
+			}
+			if e.Route != "" {
+				p.Route = e.Route
+			}
 			switch e.Event {
 			case "request", "transcript":
-				if p.Time.IsZero() {
-					p.Time = e.Time
-				}
 				if e.Text != "" {
-					p.Query = e.Text
+					p.Query = trim(e.Text)
 				}
-				pending[key] = p
-			case "response":
+			case "progress", "response":
 				if !e.Delivered {
 					continue
 				}
-				if p.Time.IsZero() {
-					p.Time = e.Time
+				answer := e.Speech
+				if answer == "" {
+					answer = e.Text
 				}
-				p.Answer = e.Speech
-				if p.Answer == "" {
-					p.Answer = e.Text
+				if answer != "" {
+					switch {
+					case e.Event == "response" && e.Kind == "DeferredAliceResponse" && e.Text != "":
+						// The final display text contains the complete streamed answer.
+						p.Answer = trim(e.Text)
+					case p.Answer == "", strings.HasPrefix(answer, p.Answer):
+						p.Answer = trim(answer)
+					case strings.HasSuffix(p.Answer, answer):
+						// A repeated frame must not duplicate the delivered text.
+					default:
+						p.Answer = trim(p.Answer + " " + answer)
+					}
 				}
-				p.Route = e.Route
-				if p.Query != "" || p.Answer != "" {
-					add(key, p)
-				}
-				delete(pending, key)
+				p.final = p.final || e.Event == "response"
+			case "cancel":
+				p.interrupted = !p.final
+			case "route":
+			default:
+				continue
 			}
+			// Keep completed turns too: trailing empty replies and late ASR frames
+			// belong to the same turn and must not replace it with an orphan reply.
+			pending[key] = p
 			if len(pending) > 256 {
 				oldest := ""
 				for k, v := range pending {
@@ -202,10 +243,7 @@ func SearchHistory(ctx context.Context, c journal.Config, q HistoryQuery, maxSca
 						oldest = k
 					}
 				}
-				p := pending[oldest]
-				if p.Query != "" {
-					add(oldest, p)
-				}
+				finish(oldest, pending[oldest])
 				delete(pending, oldest)
 			}
 		}
@@ -213,11 +251,8 @@ func SearchHistory(ctx context.Context, c journal.Config, q HistoryQuery, maxSca
 			result.Partial = true
 		}
 	}
-	// Do not include the question currently waiting for its own tool result.
 	for key, p := range pending {
-		if p.Query != "" && time.Since(p.Time) > 90*time.Second {
-			add(key, p)
-		}
+		finish(key, p)
 	}
 	for _, p := range hits {
 		result.Items = append(result.Items, p)
