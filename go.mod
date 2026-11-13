@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/skrashevich/go-opus v0.1.1
 	github.com/skrashevich/quasar-go-genproto v0.3.0
 	github.com/skrashevich/station-airplay v0.2.2
 	golang.org/x/net v0.62.0
