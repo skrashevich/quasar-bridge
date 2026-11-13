@@ -2,64 +2,52 @@ package assistant
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/sound"
-	"quasarbridge/internal/webaddress"
 )
 
 func musicDefinition() llm.Tool {
-	return definition("play_music", "Включить музыку на текущей колонке с публичного сайта или по прямой ссылке на аудио. source — точный URL страницы, сайта или аудиофайла из запроса пользователя. Сам находит аудиоссылки в HTML и данных плеера, при необходимости открывает музыкальный раздел сайта и ставит найденные MP3 в очередь. Не придумывай адреса файлов.", map[string]any{"source": map[string]string{"type": "string"}}, []string{"source"})
+	return definition("play_music", "Включить музыку на текущей колонке с публичного сайта или по прямой ссылке на аудио. source — точный URL страницы, сайта или аудиофайла из запроса пользователя. Если пользователь назвал конкретный трек, передай его точное название в title: будет выбран только один совпавший трек, без подбора замены. Без title сам находит аудиоссылки и ставит найденные MP3 в очередь. Не придумывай адреса файлов.", map[string]any{
+		"source": map[string]string{"type": "string"},
+		"title":  map[string]any{"type": "string", "minLength": 1, "maxLength": maxMusicTitleRunes},
+	}, []string{"source"})
 }
 
 func (t *Tools) playMusic(ctx context.Context, args string) (any, error) {
 	var p struct {
-		Source string `json:"source"`
+		Source string         `json:"source"`
+		Title  jsontext.Value `json:"title"`
 	}
 	if json.Unmarshal([]byte(args), &p, json.RejectUnknownMembers(true)) != nil || p.Source == "" || len(p.Source) > 2048 {
 		return nil, errors.New("invalid play_music source: provide the page or audio URL")
 	}
-	raw := webaddress.Normalize(strings.TrimSpace(p.Source))
-	u, err := url.Parse(raw)
-	if err != nil || validateWebURL(u) != nil || u.Fragment != "" {
-		return nil, errors.New("invalid play_music source: public HTTP/HTTPS URL required")
+	var title string
+	if len(p.Title) > 0 && (json.Unmarshal(p.Title, &title) != nil || utf8.RuneCountInString(title) > maxMusicTitleRunes || normalizeMusicTitle(title) == "") {
+		return nil, errors.New("invalid play_music title: provide a nonempty track title of at most 256 characters")
+	}
+	raw, err := normalizeMusicSource(p.Source)
+	if err != nil {
+		return nil, err
 	}
 	if !sound.HasPlayer(ctx) {
 		return nil, errors.New("play_music requires a current speaker request")
 	}
-	tracks := []WebLink{{URL: u.String()}}
-	if mediaExtension(raw) == "" {
-		page, err := t.WebReader.Read(ctx, raw)
+	resolution, err := t.WebReader.ResolveMusic(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	tracks := resolution.Tracks
+	if title != "" {
+		tracks, err = selectMusicTitle(tracks, title)
 		if err != nil {
 			return nil, err
 		}
-		tracks = page.Audio
-		if len(tracks) == 0 {
-			base, _ := url.Parse(page.URL)
-			attempts := 0
-			for _, link := range page.Links {
-				next, err := url.Parse(link.URL)
-				if err != nil || !strings.EqualFold(next.Host, base.Host) || next.Scheme != base.Scheme || next.String() == base.String() || !musicNavigation(link) {
-					continue
-				}
-				attempts++
-				section, err := t.WebReader.Read(ctx, link.URL)
-				if err == nil && len(section.Audio) > 0 {
-					tracks = section.Audio
-					break
-				}
-				if attempts >= 3 {
-					break
-				}
-			}
-		}
-	}
-	if len(tracks) == 0 {
-		return nil, errors.New("no playable audio links found on the page; a JavaScript-only player may require a direct audio URL")
 	}
 	if err := t.Playback.Start(ctx, tracks); err != nil {
 		return nil, err

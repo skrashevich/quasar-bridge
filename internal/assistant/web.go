@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -14,7 +12,6 @@ import (
 	"time"
 
 	"golang.org/x/net/html"
-	"golang.org/x/net/html/charset"
 )
 
 type WebResult struct {
@@ -24,12 +21,22 @@ type WebResult struct {
 	Links     []WebLink `json:"links,omitempty"`
 	Audio     []WebLink `json:"audio,omitempty"`
 	Truncated bool      `json:"truncated,omitzero"`
+	music     pageMusic
 }
 type WebReader struct {
 	config Config
 	http   *http.Client
 	lookup func(context.Context, string) ([]net.IPAddr, error)
 }
+
+var (
+	errWebURL        = errors.New("web URL must be HTTP/HTTPS without credentials")
+	errWebPrivate    = errors.New("web private addresses are blocked")
+	errWebPrivateDNS = errors.New("web DNS resolved to a private or reserved address")
+	errWebDNS        = errors.New("web DNS lookup failed")
+	errWebConnection = errors.New("web connection failed")
+	errWebRedirects  = errors.New("web redirect limit exceeded")
+)
 
 func NewWebReader(c Config) *WebReader {
 	w := &WebReader{config: c, lookup: net.DefaultResolver.LookupIPAddr}
@@ -42,7 +49,7 @@ func NewWebReader(c Config) *WebReader {
 	transport.ResponseHeaderTimeout = time.Duration(c.WebTimeoutMS) * time.Millisecond
 	w.http = &http.Client{Transport: transport, Timeout: time.Duration(c.WebTimeoutMS) * time.Millisecond, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 4 {
-			return errors.New("web redirect limit exceeded")
+			return errWebRedirects
 		}
 		return validateWebURL(req.URL)
 	}}
@@ -62,13 +69,13 @@ func publicIP(ip netip.Addr) bool {
 }
 func validateWebURL(u *url.URL) error {
 	if u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Opaque != "" {
-		return errors.New("web URL must be HTTP/HTTPS without credentials")
+		return errWebURL
 	}
 	if strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), "localhost") {
-		return errors.New("web private addresses are blocked")
+		return errWebPrivate
 	}
 	if ip, err := netip.ParseAddr(u.Hostname()); err == nil && !publicIP(ip) {
-		return errors.New("web private addresses are blocked")
+		return errWebPrivate
 	}
 	return nil
 }
@@ -79,12 +86,12 @@ func (w *WebReader) dial(ctx context.Context, network, address string) (net.Conn
 	}
 	ips, err := w.lookup(ctx, host)
 	if err != nil || len(ips) == 0 {
-		return nil, errors.New("web DNS lookup failed")
+		return nil, errWebDNS
 	}
 	for _, ip := range ips {
 		a, ok := netip.AddrFromSlice(ip.IP)
 		if !ok || ip.Zone != "" || !publicIP(a) {
-			return nil, errors.New("web DNS resolved to a private or reserved address")
+			return nil, errWebPrivateDNS
 		}
 	}
 	dialer := net.Dialer{Timeout: 5 * time.Second}
@@ -97,78 +104,20 @@ func (w *WebReader) dial(ctx context.Context, network, address string) (net.Conn
 			return nil, ctx.Err()
 		}
 	}
-	return nil, errors.New("web connection failed")
+	return nil, errWebConnection
 }
 func (w *WebReader) Read(ctx context.Context, raw string) (WebResult, error) {
-	if len(raw) > 4096 {
-		return WebResult{}, errors.New("web URL exceeds limit")
-	}
-	u, err := url.Parse(raw)
+	body, err := w.readBody(ctx, raw, nil)
 	if err != nil {
-		return WebResult{}, errors.New("invalid web URL")
-	}
-	if err := validateWebURL(u); err != nil {
 		return WebResult{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(w.config.WebTimeoutMS)*time.Millisecond)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return WebResult{}, errors.New("invalid web URL")
-	}
-	req.Header.Set("User-Agent", "QuasarBridge/0.3 (text reader)")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain,application/json")
-	resp, err := w.http.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return WebResult{}, ctx.Err()
-		}
-		return WebResult{}, errors.New("web request failed or target blocked")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return WebResult{}, errors.New("web page returned an unsuccessful HTTP status")
-	}
-	typ, params, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if typ != "text/html" && typ != "application/xhtml+xml" && typ != "text/plain" && typ != "application/json" {
-		return WebResult{}, errors.New("web content type is not supported")
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(w.config.WebMaxBytes)+1))
-	if err != nil {
-		return WebResult{}, errors.New("cannot read web page")
-	}
-	result := WebResult{URL: u.String()}
-	if resp.Request != nil {
-		result.URL = resp.Request.URL.String()
-	}
-	if len(data) > w.config.WebMaxBytes {
-		data = data[:w.config.WebMaxBytes]
-		result.Truncated = true
-	}
-	var decoder io.Reader
-	if typ == "text/html" || typ == "application/xhtml+xml" {
-		decoder, err = charset.NewReader(bytes.NewReader(data), resp.Header.Get("Content-Type"))
-	} else if params["charset"] != "" {
-		decoder, err = charset.NewReaderLabel(params["charset"], bytes.NewReader(data))
-	}
-	if err != nil {
-		return WebResult{}, errors.New("web page charset is not supported")
-	}
-	if decoder != nil {
-		data, err = io.ReadAll(io.LimitReader(decoder, int64(w.config.WebMaxBytes)*3+1))
-		if err != nil {
-			return WebResult{}, errors.New("cannot decode web page")
-		}
-		if len(data) > w.config.WebMaxBytes*3 {
-			data = data[:w.config.WebMaxBytes*3]
-			result.Truncated = true
-		}
-	}
+	data, typ := body.data, body.typ
+	result := WebResult{URL: body.url, Truncated: body.truncated}
 	text := string(data)
 	if typ == "text/html" || typ == "application/xhtml+xml" {
 		result.Title, text = htmlText(data, w.config.WebMaxChars)
 		pageURL, _ := url.Parse(result.URL)
-		result.Links, result.Audio = extractPageMedia(data, pageURL)
+		result.Links, result.Audio, result.music = extractPageMedia(data, pageURL)
 	} else if typ == "application/json" {
 		pageURL, _ := url.Parse(result.URL)
 		media := newMediaCollector(pageURL)
@@ -185,7 +134,7 @@ func (w *WebReader) Read(ctx context.Context, raw string) (WebResult, error) {
 		result.Title = string(title[:300])
 	}
 	result.Text = text
-	if text == "" && len(result.Audio) == 0 && len(result.Links) == 0 {
+	if text == "" && len(result.Audio) == 0 && len(result.Links) == 0 && !(result.music.player && len(result.music.scripts) > 0) {
 		return WebResult{}, errors.New("web page contains no readable text")
 	}
 	return result, nil

@@ -411,6 +411,15 @@ func (q *MusicQueue) locate(raw string, positionMS int64) (string, musicQueueEnt
 	return "", musicQueueEntry{}, 0, 0, ErrMusicQueueEnd
 }
 
+// Tracks returns a copy of the remaining registered sources without fetching audio.
+func (q *MusicQueue) Tracks(streamURL string) ([]WebLink, error) {
+	_, entry, index, _, err := q.locate(streamURL, 0)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Clone(entry.tracks[index:]), nil
+}
+
 func (q *MusicQueue) selection(id string, entry musicQueueEntry, index int, offset time.Duration) MusicSelection {
 	u := q.base.Clone()
 	u.Path, u.RawPath = q.prefix+id, ""

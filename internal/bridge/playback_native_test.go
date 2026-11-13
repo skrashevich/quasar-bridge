@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -13,7 +15,21 @@ import (
 	"quasarbridge/internal/sound"
 )
 
+type musicLogWriter chan string
+
+func (w musicLogWriter) Write(data []byte) (int, error) {
+	select {
+	case w <- string(data):
+	default:
+	}
+	return len(data), nil
+}
+
 func TestNativeMusicFailureDoesNotBlameModelOrPlayQueuedAudio(t *testing.T) {
+	logs := make(musicLogWriter, 64)
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
 	n, _, down := soundSession(t, resolverFunc(func(ctx context.Context, _ string) (Resolution, error) {
 		if err := sound.Play(ctx, sound.Request{URL: "https://audio.example/song.mp3"}); err != nil {
 			t.Fatal(err)
@@ -33,6 +49,20 @@ func TestNativeMusicFailureDoesNotBlameModelOrPlayQueuedAudio(t *testing.T) {
 			break
 		}
 	}
+	for len(logs) > 0 {
+		var event struct {
+			Message string `json:"msg"`
+			Request string `json:"request"`
+			Error   string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(<-logs), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Message == "native_music_failed" && event.Error == "cannotfetchpage" && event.Request != "" && event.Request != "music-failure" {
+			return
+		}
+	}
+	t.Fatal("music failure cause is missing from diagnostics")
 }
 
 func TestPlayerStateTypedAndRaw(t *testing.T) {
