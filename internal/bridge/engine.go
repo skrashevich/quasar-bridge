@@ -34,6 +34,7 @@ type MusicStarter interface {
 type Engine struct {
 	Configuration bool
 	Recovery      func(context.Context, string) (string, error)
+	Diagnostics   func(context.Context, bool) (string, error)
 	AirPlay       AirPlayController
 	LLM           Completer
 	Assistant     Completer
@@ -100,6 +101,14 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "diagnostics":
+		enabled, ok := configvoice.DiagnosticsCommand(text)
+		if !ok || e.Diagnostics == nil {
+			return result, errors.New("live diagnostics control is unavailable")
+		}
+		answer, err := e.Diagnostics(ctx, enabled)
+		result.Answer = answer
+		return result, err
 	case "recovery":
 		action := configvoice.RecoveryAction(text)
 		if action == "" || e.Recovery == nil {
@@ -268,6 +277,9 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	p := e.policy()
 	if configvoice.RecoveryAction(text) != "" {
 		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
+	}
+	if _, ok := configvoice.DiagnosticsCommand(text); ok {
+		return RouteDecision{Route: "diagnostics", Source: "bridge_diagnostics"}
 	}
 	if e.Configuration && configvoice.InConversation(text, snapshot.Messages) {
 		return RouteDecision{Route: "llm", Source: "bridge_configuration"}

@@ -22,7 +22,7 @@ const enumSettings = {
   "routing.default_route": [["classify", "Классификатор"], ["yandex", "Алиса"], ["llm", "Модель"], ["home", "Умный дом"]],
   "routing.classifier.on_error": [["yandex", "Алиса"], ["llm", "Модель"], ["home", "Умный дом"]]
 };
-const sourceNames = { rule: "Совпало правило", default: "Маршрут по умолчанию", classifier: "Классификатор", classifier_error: "Ошибка классификатора; выбран резервный маршрут", airplay: "Команда AirPlay", mode: "Режим Bridge", pending: "Нужен классификатор", builtin: "Встроенная команда", bridge_configuration: "Команда управления Bridge", recovery: "Команда восстановления Bridge", music: "Команда воспроизведения музыки", playback: "Управление воспроизведением" };
+const sourceNames = { rule: "Совпало правило", default: "Маршрут по умолчанию", classifier: "Классификатор", classifier_error: "Ошибка классификатора; выбран резервный маршрут", airplay: "Команда AirPlay", mode: "Режим Bridge", pending: "Нужен классификатор", builtin: "Встроенная команда", bridge_configuration: "Команда управления Bridge", bridge_diagnostics: "Управление веб-интерфейсом", recovery: "Команда восстановления Bridge", music: "Команда воспроизведения музыки", playback: "Управление воспроизведением" };
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -36,7 +36,7 @@ function message(id, text = "", error = false) {
   node.hidden = !text;
 }
 function routeName(route) {
-  return ({ yandex: "Алиса", llm: "Модель", home: "Умный дом", airplay: "AirPlay", classify: "Классификатор", proxy: "Прокси", observe: "Наблюдение" })[route] || route || "Не определён";
+  return ({ yandex: "Алиса", llm: "Модель", home: "Умный дом", airplay: "AirPlay", diagnostics: "Веб-интерфейс", classify: "Классификатор", proxy: "Прокси", observe: "Наблюдение" })[route] || route || "Не определён";
 }
 function timeText(value) {
   const date = new Date(value);

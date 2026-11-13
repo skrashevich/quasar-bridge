@@ -7,6 +7,10 @@ AirPlay controls rather than maintaining a second configuration implementation.
 ## Access
 
 - `diagnostics.network_access` defaults to `false` and is voice editable.
+- The explicit built-in commands “Алиса, включи веб-интерфейс” and
+  “Алиса, выключи веб-интерфейс” toggle network access in hybrid mode without
+  calling the LLM or depending on assistant tools. They preserve other pending
+  configuration changes and retain the previous access state on failure.
 - A dedicated HTTP listener defaults to `127.0.0.1:8080`, independently of the
   speaker's loopback UniProxy listener and `allowed_ips`.
 - Setting network access binds this listener to `0.0.0.0` on the same port.
@@ -53,4 +57,4 @@ Verify defaults, config rejection, voice save/reload, live access changes,
 same-origin guards, failed binds, API validation, unavailable services, isolated
 query context and bounded history. Run the full Go suite and focused race
 checks. Inspect the actual panel on desktop and mobile with a local fixture;
-hardware and microphone validation are outside this local implementation.
+Record hardware and microphone evidence separately in `docs/validation.md`.

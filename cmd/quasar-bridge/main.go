@@ -216,6 +216,9 @@ func main() {
 	configuration := &configurationControl{path: *path, active: cfg, engine: engine, logs: logs}
 	configuration.restart = func(ctx context.Context) (any, error) { return update.New(*path).Restart(ctx) }
 	engine.Configuration = cfg.AssistantTools.Enabled && cfg.AssistantTools.Configuration
+	if cfg.Mode == "hybrid" {
+		engine.Diagnostics = configuration.SetDiagnosticsNetworkAccess
+	}
 	var airPlay *airPlayControl
 	cleanupAirPlay := sync.OnceFunc(func() { shutdownAirPlay(stop, airPlay) })
 	defer cleanupAirPlay()

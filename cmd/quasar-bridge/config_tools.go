@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -285,6 +286,53 @@ func (c *configurationControl) diagnosticsNetworkAccess() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.active.Diagnostics.NetworkAccess
+}
+
+// SetDiagnosticsNetworkAccess applies only this setting, leaving all other
+// saved changes pending. Request guards wait on mu until binding and saving
+// have either committed together or the previous binding has been restored.
+func (c *configurationControl) SetDiagnosticsNetworkAccess(ctx context.Context, enabled bool) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if c.restartPending() {
+		return "", errors.New("restart already scheduled; wait for the new process")
+	}
+	if c.applyDiagnostics == nil {
+		return "", errors.New("diagnostics control requires the running web listener")
+	}
+	raw, err := os.ReadFile(c.path)
+	if err != nil {
+		return "", errors.New("cannot read configuration file")
+	}
+	saved, err := parseConfig(raw, false)
+	if err != nil {
+		return "", err
+	}
+	previous := c.active.Diagnostics.NetworkAccess
+	if err := c.applyDiagnostics(enabled); err != nil {
+		return "", err
+	}
+	rollback := func(err error) (string, error) {
+		return "", errors.Join(err, c.applyDiagnostics(previous))
+	}
+	if err := ctx.Err(); err != nil {
+		return rollback(err)
+	}
+	if saved.Diagnostics.NetworkAccess != enabled {
+		if _, err := c.setLocked(ctx, map[string]jsontext.Value{"diagnostics.network_access": jsontext.Value(strconv.FormatBool(enabled))}, raw); err != nil {
+			return rollback(err)
+		}
+	} else if current, err := os.ReadFile(c.path); err != nil || !bytes.Equal(raw, current) {
+		return rollback(errors.New("configuration changed externally; read it again before retrying"))
+	}
+	c.active.Diagnostics.NetworkAccess = enabled
+	if enabled {
+		return "Сетевой доступ к веб-интерфейсу включён.", nil
+	}
+	return "Сетевой доступ к веб-интерфейсу выключен.", nil
 }
 
 func configValue(cfg config, path string) jsontext.Value {

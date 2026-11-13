@@ -11,8 +11,8 @@ listener and an independently bound diagnostics listener.
 
 ## Constraints and review focus
 
-Go 1.27.3; no frontend build or external assets. Preserve the main checkout's
-unfinished rebase. Never expose the complete config or environment. Verify
+Go 1.27.3; no frontend build or external assets. Never expose the complete config
+or environment. Verify
 network disable on established connections, failed port binds, atomic config
 validation, pending changes and reload failures, and explicit query side effects.
 
