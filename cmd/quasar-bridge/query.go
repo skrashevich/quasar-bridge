@@ -23,16 +23,24 @@ type queryPlayback struct {
 // resolveQuery captures speaker audio requests without a physical player transport.
 func resolveQuery(ctx context.Context, resolver bridge.Resolver, queue *assistant.MusicQueue, text string) (queryResolution, error) {
 	var playback []queryPlayback
-	ctx = sound.WithPlayer(dialogue.WithSpeaker(ctx, "query-diagnostics"), func(ctx context.Context, request sound.Request) error {
+	if dialogue.SpeakerKey(ctx) == "" {
+		ctx = dialogue.WithSpeaker(ctx, "query-diagnostics")
+	}
+	ctx, isolatedQueue := queue.WithIsolatedPlayback(ctx)
+	ctx = sound.WithPlayer(ctx, func(ctx context.Context, request sound.Request) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		captured := queryPlayback{Request: request}
 		if request.URL != "" {
 			captured.Tracks = []assistant.WebLink{{URL: request.URL, Title: request.Title}}
-			if queue != nil {
-				if tracks, err := queue.Tracks(request.URL); err == nil {
+			for _, source := range []*assistant.MusicQueue{isolatedQueue, queue} {
+				if source == nil {
+					continue
+				}
+				if tracks, err := source.Tracks(request.URL); err == nil {
 					captured.Tracks = tracks
+					break
 				}
 			}
 		}

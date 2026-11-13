@@ -15,6 +15,8 @@ import (
 	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	deferred "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
+	"google.golang.org/protobuf/encoding/protowire"
 	"quasarbridge/internal/journal"
 )
 
@@ -73,5 +75,39 @@ func TestConversationCorrelatesASRByApplicationRequestID(t *testing.T) {
 	json.Unmarshal([]byte(lines[len(lines)-1]), &e)
 	if e.Event != "transcript" || e.Text != "погода" || e.Request != journalID("voice-id") || e.Route != "yandex" {
 		t.Fatalf("bad transcript: %+v", e)
+	}
+}
+
+func TestConversationRecordsDeferredSpeechDeltas(t *testing.T) {
+	w := new(journal.Writer)
+	defer w.Close()
+	cfg := journal.DefaultConfig()
+	cfg.Enabled = true
+	cfg.Path = filepath.Join(t.TempDir(), "turns.jsonl")
+	if err := w.Configure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	log := newConversation(w)
+	base := new(deferred.TDeferedAliceResponseProto_TBaseResponse)
+	voice := protowire.AppendTag(nil, 2, protowire.BytesType)
+	voice = protowire.AppendString(voice, "Луна — спутник Земли.")
+	base.ProtoReflect().SetUnknown(voice)
+	msg := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
+		Header: &header.TEventHeader{RefMessageId: "voice-turn"},
+		Event: &server.TServerMessage_TEvent_DeferredAliceResponse{DeferredAliceResponse: &deferred.TDeferedAliceResponseProto{
+			TDeferredResponse: &deferred.TDeferedAliceResponseProto_BaseResponse{BaseResponse: base},
+		}},
+	}}}
+	log.server(aa(msg), true)
+	raw, err := os.ReadFile(cfg.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e journal.Event
+	if err := json.Unmarshal(raw, &e); err != nil {
+		t.Fatal(err)
+	}
+	if e.Event != "progress" || !e.Delivered || e.Speech != "Луна — спутник Земли." || e.Text != "" {
+		t.Fatalf("lost spoken delta: %+v", e)
 	}
 }

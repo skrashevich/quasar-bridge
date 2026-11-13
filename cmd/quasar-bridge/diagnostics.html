@@ -3,35 +3,82 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Диагностика — Quasar Bridge</title>
+  <meta name="color-scheme" content="light">
+  <title>Панель управления — Quasar Bridge</title>
   <link rel="stylesheet" href="app.css">
   <script src="app.js" defer></script>
 </head>
 <body>
-<main>
-  <header>
-    <div><p class="product">Quasar Bridge</p><h1>Диагностика</h1></div>
-    <span id="version" class="version"></span>
-  </header>
-  <p class="intro">Повторите действие, с которым возникла проблема. Новые события появятся здесь автоматически.</p>
-  <dl class="state" aria-label="Состояние AirPlay">
-    <div><dt>Приёмник AirPlay</dt><dd id="receiver">Проверяем…</dd></div>
-    <div><dt>Отправитель</dt><dd id="sender">Проверяем…</dd></div>
-    <div><dt>Воспроизведение</dt><dd id="playing">Проверяем…</dd></div>
-  </dl>
-  <section aria-labelledby="log-title">
-    <div class="toolbar">
-      <h2 id="log-title">Журнал событий</h2>
-      <div class="actions">
-        <button id="pause" type="button" aria-pressed="false">Приостановить обновление</button>
-        <a class="download" href="download" download>Скачать журнал (.txt)</a>
+<a class="skip-link" href="#content">К содержимому</a>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">q<span>b</span></span><span>Quasar<br>Bridge</span></a>
+    <nav aria-label="Разделы панели">
+      <a href="#overview" class="nav-link active" aria-current="page"><span aria-hidden="true">◉</span> Обзор</a>
+      <a href="#settings" class="nav-link"><span aria-hidden="true">≡</span> Настройки <span id="nav-dirty" class="nav-count" hidden></span></a>
+      <a href="#query" class="nav-link"><span aria-hidden="true">↗</span> Проверка запроса</a>
+      <a href="#airplay" class="nav-link"><span aria-hidden="true">♫</span> AirPlay</a>
+      <a href="#history" class="nav-link"><span aria-hidden="true">◷</span> История</a>
+      <a href="#logs" class="nav-link"><span aria-hidden="true">▤</span> Журнал событий</a>
+    </nav>
+    <div class="sidebar-note">Управление колонкой<br><span id="version">Версия загружается…</span></div>
+  </aside>
+  <main id="content" tabindex="-1">
+    <header class="page-header"><div><p class="page-context">Панель управления</p><h1 id="page-title">Обзор</h1></div><div id="connection-state" class="connection-state"><span class="status-dot" aria-hidden="true"></span><span id="connection-text">Подключаемся…</span></div></header>
+    <p id="global-message" class="notice" role="status" hidden></p>
+    <section id="overview" class="page" aria-labelledby="overview-title">
+      <h2 id="overview-title" class="visually-hidden">Состояние Bridge</h2>
+      <div class="signal-path" aria-label="Обработка голосового запроса">
+        <div class="signal-node"><span class="signal-symbol" aria-hidden="true">◉</span><strong>Колонка</strong><span>Голосовой запрос</span></div><span class="signal-line" aria-hidden="true"></span>
+        <div class="signal-node bridge-node"><span class="signal-symbol" aria-hidden="true">⇄</span><strong>Quasar Bridge</strong><span id="overview-mode">Проверяем режим…</span></div><span class="signal-line" aria-hidden="true"></span>
+        <div class="signal-destinations"><div><strong>Алиса</strong><span>Сервисы Яндекса</span></div><div><strong>Модель</strong><span id="overview-model">Загрузка настроек…</span></div></div>
       </div>
-    </div>
-    <p id="connection" role="status">Подключаемся к Bridge…</p>
-    <pre id="log" tabindex="0" aria-label="Журнал событий Quasar Bridge">Загружаем журнал…</pre>
-    <p id="limit" class="note">Доступны события с запуска Bridge, до 1 МиБ. Файл содержит журнал, версию и текущее состояние AirPlay.</p>
-  </section>
-  <footer>Для разбора проблемы приложите скачанный файл к issue и укажите модель колонки, приложение и версию iOS. Статус воспроизведения сам по себе не подтверждает наличие звука.</footer>
-</main>
+      <div class="section-heading"><h2>Сейчас в работе</h2><button id="refresh-status" type="button" class="quiet">Обновить</button></div>
+      <dl id="overview-state" class="facts"><div><dt>Bridge</dt><dd>Загружаем состояние…</dd></div></dl>
+      <div class="overview-columns">
+        <section class="surface" aria-labelledby="overview-routing-title"><h3 id="overview-routing-title">Куда направляются запросы</h3><dl id="routing-state" class="detail-list"></dl><a class="text-link" href="#query">Проверить фразу</a></section>
+        <section class="surface" aria-labelledby="overview-settings-title"><h3 id="overview-settings-title">Сохранено и применяется</h3><p id="overview-config">Загружаем настройки…</p><a class="text-link" href="#settings">Открыть настройки</a><p class="muted small">Сохранение файла и применение настроек — отдельные действия.</p></section>
+      </div>
+      <section class="surface" aria-labelledby="overview-features-title"><h3 id="overview-features-title">Возможности</h3><div id="feature-state" class="feature-list"><span>Загружаем…</span></div></section>
+      <details class="surface technical-details"><summary>Техническое состояние</summary><dl id="technical-state" class="detail-list"></dl><details class="raw-state"><summary>Полный ответ состояния</summary><pre id="status-json" tabindex="0" aria-label="Техническое состояние Bridge в JSON">Загружаем…</pre></details></details>
+    </section>
+    <section id="settings" class="page" aria-labelledby="settings-title" hidden>
+      <h2 id="settings-title" class="visually-hidden">Настройки Bridge</h2>
+      <p class="intro">Измените нужные параметры и сохраните их в файл. Затем примените изменения: часть настроек требует перезапуска Bridge.</p>
+      <div class="settings-tools"><label class="search-field"><span class="visually-hidden">Поиск настроек</span><input id="settings-search" type="search" placeholder="Найти настройку или её описание" autocomplete="off"></label><button id="refresh-config" type="button" class="quiet">Обновить значения</button></div>
+      <p id="config-message" class="notice" role="status" hidden></p><p id="config-summary" class="muted small">Загружаем каталог настроек…</p>
+      <form id="settings-form" novalidate><div id="settings-fields"></div><div class="save-bar"><div><strong id="dirty-summary">Нет несохранённых изменений</strong><span id="pending-summary" class="muted small"></span></div><div class="actions"><button id="discard-config" type="button" class="quiet" disabled>Отменить правки</button><button id="save-config" type="submit" class="primary" disabled>Сохранить в файл</button></div></div></form>
+      <section class="apply-section" aria-labelledby="apply-title"><div><h3 id="apply-title">Применение настроек</h3><p id="apply-help" class="muted">После сохранения здесь появится способ применения.</p></div><div class="actions"><button id="reload-config" type="button" disabled>Применить без перезапуска</button><button id="restart-config" type="button" disabled>Перезапустить Bridge…</button></div></section>
+      <div id="restart-confirmation" class="confirmation" hidden><div><strong>Перезапустить Bridge сейчас?</strong><p>Текущие запросы и AirPlay прервутся. Панель попробует подключиться к новому процессу автоматически.</p></div><div class="actions"><button id="cancel-restart" type="button">Отмена</button><button id="confirm-restart" type="button" class="danger">Перезапустить</button></div></div>
+    </section>
+    <section id="query" class="page" aria-labelledby="query-title" hidden>
+      <h2 id="query-title" class="visually-hidden">Проверка запроса</h2>
+      <p class="intro">Проверьте выбор маршрута как с флагом -route: с классификатором модели и встроенными обработчиками, без выполнения команды. Сравнение правил отдельно показывает действующие и сохранённые настройки без обращения к модели.</p>
+      <form id="query-form" class="surface"><label for="query-text" class="field-label">Фраза для колонки</label><textarea id="query-text" rows="4" maxlength="8000" placeholder="Например: спроси нейросеть, почему небо голубое" required></textarea><div class="query-actions"><button id="decide-query" type="submit" class="primary">Проверить маршрут</button><button id="preview-query" type="button">Сравнить правила</button></div></form>
+      <p id="query-message" class="notice" role="status" hidden></p><div id="route-result" class="route-result" hidden></div>
+      <section id="decision-section" class="surface" aria-labelledby="decision-title" hidden><div class="section-heading"><h3 id="decision-title">Выбранный маршрут</h3><span id="decision-meta" class="muted small"></span></div><p id="decision-route" class="route-name"></p><p id="decision-source" class="route-explanation"></p><details class="raw-state"><summary>Результат в JSON</summary><pre id="decision-json" tabindex="0" aria-label="Результат проверки маршрута в JSON"></pre></details></section>
+      <section class="execution-section" aria-labelledby="execute-title"><div><h3 id="execute-title">Выполнить запрос</h3><p id="execute-help">Как с флагом -query: Bridge обработает фразу. Воспроизведение имитируется и показывается в результате; звук на колонке не запускается. Другие команды могут реально управлять устройствами или менять настройки.</p></div><button id="execute-query" type="button">Выполнить запрос</button></section>
+      <section id="answer-section" class="surface" aria-labelledby="answer-title" hidden><div class="section-heading"><h3 id="answer-title">Ответ Bridge</h3><span id="answer-meta" class="muted small"></span></div><p id="answer-text" class="answer-text"></p><div id="playback-report" hidden><h4>Подготовленные команды плееру</h4><p id="playback-notice" class="notice" role="status"></p><div id="playback-items"></div></div></section>
+    </section>
+    <section id="airplay" class="page" aria-labelledby="airplay-title" hidden>
+      <h2 id="airplay-title" class="visually-hidden">Управление AirPlay</h2><p class="intro">Включите приёмник и выберите колонку в списке AirPlay на телефоне или компьютере.</p>
+      <dl class="facts" aria-label="Состояние AirPlay"><div><dt>Приёмник AirPlay</dt><dd id="receiver">Проверяем…</dd></div><div><dt>Отправитель</dt><dd id="sender">Проверяем…</dd></div><div><dt>Воспроизведение</dt><dd id="playing">Проверяем…</dd></div></dl>
+      <p id="airplay-message" class="notice" role="status" hidden></p>
+      <section class="surface"><div class="section-heading"><h3 id="airplay-name">Приёмник</h3><span id="airplay-volume" class="muted small"></span></div><p id="airplay-error" class="error-text" hidden></p><div class="actions airplay-main"><button type="button" class="primary" data-airplay="start">Включить AirPlay</button><button type="button" data-airplay="stop">Выключить AirPlay</button></div><div class="media-controls" aria-label="Управление воспроизведением"><button type="button" data-airplay="previous">Предыдущий трек</button><button type="button" data-airplay="pause">Пауза</button><button type="button" data-airplay="resume">Продолжить</button><button type="button" data-airplay="next">Следующий трек</button></div><div class="volume-control"><label for="volume-level">Громкость <output id="volume-value" for="volume-level">50%</output></label><input id="volume-level" type="range" min="0" max="100" value="50"><button id="set-volume" type="button">Установить громкость</button></div></section>
+      <p class="muted small">Статус воспроизведения сам по себе не подтверждает наличие слышимого звука. Имя, задержку и начальную громкость можно изменить в <a href="#settings" data-settings-filter="airplay">настройках AirPlay</a>.</p>
+    </section>
+    <section id="history" class="page" aria-labelledby="history-title" hidden>
+      <h2 id="history-title" class="visually-hidden">История диалогов</h2><p class="intro">Распознанные запросы к колонке и записанные ответы. Прерванные запросы и неполные записи отмечены отдельно. Служебные события без текста запроса не показываются. История загружается при открытии раздела и по кнопке поиска.</p>
+      <form id="history-form" class="surface history-filters"><label>Поиск по тексту<input id="history-search" type="search" placeholder="Слова из вопроса или ответа"></label><label>Начиная с<input id="history-since" type="date"></label><label>По дату<input id="history-until" type="date"></label><label>Записей<select id="history-limit"><option>5</option><option>10</option><option selected>20</option></select></label><button id="search-history" type="submit" class="primary">Найти</button></form>
+      <p id="history-message" class="notice" role="status" hidden></p><p id="history-summary" class="muted small"></p><div id="history-items" class="history-items"><p class="empty-state">Загружаем историю…</p></div>
+    </section>
+    <section id="logs" class="page" aria-labelledby="log-title" hidden>
+      <div class="section-heading"><div><h2 id="log-title">Журнал событий</h2><p class="muted small">Повторите действие, с которым возникла проблема.</p></div><div class="actions"><button id="pause" type="button" aria-pressed="false">Приостановить обновление</button><a class="button primary" href="download" download>Скачать журнал (.txt)</a></div></div>
+      <div class="log-tools"><label class="search-field"><span class="visually-hidden">Поиск в журнале</span><input id="log-search" type="search" placeholder="Найти событие, ошибку или запрос"></label><label class="level-field">Уровень<select id="log-level"><option value="">Все события</option><option value="DEBUG">Отладка</option><option value="INFO">Информация</option><option value="WARN">Предупреждения</option><option value="ERROR">Ошибки</option></select></label></div>
+      <p id="connection" class="muted small" role="status">Журнал загрузится при открытии раздела.</p><pre id="log" tabindex="0" aria-label="Журнал событий Quasar Bridge">Загружаем журнал…</pre><p id="limit" class="muted small">Доступны события с запуска Bridge, до 1 МиБ. Файл содержит журнал, версию и текущее состояние AirPlay.</p><p class="muted small">Для разбора проблемы приложите файл к issue и укажите модель колонки, приложение и версию системы отправителя.</p>
+    </section>
+    <footer>Quasar Bridge <span aria-hidden="true">/</span> <span id="last-updated">Ожидаем состояние колонки</span></footer>
+  </main>
+</div>
 </body>
 </html>

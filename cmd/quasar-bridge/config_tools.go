@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -30,6 +31,8 @@ type voiceSetting struct {
 // Explicit leaves prevent a parent-object update from smuggling in credentials,
 // process commands, network endpoints or filesystem paths.
 var voiceSettings = []voiceSetting{
+	{"mode", "Режим Bridge: observe передаёт запросы Яндексу; hybrid включает локальные маршруты и LLM и требует настроенные llm_base_url и llm_model. Смена режима требует перезапуска.", "QUASAR_MODE", true},
+	{"diagnostics.network_access", "Логическое: разрешить доступ к веб-панели диагностики по сети. По умолчанию false: доступ только через localhost. Применяется reload без перезапуска.", "", false},
 	{"llm_model", "Модель LLM; непустая строка в hybrid. Наличие модели на сервере отдельно не проверяется.", "QUASAR_LLM_MODEL", true},
 	{"llm_api", "API: chat_completions, responses или chatgpt. Зависимые параметры меняй одним вызовом.", "QUASAR_LLM_API", true},
 	{"llm_reasoning_effort", "Усилие рассуждения: пустая строка, none, minimal, low, medium, high, xhigh, max; только responses/chatgpt.", "QUASAR_LLM_REASONING_EFFORT", true},
@@ -79,13 +82,14 @@ var voiceSettings = []voiceSetting{
 }
 
 type configurationControl struct {
-	mu          sync.Mutex
-	path        string
-	active      config
-	engine      *bridge.Engine
-	logs        *journal.Writer
-	restart     func(context.Context) (any, error)
-	restartDone <-chan struct{}
+	mu               sync.Mutex
+	path             string
+	active           config
+	engine           *bridge.Engine
+	logs             *journal.Writer
+	applyDiagnostics func(bool) error
+	restart          func(context.Context) (any, error)
+	restartDone      <-chan struct{}
 }
 
 type configurationResult struct {
@@ -99,6 +103,7 @@ type configurationResult struct {
 func requiresRestart(active, next config) bool {
 	active.Routing, next.Routing = bridge.RoutingConfig{}, bridge.RoutingConfig{}
 	active.ConversationLog, next.ConversationLog = journal.Config{}, journal.Config{}
+	active.Diagnostics.NetworkAccess, next.Diagnostics.NetworkAccess = false, false
 	return !reflect.DeepEqual(active, next)
 }
 
@@ -265,11 +270,69 @@ func (c *configurationControl) Apply(ctx context.Context, action string) (any, e
 		if err := applyReload(next, c.active, c.engine, c.logs); err != nil {
 			return nil, err
 		}
+		if c.applyDiagnostics != nil && next.Diagnostics.NetworkAccess != c.active.Diagnostics.NetworkAccess {
+			if err := c.applyDiagnostics(next.Diagnostics.NetworkAccess); err != nil {
+				return nil, errors.Join(err, applyReload(c.active, next, c.engine, c.logs))
+			}
+		}
 		c.active = next
 		return c.result("applied", next), nil
 	default:
 		return nil, errors.New("configuration action must be reload or restart")
 	}
+}
+
+func (c *configurationControl) diagnosticsNetworkAccess() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.active.Diagnostics.NetworkAccess
+}
+
+// SetDiagnosticsNetworkAccess applies only this setting, leaving all other
+// saved changes pending. Request guards wait on mu until binding and saving
+// have either committed together or the previous binding has been restored.
+func (c *configurationControl) SetDiagnosticsNetworkAccess(ctx context.Context, enabled bool) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if c.restartPending() {
+		return "", errors.New("restart already scheduled; wait for the new process")
+	}
+	if c.applyDiagnostics == nil {
+		return "", errors.New("diagnostics control requires the running web listener")
+	}
+	raw, err := os.ReadFile(c.path)
+	if err != nil {
+		return "", errors.New("cannot read configuration file")
+	}
+	saved, err := parseConfig(raw, false)
+	if err != nil {
+		return "", err
+	}
+	previous := c.active.Diagnostics.NetworkAccess
+	if err := c.applyDiagnostics(enabled); err != nil {
+		return "", err
+	}
+	rollback := func(err error) (string, error) {
+		return "", errors.Join(err, c.applyDiagnostics(previous))
+	}
+	if err := ctx.Err(); err != nil {
+		return rollback(err)
+	}
+	if saved.Diagnostics.NetworkAccess != enabled {
+		if _, err := c.setLocked(ctx, map[string]jsontext.Value{"diagnostics.network_access": jsontext.Value(strconv.FormatBool(enabled))}, raw); err != nil {
+			return rollback(err)
+		}
+	} else if current, err := os.ReadFile(c.path); err != nil || !bytes.Equal(raw, current) {
+		return rollback(errors.New("configuration changed externally; read it again before retrying"))
+	}
+	c.active.Diagnostics.NetworkAccess = enabled
+	if enabled {
+		return "Сетевой доступ к веб-интерфейсу включён.", nil
+	}
+	return "Сетевой доступ к веб-интерфейсу выключен.", nil
 }
 
 func configValue(cfg config, path string) jsontext.Value {
