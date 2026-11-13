@@ -337,6 +337,10 @@ func main() {
 			n := bridge.NewNative(ctx, up, down, engine)
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
+			n.StreamSentences = cfg.SentenceTTS.Enabled
+			if n.StreamSentences && cfg.LLMTTSMarkup {
+				slog.Warn("sentence_tts disabled: llm_tts_markup=true; set llm_tts_markup=false to enable sentence streaming")
+			}
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond

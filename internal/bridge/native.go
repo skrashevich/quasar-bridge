@@ -46,9 +46,15 @@ type RoutedResolver interface {
 type FallbackResolver interface {
 	Fallback(context.Context, string) (Resolution, error)
 }
+type StreamingFallbackResolver interface {
+	FallbackStream(context.Context, string, func(string) error) (Resolution, error)
+	SupportsSentenceStreaming() bool
+}
 
 type nativeRequest struct {
 	streaming                       bool
+	nativeTextStream                bool
+	nativeTextChunk                 uint64
 	listenOnStreamStart             bool
 	partial                         uint32
 	responseID                      string
@@ -100,6 +106,7 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+	StreamSentences  bool
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -289,7 +296,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			n.mu.Lock()
 			p := n.streams[binary.BigEndian.Uint32(data)]
 			drop := n.blocked[binary.BigEndian.Uint32(data)] != nil || (p != nil && p.canceled)
-			if p != nil && (p.streaming || p.markedTTS) && !drop {
+			if p != nil && (p.streaming || p.markedTTS) && !p.nativeTextStream && !drop {
 				out, err := p.audio.feed(data[4:])
 				if err == nil && len(out) > 0 {
 					err = n.down(ctx, k, append(binary.BigEndian.AppendUint32(nil, p.audioStream), out...))
@@ -327,7 +334,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				n.mu.Unlock()
 				return nil
 			}
-			if (p.streaming || p.markedTTS) && sc.GetClose() != nil {
+			if (p.streaming || p.markedTTS) && !p.nativeTextStream && sc.GetClose() != nil {
 				if err := p.audio.endSource(); err != nil {
 					p.cancel()
 					n.mu.Unlock()
@@ -410,7 +417,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		if e.GetTtsSpeak() != nil {
 			n.streams[uint32(e.Header.GetStreamId())] = p
-			if p.streaming || p.markedTTS {
+			if (p.streaming || p.markedTTS) && !p.nativeTextStream {
 				if e.GetTtsSpeak().GetFormat() != "audio/opus" {
 					p.cancel()
 					n.mu.Unlock()
@@ -562,12 +569,22 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				p.listenOnStreamStart = decision.Source == "dialogue_retry"
 				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
-				stop := func() {}
-				if decision.Route != "yandex" && n.ProgressAfter > 0 {
-					stop = n.progress(p)
+				streamed := false
+				if n.StreamSentences && decision.Route == "llm" &&
+					decision.Source != "dialogue_retry" && decision.Source != "dialogue_reset" {
+					if provider, ok := n.resolver.(StreamingFallbackResolver); ok && provider.SupportsSentenceStreaming() {
+						result, err = n.streamSpeechNative(p, text, provider)
+						streamed = true
+					}
 				}
-				result, err = routed.ResolveDecision(p.ctx, text, decision)
-				stop()
+				if !streamed {
+					stop := func() {}
+					if decision.Route != "yandex" && n.ProgressAfter > 0 {
+						stop = n.progress(p)
+					}
+					result, err = routed.ResolveDecision(p.ctx, text, decision)
+					stop()
+				}
 			} else {
 				result, err = n.resolver.Resolve(p.ctx, text)
 			}
@@ -653,6 +670,9 @@ func (n *Native) sendCancel(ctx context.Context, id string) error {
 func (n *Native) reply(p *nativeRequest, result Resolution) error {
 	text := result.Answer
 	speech := cmp.Or(result.speech, text)
+	if p.nativeTextStream {
+		return n.finishNativeStreamedReply(p, text)
+	}
 	if p.streaming {
 		return n.finishDeferred(p, text, speech)
 	}
@@ -688,12 +708,17 @@ func (n *Native) reply(p *nativeRequest, result Resolution) error {
 	return n.synthesize(p, speech)
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
-	if strings.Contains(text, "<speaker") {
+	if p.nativeTextStream {
+		text = "" // Streaming UniProxy ignores the initial TtsGenerate.Text.
+	} else if strings.Contains(text, "<speaker") {
 		n.mu.Lock()
 		p.markedTTS = true
 		n.mu.Unlock()
 	}
 	t := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: p.ttsID}, Event: &client.TClientMessage_TEvent_TtsGenerate{TtsGenerate: &tts.TTtsGenerate{Text: new(text), Lang: new("ru-RU"), Format: new("audio/opus")}}}}}
+	if p.nativeTextStream {
+		t.GetEvent().GetTtsGenerate().IsStreaming = new(true)
+	}
 	b, err := (wire.Frame{Client: t, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err
