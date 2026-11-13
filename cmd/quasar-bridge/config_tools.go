@@ -56,7 +56,7 @@ var voiceSettings = []voiceSetting{
 	{"conversation_log.max_text_chars", "Лимит символов записи: целое число 1..64000.", "", false},
 	{"routing.default_route", "Маршрут по умолчанию: classify, yandex, llm или home.", "", false},
 	{"routing.classifier.enabled", "Логическое: включить LLM-классификатор запросов без совпавшего правила. При false используется маршрут по умолчанию. Если поле отсутствует, действует прежнее поведение default_route.", "", false},
-	{"routing.rules", "Массив правил по порядку: name, route (yandex/llm/home), disabled, match с contains_any, contains_all_groups, contains_none, starts_with_any, regex, wake_words (ID слов из station-wakeword). Перед изменением прочитай текущие правила и сохрани остальные.", "", false},
+	{"routing.rules", "Массив правил по порядку: name, route (yandex/llm/home), disabled, match с contains_any, contains_all_groups, contains_none, starts_with_any, regex. Перед изменением прочитай текущие правила и сохрани остальные.", "", false},
 	{"routing.classifier.prompt", "Непустая строка: инструкция классификатора маршрута.", "", false},
 	{"routing.classifier.timeout_ms", "Тайм-аут классификации в миллисекундах: целое число 1..60000.", "", false},
 	{"routing.classifier.on_error", "Маршрут при ошибке классификатора: yandex, llm или home.", "", false},
