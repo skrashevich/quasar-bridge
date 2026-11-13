@@ -3,17 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	airplay "github.com/skrashevich/station-airplay"
-	"quasarbridge/internal/bridge"
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
@@ -120,9 +121,11 @@ func TestDiagnosticAPIPreviewDoesNotExecuteAndQueryIsBounded(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("query did not reach backend")
 	}
-	response = diagnosticAPIRequest(otherListener, "POST", "query", `{"text":"Второй"}`, "application/json")
-	if response.Code != http.StatusConflict {
-		t.Fatalf("parallel query accepted: status=%d body=%s", response.Code, response.Body)
+	for _, endpoint := range []string{"query", "decide"} {
+		response = diagnosticAPIRequest(otherListener, "POST", endpoint, `{"text":"Второй"}`, "application/json")
+		if response.Code != http.StatusConflict {
+			t.Fatalf("parallel %s accepted: status=%d body=%s", endpoint, response.Code, response.Body)
+		}
 	}
 	close(finish)
 	response = <-done
@@ -135,6 +138,89 @@ func TestDiagnosticAPIPreviewDoesNotExecuteAndQueryIsBounded(t *testing.T) {
 	}
 	if len(c.engine.Dialogue.View(t.Context()).Messages) != 0 {
 		t.Fatal("dashboard query contaminated unnamed speaker conversation")
+	}
+}
+
+func TestDiagnosticAPIDecideUsesClassifierWithoutExecutingQuery(t *testing.T) {
+	c := configurationFixture(t, `{"mode":"observe","airplay":{"disabled":true},"routing":{"rules":[],"default_route":"classify","classifier":{"on_error":"yandex","timeout_ms":60000}}}`)
+	started, finish := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(finish) })
+	defer release()
+	c.engine.LLM = diagnosticCompleter(func(ctx context.Context, messages []llm.Message, structured bool) (string, error) {
+		if !structured || messages[len(messages)-1].Content != "Куда направить запрос?" {
+			t.Errorf("live route generated an answer instead of classifying: messages=%+v structured=%t", messages, structured)
+		}
+		if dialogue.SpeakerKey(ctx) == "" {
+			t.Error("live route used unnamed speaker context")
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 75*time.Second {
+			t.Error("live route has no bounded backend context")
+		}
+		close(started)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-finish:
+			return `{"route":"llm"}`, nil
+		}
+	})
+	control := diagnosticControl{Configuration: c, Engine: c.engine, Status: func() map[string]any { return map[string]any{"mode": "observe"} }, QueryBusy: new(atomic.Bool)}
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, control)
+	if response := diagnosticAPIRequest(mux, "POST", "decide", `{"text":"Куда направить запрос?","execute":true}`, "application/json"); response.Code != 400 {
+		t.Fatalf("invalid live route accepted: status=%d body=%s", response.Code, response.Body)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- diagnosticAPIRequest(mux, "POST", "decide", `{"text":"Куда направить запрос?"}`, "application/json")
+	}()
+	select {
+	case <-started:
+	case response := <-done:
+		t.Fatalf("live route did not classify: status=%d body=%s", response.Code, response.Body)
+	case <-time.After(5 * time.Second):
+		t.Fatal("live route did not reach classifier")
+	}
+	otherListener := http.NewServeMux()
+	registerDiagnosticsAPI(otherListener, control)
+	for _, endpoint := range []string{"query", "decide"} {
+		if response := diagnosticAPIRequest(otherListener, "POST", endpoint, `{"text":"Второй"}`, "application/json"); response.Code != http.StatusConflict {
+			t.Fatalf("parallel %s accepted while deciding: status=%d body=%s", endpoint, response.Code, response.Body)
+		}
+	}
+	release()
+	response := <-done
+	var result struct {
+		Route     string `json:"route"`
+		Source    string `json:"source"`
+		ElapsedMS int64  `json:"elapsed_ms"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != 200 || result.Route != "llm" || result.Source != "classifier" || result.ElapsedMS < 0 {
+		t.Fatalf("live route failed: status=%d body=%s error=%v", response.Code, response.Body, err)
+	}
+	if strings.Contains(response.Body.String(), `"answer"`) {
+		t.Fatal("live route returned a generated answer")
+	}
+
+	r := &fakeAirPlayReceiver{state: airplay.StateStopped}
+	c.engine.AirPlay = &airPlayControl{receiver: r, app: t.Context()}
+	response = diagnosticAPIRequest(mux, "POST", "decide", `{"text":"Включи AirPlay"}`, "application/json")
+	if response.Code != 200 || !strings.Contains(response.Body.String(), `"source":"airplay"`) || r.state != airplay.StateStopped || r.starts != 0 {
+		t.Fatalf("special live route executed action or was not recognized: status=%d body=%s receiver=%+v", response.Code, response.Body, r)
+	}
+}
+
+func TestDiagnosticAPIDecidePreservesClassifierFallback(t *testing.T) {
+	c := configurationFixture(t, `{"airplay":{"disabled":true},"routing":{"rules":[],"default_route":"classify","classifier":{"on_error":"yandex"}}}`)
+	c.engine.LLM = diagnosticCompleter(func(context.Context, []llm.Message, bool) (string, error) {
+		return "", errors.New("private-provider-detail")
+	})
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, diagnosticControl{Engine: c.engine})
+	response := diagnosticAPIRequest(mux, "POST", "decide", `{"text":"Куда направить запрос?"}`, "application/json")
+	if response.Code != 200 || !strings.Contains(response.Body.String(), `"route":"yandex"`) || !strings.Contains(response.Body.String(), `"source":"classifier_error"`) || strings.Contains(response.Body.String(), "private-provider-detail") {
+		t.Fatalf("classifier fallback differs from CLI: status=%d body=%s", response.Code, response.Body)
 	}
 }
 
@@ -160,15 +246,22 @@ func TestDiagnosticAPIHistoryUsesJournalAndValidatesLimits(t *testing.T) {
 }
 
 func TestDiagnosticAPICapabilitiesAndAirPlayUseRealControl(t *testing.T) {
+	c := configurationFixture(t, `{"mode":"observe","airplay":{"disabled":true},"routing":{"rules":[],"default_route":"llm"}}`)
+	c.engine.LLM = diagnosticCompleter(func(_ context.Context, messages []llm.Message, structured bool) (string, error) {
+		if structured || messages[len(messages)-1].Content != "Проверка" {
+			t.Errorf("unexpected observe-mode query: messages=%+v structured=%t", messages, structured)
+		}
+		return "Ответ из backend.", nil
+	})
 	r := &fakeAirPlayReceiver{state: airplay.StateStopped}
 	mux := http.NewServeMux()
-	registerDiagnosticsAPI(mux, diagnosticControl{AirPlay: &airPlayControl{receiver: r, app: t.Context()}, Engine: new(bridge.Engine), Status: func() map[string]any { return map[string]any{"mode": "observe", "client_frames": 7} }})
+	registerDiagnosticsAPI(mux, diagnosticControl{AirPlay: &airPlayControl{receiver: r, app: t.Context()}, Engine: c.engine, Status: func() map[string]any { return map[string]any{"mode": "observe", "client_frames": 7} }})
 	response := diagnosticAPIRequest(mux, "GET", "status", "", "")
-	if response.Code != 200 || !strings.Contains(response.Body.String(), `"query":false`) || !strings.Contains(response.Body.String(), `"client_frames":7`) {
-		t.Fatalf("wrong capabilities/status: %s", response.Body)
+	if response.Code != 200 || !strings.Contains(response.Body.String(), `"query":true`) || !strings.Contains(response.Body.String(), `"client_frames":7`) {
+		t.Errorf("wrong capabilities/status: %s", response.Body)
 	}
-	if response := diagnosticAPIRequest(mux, "POST", "query", `{"text":"Проверка"}`, "application/json"); response.Code != 503 {
-		t.Fatalf("observe query executed: status=%d body=%s", response.Code, response.Body)
+	if response := diagnosticAPIRequest(mux, "POST", "query", `{"text":"Проверка"}`, "application/json"); response.Code != 200 || !strings.Contains(response.Body.String(), `"answer":"Ответ из backend."`) {
+		t.Errorf("observe query did not resolve like CLI: status=%d body=%s", response.Code, response.Body)
 	}
 	response = diagnosticAPIRequest(mux, "POST", "airplay", `{"action":"start"}`, "application/json")
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `"state":"running"`) {

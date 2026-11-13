@@ -26,7 +26,9 @@ AirPlay controls rather than maintaining a second configuration implementation.
 - Settings: safe existing catalog; search, type-aware editors, active/saved
   values, environment overrides, unsaved edits and pending restart state.
   Saving and applying are distinct actions. Restart requires a deliberate click.
-- Request testing: static route preview and separately requested execution.
+- Request testing: exact CLI `-route` selection with classifier and built-in
+  handlers, static active/saved rules comparison, and separate CLI `-query`
+  execution. Live route selection never calls the selected action.
   Execution uses isolated dashboard dialogue state and can call real tools.
   Yandex cannot produce an answer outside a live speaker session.
 - AirPlay: receiver start/stop and available sender media controls.

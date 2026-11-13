@@ -41,19 +41,13 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 	register := func(pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(pattern, diagnosticsAccess(control.Network, handler))
 	}
-	queryAvailable := func() bool {
-		if control.Engine == nil || control.Status == nil {
-			return false
-		}
-		return control.Status()["mode"] == "hybrid"
-	}
 	register("GET /diagnostics/api/status", func(w http.ResponseWriter, r *http.Request) {
 		state := map[string]any{}
 		if control.Status != nil {
 			maps.Copy(state, control.Status())
 		}
 		state["capabilities"] = map[string]bool{
-			"query": queryAvailable(), "config": control.Configuration != nil,
+			"query": control.Engine != nil, "decide": control.Engine != nil, "config": control.Configuration != nil,
 			"history": control.Logs != nil && control.Logs.Config().Path != "", "airplay": control.AirPlay != nil,
 		}
 		writeDiagnosticJSON(w, http.StatusOK, state)
@@ -112,6 +106,34 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 		value, err := control.Configuration.TestRouting(r.Context(), request.Text)
 		writeDiagnosticResult(w, value, err)
 	})
+	register("POST /diagnostics/api/decide", func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Text string `json:"text"`
+		}
+		if !readDiagnosticJSON(w, r, &request) || !validDiagnosticText(w, request.Text) {
+			return
+		}
+		if control.Engine == nil {
+			writeDiagnosticError(w, http.StatusServiceUnavailable, "Live routing control is unavailable")
+			return
+		}
+		if !control.QueryBusy.CompareAndSwap(false, true) {
+			writeDiagnosticError(w, http.StatusConflict, "Another diagnostic query or route check is running")
+			return
+		}
+		defer control.QueryBusy.Store(false)
+		ctx, cancel := context.WithTimeout(dialogue.WithSpeaker(r.Context(), "quasar-bridge-dashboard"), 75*time.Second)
+		defer cancel()
+		started := time.Now()
+		// Match CLI -route, including special handlers and classifier fallback,
+		// without generating an answer or executing the chosen action. Observe
+		// mode still permits this diagnostic path, as it does in the CLI.
+		decision := control.Engine.Decide(ctx, request.Text)
+		writeDiagnosticJSON(w, http.StatusOK, struct {
+			bridge.RouteDecision
+			ElapsedMS int64 `json:"elapsed_ms"`
+		}{RouteDecision: decision, ElapsedMS: time.Since(started).Milliseconds()})
+	})
 	register("POST /diagnostics/api/query", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Text string `json:"text"`
@@ -119,12 +141,12 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 		if !readDiagnosticJSON(w, r, &request) || !validDiagnosticText(w, request.Text) {
 			return
 		}
-		if !queryAvailable() {
-			writeDiagnosticError(w, http.StatusServiceUnavailable, "Text queries require hybrid mode")
+		if control.Engine == nil {
+			writeDiagnosticError(w, http.StatusServiceUnavailable, "Text query control is unavailable")
 			return
 		}
 		if !control.QueryBusy.CompareAndSwap(false, true) {
-			writeDiagnosticError(w, http.StatusConflict, "Another diagnostic query is running")
+			writeDiagnosticError(w, http.StatusConflict, "Another diagnostic query or route check is running")
 			return
 		}
 		defer control.QueryBusy.Store(false)

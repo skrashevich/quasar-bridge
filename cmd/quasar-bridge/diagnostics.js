@@ -22,7 +22,7 @@ const enumSettings = {
   "routing.default_route": [["classify", "Классификатор"], ["yandex", "Алиса"], ["llm", "Модель"], ["home", "Умный дом"]],
   "routing.classifier.on_error": [["yandex", "Алиса"], ["llm", "Модель"], ["home", "Умный дом"]]
 };
-const sourceNames = { rule: "Совпало правило", default: "Маршрут по умолчанию", classifier: "Классификатор", airplay: "Команда AirPlay", mode: "Режим Bridge", pending: "Нужен классификатор", builtin: "Встроенная команда", bridge_configuration: "Команда управления Bridge" };
+const sourceNames = { rule: "Совпало правило", default: "Маршрут по умолчанию", classifier: "Классификатор", classifier_error: "Ошибка классификатора; выбран резервный маршрут", airplay: "Команда AirPlay", mode: "Режим Bridge", pending: "Нужен классификатор", builtin: "Встроенная команда", bridge_configuration: "Команда управления Bridge", recovery: "Команда восстановления Bridge", music: "Команда воспроизведения музыки", playback: "Управление воспроизведением" };
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -102,9 +102,10 @@ function renderStatus(data) {
   byId("status-json").textContent = JSON.stringify(data, null, 2);
   renderAirPlay(data.airplay);
   byId("execute-query").disabled = state.queryBusy || data.capabilities?.query === false;
-  if (data.capabilities?.query === false) byId("execute-query").title = "Выполнение запроса доступно в гибридном режиме";
+  byId("decide-query").disabled = state.queryBusy || data.capabilities?.decide === false;
+  if (data.capabilities?.query === false) byId("execute-query").title = "Обработчик запросов недоступен";
   else byId("execute-query").removeAttribute("title");
-  byId("execute-help").textContent = data.capabilities?.query === false ? "Выполнение запроса доступно в гибридном режиме. Режим можно изменить в настройках. Проверка правил выше доступна и в режиме наблюдения." : "Bridge действительно обработает фразу. Запрос может управлять устройствами, включать звук или менять настройки.";
+  byId("execute-help").textContent = data.capabilities?.query === false ? "Обработчик запросов недоступен. Проверьте состояние Bridge и повторите подключение." : "Как с флагом -query: Bridge действительно обработает фразу. Запрос может управлять устройствами, включать звук или менять настройки. Диагностика доступна и в режиме наблюдения.";
   byId("last-updated").textContent = "Состояние обновлено в " + new Date().toLocaleTimeString("ru-RU");
 }
 async function loadStatus(reportError = false) {
@@ -352,12 +353,19 @@ function queryText() {
   if ([...text].length > 8000) throw new Error("Сократите запрос до 8000 символов.");
   return text;
 }
+function setQueryBusy(busy) {
+  state.queryBusy = busy;
+  byId("query-text").disabled = busy;
+  byId("preview-query").disabled = busy;
+  byId("decide-query").disabled = busy || state.status?.capabilities?.decide === false;
+  byId("execute-query").disabled = busy || state.status?.capabilities?.query === false;
+}
 async function previewQuery(event) {
   event.preventDefault();
   if (state.queryBusy) return;
   let text;
   try { text = queryText(); } catch (error) { message("query-message", error.message, true); return; }
-  state.queryBusy = true; byId("preview-query").disabled = true; byId("execute-query").disabled = true;
+  setQueryBusy(true);
   message("query-message", "Проверяем правила…");
   try {
     const result = await post("api/route", { text });
@@ -370,13 +378,32 @@ async function previewQuery(event) {
     byId("route-result").hidden = false;
     message("query-message", "Маршрут проверен без выполнения запроса. Классификатор модели не вызывался. Проверка охватывает правила и команды управления Bridge; специальные команды музыки и контекст диалога здесь не моделируются.");
   } catch (error) { message("query-message", error.message, true); }
-  finally { state.queryBusy = false; byId("preview-query").disabled = false; byId("execute-query").disabled = state.status?.capabilities?.query === false; }
+  finally { setQueryBusy(false); }
+}
+async function decideQuery(event) {
+  event.preventDefault();
+  if (state.queryBusy) return;
+  let text;
+  try { text = queryText(); } catch (error) { message("query-message", error.message, true); return; }
+  setQueryBusy(true);
+  byId("decision-section").hidden = true;
+  message("query-message", "Bridge выбирает маршрут. При необходимости вызывается классификатор модели…");
+  try {
+    const result = await post("api/decide", { text }, 80000);
+    byId("decision-route").textContent = routeName(result.route);
+    byId("decision-source").textContent = (sourceNames[result.source] || "Источник: " + (result.source || "не определён")) + (result.rule ? ". Правило: " + result.rule : "");
+    byId("decision-meta").textContent = typeof result.elapsed_ms === "number" ? (result.elapsed_ms / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " с" : "";
+    byId("decision-json").textContent = JSON.stringify(result, null, 2);
+    byId("decision-section").hidden = false;
+    message("query-message", "Маршрут выбран по действующим настройкам. Команда не выполнялась.");
+  } catch (error) { message("query-message", error.message, true); }
+  finally { setQueryBusy(false); }
 }
 async function executeQuery() {
   if (state.queryBusy) return;
   let text;
   try { text = queryText(); } catch (error) { message("query-message", error.message, true); return; }
-  state.queryBusy = true; byId("execute-query").disabled = true; byId("preview-query").disabled = true;
+  setQueryBusy(true);
   message("query-message", "Bridge выполняет запрос. Дождитесь ответа…");
   byId("answer-section").hidden = true;
   try {
@@ -388,7 +415,7 @@ async function executeQuery() {
     await loadStatus();
     await loadConfig(false);
   } catch (error) { message("query-message", error.message, true); }
-  finally { state.queryBusy = false; byId("execute-query").disabled = state.status?.capabilities?.query === false; byId("preview-query").disabled = false; }
+  finally { setQueryBusy(false); }
 }
 async function airPlayAction(action) {
   if (state.airplayBusy) return;
@@ -483,7 +510,9 @@ byId("reload-config").addEventListener("click", () => applyConfig("reload"));
 byId("restart-config").addEventListener("click", () => { byId("restart-confirmation").hidden = false; byId("confirm-restart").focus(); });
 byId("cancel-restart").addEventListener("click", () => { byId("restart-confirmation").hidden = true; byId("restart-config").focus(); });
 byId("confirm-restart").addEventListener("click", () => applyConfig("restart"));
-byId("query-form").addEventListener("submit", previewQuery);
+byId("query-form").addEventListener("submit", decideQuery);
+byId("preview-query").addEventListener("click", previewQuery);
+byId("query-text").addEventListener("input", () => { byId("decision-section").hidden = true; byId("route-result").hidden = true; byId("answer-section").hidden = true; message("query-message"); });
 byId("execute-query").addEventListener("click", executeQuery);
 document.querySelectorAll("[data-airplay]").forEach(button => button.addEventListener("click", () => airPlayAction(button.dataset.airplay)));
 byId("volume-level").addEventListener("input", () => { byId("volume-value").value = byId("volume-level").value + "%"; });
