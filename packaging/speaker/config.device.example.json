@@ -1,5 +1,9 @@
 {
   "listen": "127.0.0.1:8443",
+  "diagnostics": {
+    "network_access": false,
+    "port": 2704
+  },
   "upstream": "wss://uniproxy.alice.yandex.net/uni.ws",
   "mode": "observe",
   "listen_after_reply": true,

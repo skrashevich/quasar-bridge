@@ -17,6 +17,8 @@ import (
 	"quasarbridge/internal/webaddress"
 )
 
+const defaultSystemPrompt = "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."
+
 type Completer interface {
 	Complete(context.Context, []llm.Message, bool) (string, error)
 }
@@ -34,6 +36,8 @@ type MusicStarter interface {
 type Engine struct {
 	Configuration bool
 	Recovery      func(context.Context, string) (string, error)
+	SystemPrompt  string
+	Diagnostics   func(context.Context, bool) (string, error)
 	AirPlay       AirPlayController
 	LLM           Completer
 	Assistant     Completer
@@ -100,6 +104,14 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "diagnostics":
+		enabled, ok := configvoice.DiagnosticsCommand(text)
+		if !ok || e.Diagnostics == nil {
+			return result, errors.New("live diagnostics control is unavailable")
+		}
+		answer, err := e.Diagnostics(ctx, enabled)
+		result.Answer = answer
+		return result, err
 	case "recovery":
 		action := configvoice.RecoveryAction(text)
 		if action == "" || e.Recovery == nil {
@@ -191,7 +203,11 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома." + e.ttsInstructions()}}
+	system := e.SystemPrompt
+	if strings.TrimSpace(system) == "" {
+		system = defaultSystemPrompt
+	}
+	messages := []llm.Message{{Role: "system", Content: system + e.ttsInstructions()}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	messages = e.modelMessages(messages)
@@ -269,6 +285,9 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if configvoice.RecoveryAction(text) != "" {
 		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
 	}
+	if _, ok := configvoice.DiagnosticsCommand(text); ok {
+		return RouteDecision{Route: "diagnostics", Source: "bridge_diagnostics"}
+	}
 	if e.Configuration && configvoice.InConversation(text, snapshot.Messages) {
 		return RouteDecision{Route: "llm", Source: "bridge_configuration"}
 	}
@@ -287,7 +306,8 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}
 	}
-	if d, ok := p.match(text); ok {
+	wakewordTag, _ := ctx.Value(wakewordTagKey{}).(string)
+	if d, ok := p.match(text, wakewordTag); ok {
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
 			d.Route = "music"
 		}

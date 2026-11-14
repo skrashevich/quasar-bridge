@@ -774,6 +774,149 @@ printf 'install\\n' >> "$QUASAR_TEST_TRACE"
 
 
 class HostBootstrapTest(unittest.TestCase):
+    def interactive_fixture(self, root, *, require_tty=False, reject_mux=False):
+        release = root / "release"
+        release.mkdir()
+        setup = root / "setup.sh"
+        setup.write_text('#!/bin/sh\nset -eu\necho WIZARD_PROBE_STARTED\n'
+                         'IFS= read -r answer\nprintf "%s" "$answer" > "$QUASAR_TEST_ANSWER"\n'
+                         'printf "%s" "$QUASAR_SSH_TUNNEL" > "$QUASAR_TEST_TUNNEL"\n')
+        archive = release / "quasar-bridge-linux-arm64.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(setup, arcname="setup.sh")
+        archive.with_suffix(".gz.sha256").write_text(
+            f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
+        shim = root / "shim"
+        shim.mkdir()
+        # Downloading is external to the terminal/multiplexer regression.
+        (shim / "curl").write_text('''#!/usr/bin/env python3
+import shutil, sys, urllib.parse
+source = urllib.parse.urlparse(sys.argv[-1])
+assert source.scheme == "file"
+shutil.copyfile(urllib.parse.unquote(source.path), sys.argv[sys.argv.index("-o") + 1])
+''')
+        (shim / "ssh").write_text('''#!/usr/bin/env python3
+import json, os, subprocess, sys
+args = sys.argv[1:]
+def option(name):
+    value = None
+    for i, argument in enumerate(args[:-1]):
+        if argument == "-o" and args[i + 1].startswith(name + "=") and value is None:
+            value = args[i + 1].split("=", 1)[1]
+        # Unlike -o's first-value rule, OpenSSH assigns every explicit -S.
+        if argument == "-S" and name == "ControlPath":
+            value = args[i + 1]
+    return value
+with open(os.environ["QUASAR_TEST_SSH_LOG"], "a") as log:
+    log.write(json.dumps({"args": args, "stdin_tty": os.isatty(0),
+                          "master": option("ControlMaster"), "path": option("ControlPath")}) + "\\n")
+if "-O" in args:
+    sys.exit(0)
+command = args[-1]
+if command == "uname -m":
+    print("aarch64")
+    sys.exit(0)
+if "-tt" in args:
+    if os.environ["QUASAR_TEST_REQUIRE_TTY"] == "1" and not os.isatty(0):
+        sys.exit("wizard received bootstrap EOF instead of terminal input")
+    if os.environ["QUASAR_TEST_REJECT_MUX"] == "1" and (option("ControlMaster") != "no" or option("ControlPath") != "none"):
+        sys.exit("multiplexed wizard lost input from the piped bootstrap")
+sys.exit(subprocess.call(["sh", "-c", command],
+                         stdin=subprocess.DEVNULL if "-n" in args else None))
+''')
+        for file in shim.iterdir():
+            file.chmod(0o755)
+        if not shutil.which("sha256sum"):
+            sha = shim / "sha256sum"
+            sha.write_text('#!/bin/sh\nexec ' + shlex.quote(shutil.which("shasum")) + ' -a 256 "$@"\n')
+            sha.chmod(0o755)
+        return dict(os.environ, PATH=str(shim) + os.pathsep + os.environ["PATH"],
+                    QUASAR_RELEASE_URL=release.as_uri(),
+                    QUASAR_TEST_ANSWER=str(root / "answer"),
+                    QUASAR_TEST_TUNNEL=str(root / "tunnel"),
+                    QUASAR_TEST_SSH_LOG=str(root / "ssh.jsonl"),
+                    QUASAR_TEST_REQUIRE_TTY=str(int(require_tty)),
+                    QUASAR_TEST_REJECT_MUX=str(int(reject_mux)))
+
+    def pipe_bootstrap_in_terminal(self, shell, env):
+        # pty.fork gives the bootstrap its own controlling terminal even in CI.
+        command = f"cat {shlex.quote(str(ROOT / 'install.sh'))} | {shlex.quote(shell)} -s -- root@fixture -p 2222"
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execvpe("/bin/sh", ["sh", "-c", command], env)
+        output = bytearray()
+        status = None
+        answered = False
+        deadline = time.monotonic() + 10
+        try:
+            while time.monotonic() < deadline:
+                if select.select([terminal], [], [], 0.1)[0]:
+                    try:
+                        data = os.read(terminal, 65536)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    output.extend(data)
+                    if b"WIZARD_PROBE_STARTED" in output and not answered:
+                        os.write(terminal, b"terminal-answer\n")
+                        answered = True
+                done, current = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    status = current
+                    break
+        finally:
+            if status is None:
+                done, status = os.waitpid(pid, os.WNOHANG)
+                if not done:
+                    # Reap the entire isolated fixture process group on timeout.
+                    os.killpg(pid, 9)
+                    _, status = os.waitpid(pid, 0)
+            os.close(terminal)
+        return os.waitstatus_to_exitcode(status), output.decode(errors="replace")
+
+    def assert_interactive_bootstrap(self, root, code, output, answer):
+        self.assertEqual(code, 0, output)
+        self.assertIn("WIZARD_PROBE_STARTED", output)
+        self.assertEqual((root / "answer").read_text(), answer)
+        calls = [json.loads(line) for line in (root / "ssh.jsonl").read_text().splitlines()]
+        transfers = [call for call in calls if "-T" in call["args"]]
+        self.assertEqual(len(transfers), 2)
+        self.assertTrue(all(call["master"] == "auto" and call["path"] != "none" for call in transfers))
+
+    def test_piped_bootstrap_uses_tty_with_absolute_shell_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.interactive_fixture(root, require_tty=True)
+            code, output = self.pipe_bootstrap_in_terminal("/bin/sh", env)
+            self.assert_interactive_bootstrap(root, code, output, "terminal-answer")
+
+    def test_piped_bootstrap_does_not_multiplex_the_wizard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.interactive_fixture(root, require_tty=True, reject_mux=True)
+            code, output = self.pipe_bootstrap_in_terminal("sh", env)
+            self.assert_interactive_bootstrap(root, code, output, "terminal-answer")
+
+    def test_file_bootstrap_preserves_scripted_wizard_answers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.interactive_fixture(root)
+            result = subprocess.run(["sh", str(ROOT / "install.sh"), "root@fixture", "-p", "2222"],
+                                    env=env, input="scripted-answer\n", capture_output=True, text=True, timeout=10)
+            self.assert_interactive_bootstrap(root, result.returncode, result.stdout + result.stderr, "scripted-answer")
+
+    def test_wizard_bypasses_user_control_socket_and_keeps_tunnel_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.interactive_fixture(root, reject_mux=True)
+            options = ["-p", "2222", "-S", str(root / "user control")]
+            result = subprocess.run(["sh", str(ROOT / "install.sh"), "root@fixture", *options],
+                                    env=env, input="scripted-answer\n", capture_output=True, text=True, timeout=10)
+            self.assert_interactive_bootstrap(root, result.returncode, result.stdout + result.stderr, "scripted-answer")
+            self.assertEqual(shlex.split((root / "tunnel").read_text()),
+                             ["ssh", "-N", "-L", "1455:127.0.0.1:1455", *options, "root@fixture"])
+
     def test_tunnel_command_keeps_target_and_user_ssh_options(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

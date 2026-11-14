@@ -24,8 +24,14 @@ type progressConfig struct {
 	IntervalMS int  `json:"interval_ms"`
 }
 
+type diagnosticsConfig struct {
+	NetworkAccess bool `json:"network_access"`
+	Port          int  `json:"port"`
+}
+
 type config struct {
 	AirPlay            airPlayConfig        `json:"airplay"`
+	Diagnostics        diagnosticsConfig    `json:"diagnostics"`
 	DialogueContext    dialogue.Config      `json:"dialogue_context"`
 	LocalProgress      progressConfig       `json:"local_progress"`
 	AssistantTools     assistant.Config     `json:"assistant_tools"`
@@ -37,6 +43,7 @@ type config struct {
 	AllowedIPs         []string             `json:"allowed_ips"`
 	Mode               string               `json:"mode"`
 	LLMBaseURL         string               `json:"llm_base_url"`
+	LLMSystemPrompt    string               `json:"llm_system_prompt,omitempty"`
 	LLMModel           string               `json:"llm_model"`
 	LLMAPI             string               `json:"llm_api"`
 	LLMChatGPTAuthFile string               `json:"llm_chatgpt_auth_file"`
@@ -66,7 +73,7 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 }
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
+	cfg := config{Diagnostics: diagnosticsConfig{Port: 2704}, DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
@@ -74,7 +81,8 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 		"QUASAR_LISTEN": &cfg.Listen, "QUASAR_UPSTREAM": &cfg.Upstream,
 		"QUASAR_TLS_CERT": &cfg.TLSCert, "QUASAR_TLS_KEY": &cfg.TLSKey,
 		"QUASAR_MODE": &cfg.Mode, "QUASAR_LLM_BASE_URL": &cfg.LLMBaseURL,
-		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
+		"QUASAR_LLM_SYSTEM_PROMPT": &cfg.LLMSystemPrompt,
+		"QUASAR_LLM_MODEL":         &cfg.LLMModel, "QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
 		"QUASAR_LLM_API": &cfg.LLMAPI, "QUASAR_LLM_REASONING_EFFORT": &cfg.LLMReasoningEffort,
 		"QUASAR_LLM_CHATGPT_AUTH_FILE": &cfg.LLMChatGPTAuthFile,
 	} {
@@ -201,6 +209,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	}
 	if cfg.LocalProgress.AfterMS < 100 || cfg.LocalProgress.AfterMS > 10000 || cfg.LocalProgress.IntervalMS < 1000 || cfg.LocalProgress.IntervalMS > 10000 {
 		return cfg, errors.New("invalid local_progress timing")
+	}
+	if cfg.Diagnostics.Port < 1 || cfg.Diagnostics.Port > 65535 {
+		return cfg, errors.New("diagnostics.port must be in 1..65535")
 	}
 	if err := cfg.DialogueContext.Validate(); err != nil {
 		return cfg, err

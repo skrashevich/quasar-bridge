@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,9 @@ type FallbackResolver interface {
 }
 
 type nativeRequest struct {
+	audioInput                      []byte
+	audioInputDone                  bool
+	inputWhisper                    bool
 	streaming                       bool
 	listenOnStreamStart             bool
 	partial                         uint32
@@ -118,6 +122,9 @@ func (n *Native) Close() {
 	n.wg.Wait()
 }
 func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byte) error {
+	if k == websocket.MessageBinary {
+		n.collectWhisperAudio(data)
+	}
 	f := wire.Decode(data, wire.ClientToServer)
 	if f.Client == nil || f.Client.GetEvent() == nil {
 		return n.up(ctx, k, data)
@@ -162,6 +169,9 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			scope = "uuid:" + id
 		}
 		pctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
+		if tag := req.GetEventSource().GetId(); e.GetVoiceInput() != nil && tag != "" {
+			pctx = context.WithValue(pctx, wakewordTagKey{}, tag)
+		}
 		pctx = reply.WithPolicy(pctx)
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)
@@ -543,9 +553,26 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		return
 	}
 	p.started = true
+	audioInput := p.audioInput
+	p.audioInput = nil
+	p.audioInputDone = true
 	text := p.text
 	n.mu.Unlock()
 	n.wg.Go(func() {
+		if os.Getenv("QUASAR_AUTO_WHISPER") == "1" && strings.TrimSpace(text) != "" && len(audioInput) > 0 {
+			inputBytes := len(audioInput)
+			pcm, err := decodeWhisperOpus(audioInput)
+			audioInput = nil
+			if err == nil {
+				m := acousticWhisper(pcm)
+				n.mu.Lock()
+				p.inputWhisper = m.Whisper
+				n.mu.Unlock()
+				slog.Info("acoustic_whisper", "request", requestTag(p.id), "whisper", m.Whisper, "active_frames", m.Active, "zcr", m.ZCR, "periodicity", m.Periodicity, "voiced_fraction", m.Voiced)
+			} else {
+				slog.Info("acoustic_whisper_unavailable", "request", requestTag(p.id), "audio_bytes", inputBytes, "reason", err.Error())
+			}
+		}
 		if n.DecisionDelay > 0 {
 			select {
 			case <-time.After(n.DecisionDelay):
@@ -584,11 +611,15 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			if result.Route == "recovery" {
 				slog.Warn("native_recovery_failed", "request", requestTag(p.id), "error", err)
 				result.Answer = "Не удалось запланировать аварийное восстановление. Проверьте журнал Quasar Bridge и выполните восстановление по SSH."
+			} else if result.Route == "diagnostics" {
+				slog.Warn("native_diagnostics_failed", "request", requestTag(p.id), "error", err)
+				result.Answer = "Не удалось изменить сетевой доступ к веб-интерфейсу. Проверьте журнал Quasar Bridge."
 			} else if result.Route == "home" {
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
 			} else if result.Route == "airplay" {
 				result.Answer = "Не удалось изменить состояние AirPlay. Проверьте журнал Quasar Bridge."
 			} else if result.Route == "music" {
+				slog.Warn("native_music_failed", "request", requestTag(p.id), "error", err)
 				result.Answer = "Не удалось включить музыку с этой страницы."
 			} else {
 				result.Route = "llm"
@@ -688,6 +719,10 @@ func (n *Native) reply(p *nativeRequest, result Resolution) error {
 	return n.synthesize(p, speech)
 }
 func (n *Native) synthesize(p *nativeRequest, text string) error {
+	if p.inputWhisper {
+		text = `<speaker is_whisper="true">` + text
+		slog.Info("tts_whisper_enabled", "request", requestTag(p.id))
+	}
 	if strings.Contains(text, "<speaker") {
 		n.mu.Lock()
 		p.markedTTS = true

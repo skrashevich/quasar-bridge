@@ -3,15 +3,18 @@ package chatgpt
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -251,6 +254,35 @@ func (e *oauthError) terminalRefresh() bool {
 	return false
 }
 
+func authorizationTransportError(err error) error {
+	const prefix = "ChatGPT authorization transport failed"
+	// Transport errors can contain request URLs or proxy credentials. Expose
+	// only fixed categories, never the error text or its associated fields.
+	_, certificate := errors.AsType[*tls.CertificateVerificationError](err)
+	_, dns := errors.AsType[*net.DNSError](err)
+	network, isNetwork := errors.AsType[net.Error](err)
+	var reason string
+	switch {
+	case certificate:
+		reason = "TLS certificate verification failed"
+	case dns:
+		reason = "DNS lookup failed"
+	case errors.Is(err, context.DeadlineExceeded) || isNetwork && network.Timeout():
+		reason = "request timed out"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, net.ErrClosed), errors.Is(err, syscall.EPIPE):
+		reason = "connection closed"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		reason = "connection refused"
+	case errors.Is(err, syscall.ECONNRESET):
+		reason = "connection reset"
+	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH):
+		reason = "network unreachable"
+	default:
+		return errors.New(prefix)
+	}
+	return errors.New(prefix + ": " + reason)
+}
+
 func (s *Store) exchange(ctx context.Context, form url.Values) (tokenResponse, error) {
 	endpoint := s.tokenURL
 	if endpoint == "" {
@@ -266,7 +298,7 @@ func (s *Store) exchange(ctx context.Context, form url.Values) (tokenResponse, e
 		if ctx.Err() != nil {
 			return tokenResponse{}, fmt.Errorf("ChatGPT authorization: %w", ctx.Err())
 		}
-		return tokenResponse{}, errors.New("ChatGPT authorization transport failed")
+		return tokenResponse{}, authorizationTransportError(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCredentialBytes+1))

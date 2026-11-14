@@ -56,6 +56,18 @@ type MusicQueue struct {
 	now     func() time.Time
 }
 
+type isolatedMusicQueueKey struct{}
+
+// WithIsolatedPlayback gives diagnostic playback its own queue capacity and
+// entries, without changing queues served to physical speakers.
+func (q *MusicQueue) WithIsolatedPlayback(ctx context.Context) (context.Context, *MusicQueue) {
+	var isolated *MusicQueue
+	if q != nil {
+		isolated = &MusicQueue{base: q.base, prefix: q.prefix, http: q.http, entries: map[string]musicQueueEntry{}, active: make(chan struct{}, cap(q.active)), now: q.now}
+	}
+	return context.WithValue(ctx, isolatedMusicQueueKey{}, isolated), isolated
+}
+
 func NewMusicQueue(base string, reader *WebReader) (*MusicQueue, error) {
 	u, err := url.Parse(base)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(base, "#") || reader == nil || reader.http == nil {
@@ -409,6 +421,15 @@ func (q *MusicQueue) locate(raw string, positionMS int64) (string, musicQueueEnt
 		remaining -= progress.duration
 	}
 	return "", musicQueueEntry{}, 0, 0, ErrMusicQueueEnd
+}
+
+// Tracks returns a copy of the remaining registered sources without fetching audio.
+func (q *MusicQueue) Tracks(streamURL string) ([]WebLink, error) {
+	_, entry, index, _, err := q.locate(streamURL, 0)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Clone(entry.tracks[index:]), nil
 }
 
 func (q *MusicQueue) selection(id string, entry musicQueueEntry, index int, offset time.Duration) MusicSelection {

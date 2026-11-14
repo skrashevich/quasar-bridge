@@ -59,8 +59,16 @@ host_install() (
  }
  trap 'cleanup "$@"' EXIT
  trap 'exit 1' HUP INT TERM
- # Keep the wizard interactive even when this script is piped into sh.
- if [ -t 0 ] || [ -f "$0" ]; then exec 3<&0; else exec 3</dev/tty; fi
+ # A stdin-loaded shell needs a separate terminal, including /bin/sh -s:
+ # its absolute $0 is a regular file, but stdin still contains the script.
+ if [ -t 0 ]; then
+  exec 3<&0
+ else
+  case $- in
+   *s*) exec 3</dev/tty ;;
+   *) exec 3<&0 ;;
+  esac
+ fi
  section 'Подготовка установки'
  info "Подключение к ${target}…"
  arch=$(ssh -n "$@" "$target" 'uname -m')
@@ -96,7 +104,10 @@ host_install() (
   ssh -T "$@" "$target" "umask 077; cat > '$remote_stage/$file'" < "$work/$file"
  done
  ok 'Файлы переданы на колонку.'
- ssh -tt "$@" "$target" "set -eu; cd '$remote_stage'; sha256sum -c '$archive.sha256' > /dev/null; mkdir package; gzip -dc '$archive' | tar -xf - -C package; QUASAR_SETUP_COLOR=$setup_color QUASAR_SSH_TUNNEL=$(quote "$tunnel") sh package/setup.sh" <&3
+ # OpenSSH multiplexed PTY sessions can lose input from a piped bootstrap.
+ # Reuse authentication for transfers, but open the interactive wizard directly.
+ # Put -S last because it overrides even an explicit user-supplied control socket.
+ ssh -tt -o ControlMaster=no "$@" -S none "$target" "set -eu; cd '$remote_stage'; sha256sum -c '$archive.sha256' > /dev/null; mkdir package; gzip -dc '$archive' | tar -xf - -C package; QUASAR_SETUP_COLOR=$setup_color QUASAR_SSH_TUNNEL=$(quote "$tunnel") sh package/setup.sh" <&3
 )
 speaker_install() (
  test "$(id -u)" = 0 || { echo 'Запустите установку от root.' >&2; exit 1; }

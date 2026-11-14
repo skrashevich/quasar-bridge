@@ -221,7 +221,7 @@ func (c *configurationControl) ConfigureRouting(ctx context.Context, options ass
 	}{result, effectiveRoutingBehavior(cfg.Routing), c.engine.RoutingStatus().Revision}, nil
 }
 
-func (c *configurationControl) TestRouting(ctx context.Context, text string) (any, error) {
+func (c *configurationControl) TestRouting(ctx context.Context, text, wakeWord string) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -239,7 +239,7 @@ func (c *configurationControl) TestRouting(ctx context.Context, text string) (an
 	if err != nil {
 		return nil, err
 	}
-	a, b := active.Preview(text), saved.Preview(text)
+	a, b := active.Preview(text, wakeWord), saved.Preview(text, wakeWord)
 	if c.engine.Configuration && configvoice.IsRequest(text) {
 		a = bridge.RouteDecision{Route: "llm", Source: "bridge_configuration"}
 		b = a

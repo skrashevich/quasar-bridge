@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"quasarbridge/internal/assistant"
+	"quasarbridge/internal/bridge"
 	"quasarbridge/internal/llm"
 )
 
@@ -193,6 +194,36 @@ type forbiddenRoutingClassifier struct{}
 
 func (forbiddenRoutingClassifier) Complete(context.Context, []llm.Message, bool) (string, error) {
 	panic("static preview invoked a classifier")
+}
+
+func TestRoutingToolsManageAndPreviewWakewordRule(t *testing.T) {
+	_, tools := routingToolsFixture(t)
+	rule := map[string]any{"name": "wakeword", "route": "llm", "match": map[string]any{"wake_words": []string{"джарвис", "лёна"}}}
+	routingToolCall(t, tools, "set_quasar_bridge_routing_rule", map[string]any{"rule": rule})
+	for _, tc := range []struct{ args, route, rule string }{
+		{`{"text":"погода завтра","wake_word":"лёна"}`, "llm", "wakeword"},
+		{`{"text":"погода завтра","wake_word":"Лёна"}`, "yandex", "weather"},
+		{`{"text":"погода завтра"}`, "yandex", "weather"},
+	} {
+		value, err := tools.Call(t.Context(), "test_quasar_bridge_routing", tc.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var preview struct {
+			Active bridge.RouteDecision `json:"active"`
+			Saved  bridge.RouteDecision `json:"saved"`
+		}
+		if err := json.Unmarshal(raw, &preview); err != nil {
+			t.Fatal(err)
+		}
+		if preview.Active.Route != tc.route || preview.Active.Rule != tc.rule || !reflect.DeepEqual(preview.Saved, preview.Active) {
+			t.Fatalf("%s: wrong active/saved preview: %s", tc.args, raw)
+		}
+	}
 }
 
 func TestRoutingMutationDoesNotApplyOtherPendingRoutingChanges(t *testing.T) {
