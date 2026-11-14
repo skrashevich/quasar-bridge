@@ -1,5 +1,9 @@
 {
   "listen": "localhost:8443",
+  "diagnostics": {
+    "network_access": false,
+    "port": 2704
+  },
   "upstream": "wss://uniproxy.alice.yandex.net/uni.ws",
   "mode": "hybrid",
   "tls_cert": "certs/server.pem",
