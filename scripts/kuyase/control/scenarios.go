@@ -4,24 +4,31 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"encoding/json/v2"
 	"github.com/coder/websocket"
 	app "github.com/skrashevich/quasar-go-genproto/proto/alice/library/client/protos"
 	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
 	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	"quasarbridge/internal/assistant"
 	"quasarbridge/internal/wire"
 )
+
+const llmURLsAnswer = "«Бавария» играет с «Кёльном» в пятницу, 20 ноября, в 22:30 по московскому времени. Матч пройдёт дома, в Мюнхене. ([app.fcbayern.com](https://app.fcbayern.com/en/?utm_source=openai))"
+const llmURLsSpeech = "«Бавария» играет с «Кёльном» в пятницу, 20 ноября, в 22:30 по московскому времени. Матч пройдёт дома, в Мюнхене."
 
 var phrases = map[string]string{
 	"start": "включи эйрплей", "stop": "выключи эйрплей",
 	"weather": "какая завтра погода", "music": "включи музыку", "timer": "поставь таймер на пять минут",
 	"llm": "спроси нейросеть: первый вопрос", "followup": "а вчера?",
-	"reset": "начни новый разговор", "clean": "спроси нейросеть: проверка после сброса",
+	"llm_urls": "спроси нейросеть: когда Бавария играет с Кёльном",
+	"reset":    "начни новый разговор", "clean": "спроси нейросеть: проверка после сброса",
 	"isolation": "спроси нейросеть: проверка другой колонки",
 	"home":      "Включи свет в кабинете", "state": "Горит ли свет в кабинете?",
 	"failure": "спроси нейросеть: ошибка провайдера",
@@ -57,6 +64,8 @@ func scenario(ctx context.Context, base, fixtures, name string) error {
 		turns = []turn{{name, "cloud", cloudAnswers[phrases[name]], false, counters{Voice: 1, Cloud: 1}}}
 	case "llm":
 		turns = []turn{{"llm", "voice-llm", first.answer, false, local}}
+	case "llm_urls":
+		turns = []turn{{"llm_urls", "voice-urls", llmURLsAnswer, false, local}}
 	case "text":
 		turns = []turn{{"llm", "text-llm", first.answer, true, counters{LLM: 1, TTS: 1}}}
 	case "dialogue":
@@ -84,6 +93,11 @@ func scenario(ctx context.Context, base, fixtures, name string) error {
 }
 
 func exchange(ctx context.Context, base, fixtures string, input turn) error {
+	started := time.Now()
+	wantSpeech := input.answer
+	if input.name == "llm_urls" {
+		wantSpeech = llmURLsSpeech
+	}
 	before, err := readCounters(ctx, fixtures)
 	if err != nil {
 		return err
@@ -136,8 +150,14 @@ func exchange(ctx context.Context, base, fixtures string, input turn) error {
 		}
 		if response := event.GetAliceResponse(); response != nil {
 			answer := response.GetVoiceResponse().GetOutputSpeech().GetText()
-			if answer != input.answer {
-				return fmt.Errorf("answer=%q want=%q", answer, input.answer)
+			if answer != wantSpeech {
+				return fmt.Errorf("voice answer=%q want=%q", answer, wantSpeech)
+			}
+			if input.want.TTS > 0 {
+				cards := response.GetResponse().GetCards()
+				if len(cards) != 1 || cards[0].GetText() != input.answer || response.GetHeader().GetRequestId() != id {
+					return fmt.Errorf("display answer or request ID changed: %+v", response)
+				}
 			}
 			sawAnswer = true
 		}
@@ -151,6 +171,19 @@ func exchange(ctx context.Context, base, fixtures string, input turn) error {
 		}
 		diff := counters{Voice: after.Voice - before.Voice, Cloud: after.Cloud - before.Cloud, LLM: after.LLM - before.LLM, TTS: after.TTS - before.TTS, HomeWrites: after.HomeWrites - before.HomeWrites, HomeReads: after.HomeReads - before.HomeReads, Unexpected: after.Unexpected - before.Unexpected}
 		if diff == input.want {
+			if input.want.TTS > 0 {
+				var records []synthesis
+				if err := readScenarioJSON(ctx, fixtures+"/synthesis", &records); err != nil {
+					return err
+				}
+				if len(records) != after.TTS {
+					return fmt.Errorf("synthesis records=%d want=%d", len(records), after.TTS)
+				}
+				record := records[before.TTS]
+				if record.Text != wantSpeech || record.RequestID == "" || record.RequestID == id || !input.text && record.SourceID != id {
+					return fmt.Errorf("synthesis=%+v want text=%q source=%q", record, wantSpeech, id)
+				}
+			}
 			break
 		}
 		if diff.Unexpected > 0 || diff.Voice > input.want.Voice || diff.Cloud > input.want.Cloud || diff.LLM > input.want.LLM || diff.TTS > input.want.TTS || diff.HomeWrites > input.want.HomeWrites || diff.HomeReads > input.want.HomeReads {
@@ -162,8 +195,34 @@ func exchange(ctx context.Context, base, fixtures string, input turn) error {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+	if input.name == "llm_urls" {
+		query := url.Values{"query": {phrases[input.name]}, "since": {started.Format(time.RFC3339Nano)}, "limit": {"20"}}
+		var history assistant.HistoryResult
+		if err := readScenarioJSON(ctx, base+"/diagnostics/api/history?"+query.Encode(), &history); err != nil {
+			return err
+		}
+		if !history.Recording || len(history.Items) != 1 || history.Items[0].Query != phrases[input.name] || history.Items[0].Answer != llmURLsAnswer || history.Items[0].Route != "llm" {
+			return fmt.Errorf("history lost the original URL answer: %+v", history)
+		}
+	}
 	if _, err := readHealth(ctx, strings.TrimSuffix(base, "/")); err != nil {
 		return err
 	}
 	return nil
+}
+
+func readScenarioJSON(ctx context.Context, endpoint string, value any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("scenario endpoint %s returned HTTP %d", req.URL.Path, response.StatusCode)
+	}
+	return json.UnmarshalRead(response.Body, value)
 }
