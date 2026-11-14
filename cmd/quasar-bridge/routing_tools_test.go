@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"os"
 	"reflect"
 	"testing"
 
 	"quasarbridge/internal/assistant"
+	"quasarbridge/internal/bridge"
 	"quasarbridge/internal/llm"
 )
 
@@ -297,4 +299,59 @@ func TestRoutingOptionsMaterializeLegacyModeWithoutTogglingIt(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVoiceRuleKeepsBuiltInRulesUnsaved(t *testing.T) {
+	c := configurationFixture(t, `{"llm_model":"old"}`)
+	tools := &assistant.Tools{Config: assistant.DefaultConfig(), Configuration: c}
+	saved := func() map[string]jsontext.Value {
+		t.Helper()
+		raw, err := os.ReadFile(c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Routing map[string]jsontext.Value `json:"routing"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		return doc.Routing
+	}
+	rule := map[string]any{"name": "home_cleaning", "route": "home", "match": map[string]any{"contains_all_groups": [][]string{{"убери"}, {"макс"}}, "contains_none": []string{"будильник"}}}
+	routingToolCall(t, tools, "set_quasar_bridge_routing_rule", map[string]any{"rule": rule})
+	if got := c.engine.Decide(t.Context(), "Убери у Макса"); got.Rule != "home_cleaning" {
+		t.Fatalf("voice rule not applied: %+v", got)
+	}
+	if routing := saved(); routing["rules"] != nil || routing["extra_rules"] == nil {
+		t.Fatalf("built-in rules were saved instead of one extra rule: %v", routing)
+	}
+	cfg, err := readConfig(c.path)
+	if err != nil || len(cfg.Routing.ExtraRules) != 1 || !reflect.DeepEqual(cfg.Routing.Rules, bridge.DefaultRoutingConfig().Rules) {
+		t.Fatalf("extra rule not saved alone: %+v %v", cfg.Routing, err)
+	}
+	// Changing a built-in rule saves the whole list, keeping the order.
+	routingToolCall(t, tools, "control_quasar_bridge_routing_rule", map[string]any{"action": "disable", "name": "yandex_services"})
+	cfg, err = readConfig(c.path)
+	defaults := bridge.DefaultRoutingConfig().Rules
+	if err != nil || len(cfg.Routing.ExtraRules) != 0 || len(cfg.Routing.Rules) != len(defaults)+1 || cfg.Routing.Rules[0].Name != "home_cleaning" || !cfg.Routing.Rules[len(defaults)].Disabled {
+		t.Fatalf("built-in change not saved as one list: %+v %v", cfg.Routing, err)
+	}
+	if got := c.engine.Decide(t.Context(), "Убери у Макса"); got.Rule != "home_cleaning" {
+		t.Fatalf("saved list changed priority: %+v", got)
+	}
+}
+
+func TestVoiceRuleDeleteLeavesBuiltInRules(t *testing.T) {
+	c := configurationFixture(t, `{"llm_model":"old"}`)
+	tools := &assistant.Tools{Config: assistant.DefaultConfig(), Configuration: c}
+	rule := map[string]any{"name": "custom", "route": "llm", "match": map[string]any{"contains_any": []string{"пинг"}}}
+	routingToolCall(t, tools, "set_quasar_bridge_routing_rule", map[string]any{"rule": rule})
+	routingToolCall(t, tools, "control_quasar_bridge_routing_rule", map[string]any{"action": "delete", "name": "custom"})
+	cfg, err := readConfig(c.path)
+	if err != nil || len(cfg.Routing.ExtraRules) != 0 || !reflect.DeepEqual(cfg.Routing.Rules, bridge.DefaultRoutingConfig().Rules) {
+		t.Fatalf("delete touched built-in rules: %+v %v", cfg.Routing, err)
+	}
+	// A second edit after the first must not report unapplied changes.
+	routingToolCall(t, tools, "set_quasar_bridge_routing_rule", map[string]any{"rule": rule})
 }
