@@ -26,6 +26,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/dialogue"
+	"quasarbridge/internal/llm"
 	"quasarbridge/internal/reply"
 	"quasarbridge/internal/sound"
 	"quasarbridge/internal/wire"
@@ -77,6 +78,7 @@ type nativeRequest struct {
 	audioStream                     uint32
 	audioWaiting                    bool
 	progressAudioDone               chan struct{}
+	segmentAudioDone                chan error
 	soundRequest                    *sound.Request
 	soundDirective                  *soundDirective
 	soundSealed                     bool
@@ -100,6 +102,7 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+	StreamLLMSpeech  bool
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -329,6 +332,10 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			}
 			if (p.streaming || p.markedTTS) && sc.GetClose() != nil {
 				if err := p.audio.endSource(); err != nil {
+					if p.segmentAudioDone != nil {
+						p.segmentAudioDone <- err
+						p.segmentAudioDone = nil
+					}
 					p.cancel()
 					n.mu.Unlock()
 					return err
@@ -345,6 +352,38 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 						n.waitAudio(p)
 						close(p.progressAudioDone)
 					}
+					n.mu.Unlock()
+					return nil
+				}
+				if p.audioIsProgress && sc.GetClose().GetReason() != 0 {
+					p.cancel()
+					n.mu.Unlock()
+					return errors.New("initial speech synthesis failed")
+				}
+				if p.segmentAudioDone != nil {
+					// Each segment has its own TTS request ID. Retire it as soon
+					// as the source closes so long answers do not retain stale IDs.
+					delete(n.tts, p.ttsID)
+					if sc.GetClose().GetReason() != 0 {
+						p.segmentAudioDone <- errors.New("speech synthesis failed")
+						p.segmentAudioDone = nil
+						n.mu.Unlock()
+						return nil
+					}
+					if tail := p.audio.flushPending(0, 0); len(tail) > 0 {
+						if err := n.down(ctx, k, append(binary.BigEndian.AppendUint32(nil, p.audioStream), tail...)); err != nil {
+							p.segmentAudioDone <- err
+							p.segmentAudioDone = nil
+							n.mu.Unlock()
+							return err
+						}
+					}
+					if !p.audioWaiting {
+						p.audioWaiting = true
+						n.waitAudio(p)
+					}
+					p.segmentAudioDone <- nil
+					p.segmentAudioDone = nil
 					n.mu.Unlock()
 					return nil
 				}
@@ -566,8 +605,25 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				if decision.Route != "yandex" && n.ProgressAfter > 0 {
 					stop = n.progress(p)
 				}
-				result, err = routed.ResolveDecision(p.ctx, text, decision)
-				stop()
+				resolveCtx := p.ctx
+				var speech *speechStream
+				if n.StreamLLMSpeech && decision.Route == "llm" && decision.Source != "dialogue_retry" && decision.Source != "dialogue_reset" {
+					speech = &speechStream{n: n, p: p, stop: stop}
+					resolveCtx = llm.WithTextDeltas(resolveCtx, speech.delta)
+				}
+				result, err = routed.ResolveDecision(resolveCtx, text, decision)
+				if speech == nil {
+					stop()
+				} else {
+					var streamed bool
+					streamed, err = speech.finish(err)
+					if streamed {
+						if err != nil && !errors.Is(err, context.Canceled) {
+							slog.Warn("native_stream_speech_failed", "request", requestTag(p.id), "error", err)
+						}
+						return
+					}
+				}
 			} else {
 				result, err = n.resolver.Resolve(p.ctx, text)
 			}

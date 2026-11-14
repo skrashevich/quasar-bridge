@@ -48,6 +48,7 @@ type config struct {
 	LLMTTSMarkup       bool                 `json:"llm_tts_markup"`
 	HomeWarmArea       string               `json:"home_warm_area"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
+	StreamLLMSpeech    bool                 `json:"stream_llm_speech"`
 	Routing            bridge.RoutingConfig `json:"routing"`
 }
 

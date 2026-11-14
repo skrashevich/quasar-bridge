@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/binary"
 	"log/slog"
 	"time"
@@ -33,31 +34,7 @@ func (n *Native) progress(p *nativeRequest) func() {
 			return
 		case <-timer.C:
 		}
-		n.mu.Lock()
-		if p.canceled || p.ctx.Err() != nil {
-			n.mu.Unlock()
-			return
-		}
-		p.local = true
-		p.streaming = true
-		p.responseID = newID()
-		p.ttsID = newID()
-		p.progressTTS = p.ttsID
-		p.progressAudioDone = make(chan struct{})
-		n.tts[p.ttsID] = p
-		n.mu.Unlock()
-		if p.gated {
-			if n.sendCancel(p.ctx, p.id) != nil {
-				p.cancel()
-				return
-			}
-		} else {
-			if n.ack(p) != nil {
-				p.cancel()
-				return
-			}
-		}
-		if n.beginDeferred(p) != nil {
+		if n.startDeferred(p) != nil {
 			p.cancel()
 			return
 		}
@@ -83,6 +60,36 @@ func (n *Native) progress(p *nativeRequest) func() {
 		}
 	})
 	return func() { close(stop); <-done }
+}
+
+// startDeferred starts one local streaming response. Its caller must serialize
+// invocation with progress() and with other callers for the same request.
+func (n *Native) startDeferred(p *nativeRequest) error {
+	n.mu.Lock()
+	if p.canceled || p.ctx.Err() != nil {
+		n.mu.Unlock()
+		return context.Canceled
+	}
+	if p.streaming {
+		n.mu.Unlock()
+		return nil
+	}
+	p.local = true
+	p.streaming = true
+	p.responseID = newID()
+	p.ttsID = newID()
+	p.progressTTS = p.ttsID
+	p.progressAudioDone = make(chan struct{})
+	n.tts[p.ttsID] = p
+	n.mu.Unlock()
+	if p.gated {
+		if err := n.sendCancel(p.ctx, p.id); err != nil {
+			return err
+		}
+	} else if err := n.ack(p); err != nil {
+		return err
+	}
+	return n.beginDeferred(p)
 }
 func (p *nativeRequest) applicationID() string {
 	if id := p.request.GetHeader().GetRequestId(); id != "" {
@@ -164,6 +171,41 @@ func (n *Native) finishDeferred(p *nativeRequest, text, speech string) error {
 		return err
 	}
 	return n.synthesize(p, speech)
+}
+
+// synthesizeSegment appends one independently synthesized utterance to the
+// existing deferred audio stream. Callers must serialize segments.
+func (n *Native) synthesizeSegment(ctx context.Context, p *nativeRequest, text string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.progressAudioDone:
+	}
+	done := make(chan error, 1)
+	n.mu.Lock()
+	if p.canceled || p.ctx.Err() != nil {
+		n.mu.Unlock()
+		return context.Canceled
+	}
+	p.ttsID = newID()
+	p.segmentAudioDone = done
+	n.tts[p.ttsID] = p
+	n.mu.Unlock()
+	// Keep a separator in streamed replay/text while sending clean text to TTS.
+	if err := n.deferredPart(p, text+" ", false); err != nil {
+		p.cancel()
+		return err
+	}
+	if err := n.synthesize(p, text); err != nil {
+		p.cancel()
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-done:
+		return err
+	}
 }
 
 // Content audio must start after the silent Dialog player releases its focus.
