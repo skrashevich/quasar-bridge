@@ -63,8 +63,10 @@ request ID, неизменность ASR и число обращений к к�
 
 Используется Ubuntu 24.04 и QEMU с программной эмуляцией ARM.
 `ipxe-qemu` предоставляет `efi-virtio.rom` для `virtio-net-pci`.
-КУЯСЭ 1.4.0 собирается из закреплённого коммита на runner: готовый upstream
-Linux CLI требует более новую glibc. CLI собирается один раз для всей матрицы.
+КУЯСЭ 1.5.0 собирается из закреплённого коммита на runner с
+`--no-default-features`: это headless-сборка без GUI и оконных библиотек.
+CLI собирается один раз для всей матрицы под libc runner. Гостевое ядро
+и ARM-мост берутся из закреплённого `kuyase-headless-linux64.tar.gz` 1.5.0.
 Исходники, гостевое ядро/мост и обе публичные OTA проверяются по SHA-256.
 `prepare.py` читает XZ/CPIO и UBIFS, сохраняет права inode и передаёт rootfs
 в `kuyase prepare`. На Mini 1 штатный `adbd_backup` копируется как `adbd`.
