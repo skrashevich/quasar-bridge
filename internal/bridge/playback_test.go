@@ -77,7 +77,7 @@ func TestCurrentQueueControlSkipsModelAndHome(t *testing.T) {
 		t.Fatal("player control reached model")
 		return "", nil
 	}), Home: homeFunc(func(context.Context, string) (string, error) { t.Fatal("player control reached home"); return "", nil })}
-	for _, tc := range []struct{ text, action string }{{"Следующий трек", "next"}, {"Предыдущий трек", "previous"}, {"Пауза", "pause"}, {"Продолжи", "resume"}, {"Хватит", "stop"}, {"Начни песню сначала", "restart"}} {
+	for _, tc := range []struct{ text, action string }{{"Следующий трек", "next"}, {"Предыдущий трек", "previous"}, {"Пауза", "pause"}, {"Продолжи", "resume"}, {"Хватит", "stop"}, {"Алиса, хватит", "stop"}, {"Начни песню сначала", "restart"}} {
 		d := e.Decide(t.Context(), tc.text)
 		if d.Route != "playback" || d.Source != "playback" {
 			t.Fatalf("%q: %+v", tc.text, d)
@@ -85,6 +85,22 @@ func TestCurrentQueueControlSkipsModelAndHome(t *testing.T) {
 		result, err := e.ResolveDecision(t.Context(), tc.text, d)
 		if err != nil || result.Route != "playback" || p.action != tc.action {
 			t.Fatalf("result=%+v action=%q err=%v", result, p.action, err)
+		}
+	}
+}
+
+func TestTimerResumeStaysOnYandexWhileQueueIsActive(t *testing.T) {
+	p := &playbackFixture{active: true}
+	e := &Engine{Playback: p}
+	cfg := DefaultRoutingConfig()
+	cfg.UnknownToHome = true
+	if err := e.SetRouting(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Продолжи таймер", "Удали таймер", "Таймер на паузу"} {
+		d := e.Decide(t.Context(), text)
+		if d.Route != "yandex" || d.Source != "rule" || p.action != "" {
+			t.Fatalf("%q: %+v action=%q", text, d, p.action)
 		}
 	}
 }
