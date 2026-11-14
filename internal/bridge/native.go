@@ -683,15 +683,20 @@ func (n *Native) sendCancel(ctx context.Context, id string) error {
 }
 func (n *Native) reply(p *nativeRequest, result Resolution) error {
 	text := result.Answer
+	voice := text
 	speech := cmp.Or(result.speech, text)
+	if result.Route == "llm" {
+		voice = speechText(voice)
+		speech = speechText(speech)
+	}
 	if p.streaming {
-		return n.finishDeferred(p, text, speech)
+		return n.finishDeferred(p, text, voice, speech)
 	}
 	requestID := p.request.GetHeader().GetRequestId()
 	if requestID == "" {
 		requestID = p.id
 	}
-	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
+	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(voice)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
 	silentPlayback := n.hasSilentPlayback(p)
 	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
 	if silentPlayback {

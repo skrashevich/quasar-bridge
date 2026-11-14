@@ -215,8 +215,9 @@ func SearchHistory(ctx context.Context, c journal.Config, q HistoryQuery, maxSca
 				}
 				if answer != "" {
 					switch {
-					case e.Event == "response" && e.Kind == "DeferredAliceResponse" && e.Text != "":
-						// The final display text contains the complete streamed answer.
+					case e.Event == "response" && e.Text != "" &&
+						(e.Kind == "DeferredAliceResponse" || e.Kind == "AliceResponse" && p.Route == "llm"):
+						// Final display text is complete; local LLM speech may omit source links.
 						p.Answer = trim(e.Text)
 					case p.Answer == "", strings.HasPrefix(answer, p.Answer):
 						p.Answer = trim(answer)
