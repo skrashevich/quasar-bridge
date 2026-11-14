@@ -121,9 +121,11 @@ func (c *Client) chat(ctx context.Context, messages []Message, structured bool, 
 	return m, nil
 }
 
-func (c *Client) chatCompletions(ctx context.Context, messages []Message, structured bool, tools []Tool) (Message, error) {
+// Keep streaming and non-streaming Chat Completions request parameters identical.
+// Only the transport's stream flag and optional tools/structured output differ.
+func (c *Client) chatCompletionsRequest(messages []Message, structured bool, tools []Tool, streaming bool) map[string]any {
 	request := map[string]any{
-		"model": c.Model, "messages": messages, "stream": false,
+		"model": c.Model, "messages": messages, "stream": streaming,
 		"temperature": 0, "max_tokens": 1024,
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
 	}
@@ -145,6 +147,11 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 		request["tool_choice"] = "auto"
 		request["parallel_tool_calls"] = false
 	}
+	return request
+}
+
+func (c *Client) chatCompletions(ctx context.Context, messages []Message, structured bool, tools []Tool) (Message, error) {
+	request := c.chatCompletionsRequest(messages, structured, tools, false)
 	data, err := c.post(ctx, "/chat/completions", request)
 	if err != nil {
 		return Message{}, err

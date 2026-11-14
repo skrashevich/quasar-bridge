@@ -298,6 +298,7 @@
     "history_max_scan_mb": 16,
     "mcp_servers": []
   },
+  "sentence_tts": {"enabled": false},
   "local_progress": {
     "enabled": true,
     "after_ms": 2000,

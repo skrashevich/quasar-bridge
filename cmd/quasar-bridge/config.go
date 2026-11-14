@@ -25,9 +25,12 @@ type progressConfig struct {
 }
 
 type config struct {
-	AirPlay            airPlayConfig        `json:"airplay"`
-	DialogueContext    dialogue.Config      `json:"dialogue_context"`
-	LocalProgress      progressConfig       `json:"local_progress"`
+	AirPlay         airPlayConfig   `json:"airplay"`
+	DialogueContext dialogue.Config `json:"dialogue_context"`
+	LocalProgress   progressConfig  `json:"local_progress"`
+	SentenceTTS     struct {
+		Enabled bool `json:"enabled"`
+	} `json:"sentence_tts"`
 	AssistantTools     assistant.Config     `json:"assistant_tools"`
 	ConversationLog    journal.Config       `json:"conversation_log"`
 	Listen             string               `json:"listen"`

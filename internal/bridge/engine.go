@@ -20,6 +20,10 @@ import (
 type Completer interface {
 	Complete(context.Context, []llm.Message, bool) (string, error)
 }
+type StreamingCompleter interface {
+	CompleteStream(context.Context, []llm.Message, bool, func(string) error) (string, error)
+	SupportsSentenceStreaming() bool
+}
 type HomeHandler interface {
 	Handle(context.Context, string) (string, error)
 }
@@ -175,18 +179,56 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		return Resolution{Route: "yandex"}, nil
 	}
 }
+
+// Fallback and FallbackStream share message construction, dialogue lifecycle,
+// cancellation checks and history commit. Only the model call differs.
 func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) {
-	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
-		text = webaddress.Normalize(text)
-	}
-	r := Resolution{Route: "llm"}
-	if e.LLM == nil && e.Assistant == nil {
-		return r, errors.New("LLM is not configured")
-	}
 	answerer := e.LLM
 	if e.Assistant != nil {
 		answerer = e.Assistant
 	}
+	if answerer == nil {
+		return Resolution{Route: "llm"}, errors.New("LLM is not configured")
+	}
+	return e.runFallback(ctx, text, func(ctx context.Context, messages []llm.Message, private bool) (string, bool, error) {
+		if contextual, ok := answerer.(interface {
+			CompleteDialogue(context.Context, []llm.Message, bool) (string, bool, error)
+		}); ok {
+			return contextual.CompleteDialogue(ctx, messages, private)
+		}
+		answer, err := answerer.Complete(ctx, messages, false)
+		return answer, private, err
+	})
+}
+
+// SupportsSentenceStreaming is intentionally conservative: any configured
+// assistant/tool loop keeps its existing full-response behavior.
+func (e *Engine) SupportsSentenceStreaming() bool {
+	if e.Assistant != nil || e.TTSMarkup {
+		return false
+	}
+	streamer, ok := e.LLM.(StreamingCompleter)
+	return ok && streamer.SupportsSentenceStreaming()
+}
+
+// FallbackStream only changes how the model produces its answer. Dialogue
+// state and the exact system prompt remain identical to the non-streaming path.
+func (e *Engine) FallbackStream(ctx context.Context, text string, onDelta func(string) error) (Resolution, error) {
+	if !e.SupportsSentenceStreaming() {
+		return e.Fallback(ctx, text)
+	}
+	streamer := e.LLM.(StreamingCompleter)
+	return e.runFallback(ctx, text, func(ctx context.Context, messages []llm.Message, private bool) (string, bool, error) {
+		answer, err := streamer.CompleteStream(ctx, messages, false, onDelta)
+		return answer, private, err
+	})
+}
+
+func (e *Engine) runFallback(ctx context.Context, text string, complete func(context.Context, []llm.Message, bool) (string, bool, error)) (Resolution, error) {
+	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
+		text = webaddress.Normalize(text)
+	}
+	r := Resolution{Route: "llm"}
 	ctx, snapshot, ticket := e.dialogue().Start(ctx)
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
@@ -195,16 +237,7 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	messages = e.modelMessages(messages)
-	private := snapshot.PrivateHistory
-	var answer string
-	var err error
-	if contextual, ok := answerer.(interface {
-		CompleteDialogue(context.Context, []llm.Message, bool) (string, bool, error)
-	}); ok {
-		answer, private, err = contextual.CompleteDialogue(ctx, messages, private)
-	} else {
-		answer, err = answerer.Complete(ctx, messages, false)
-	}
+	answer, private, err := complete(ctx, messages, snapshot.PrivateHistory)
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
@@ -218,6 +251,7 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	}
 	return r, nil
 }
+
 func containsOne(text string, needles []string) bool {
 	for _, s := range needles {
 		if strings.Contains(text, s) {
