@@ -1,8 +1,8 @@
 "use strict";
 
 const byId = id => document.getElementById(id);
-const pageNames = { overview: "Обзор", settings: "Настройки", query: "Проверка запроса", airplay: "AirPlay", history: "История", logs: "Журнал событий" };
-const state = { page: "overview", status: null, config: null, restartRun: "", settings: new Map(), drafts: new Map(), configBusy: false, statusBusy: false, historyBusy: false, airplayBusy: false, queryBusy: false, queryDialog: storedQueryDialog() };
+const pageNames = { overview: "Обзор", settings: "Настройки", query: "Чат", airplay: "AirPlay", history: "История", logs: "Журнал событий" };
+const state = { page: "overview", status: null, config: null, restartRun: "", settings: new Map(), drafts: new Map(), configBusy: false, statusBusy: false, historyBusy: false, airplayBusy: false, queryBusy: false, queryDialog: storedQueryDialog(), queryMessages: [], queryExpired: false };
 function storedQueryDialog() {
   try { return sessionStorage.getItem("quasarBridge.queryDialog") || ""; } catch (_) { return ""; }
 }
@@ -111,11 +111,10 @@ function renderStatus(data) {
   fillFacts("technical-state", [["Время работы", uptimeText(data.uptime_seconds)], ["Кадров от колонки", data.client_frames ?? "—"], ["Кадров от Яндекса", data.server_frames ?? "—"], ["Ошибок записи истории", data.conversation_log_failures ?? "—"], ["Ревизия маршрутов", data.routing_revision || "—"], ["Панель по сети", data.diagnostics?.network_access ? "Доступна" : "Только localhost"], ["Адрес панели", data.diagnostics?.address || "—"], ["Порт панели", data.diagnostics?.port ?? "—"]]);
   byId("status-json").textContent = JSON.stringify(data, null, 2);
   renderAirPlay(data.airplay);
-  byId("execute-query").disabled = state.queryBusy || data.capabilities?.query === false;
-  byId("decide-query").disabled = state.queryBusy || data.capabilities?.decide === false;
+  setQueryBusy(state.queryBusy);
   if (data.capabilities?.query === false) byId("execute-query").title = "Обработчик запросов недоступен";
   else byId("execute-query").removeAttribute("title");
-  byId("execute-help").textContent = data.capabilities?.query === false ? "Обработчик запросов недоступен. Проверьте состояние Bridge и повторите подключение." : "Как с флагом -query: Bridge обработает фразу. Воспроизведение имитируется и показывается в результате; звук на колонке не запускается. Другие команды могут реально управлять устройствами или менять настройки. Последующие запросы продолжают диалог; кнопка «Новый диалог» очищает его контекст. Диагностика доступна и в режиме наблюдения.";
+  byId("execute-help").textContent = data.capabilities?.query === false ? "Обработчик запросов недоступен. Проверьте состояние Bridge и повторите подключение." : "Ответы приходят без озвучивания. Воспроизведение имитируется; команды умного дома и изменения настроек выполняются.";
   byId("last-updated").textContent = "Состояние обновлено в " + new Date().toLocaleTimeString("ru-RU");
 }
 async function loadStatus(reportError = false) {
@@ -359,17 +358,17 @@ async function applyConfig(action) {
 }
 function queryText() {
   const text = byId("query-text").value.trim();
-  if (!text) throw new Error("Введите фразу для проверки.");
+  if (!text) throw new Error("Введите сообщение.");
   if ([...text].length > 8000) throw new Error("Сократите запрос до 8000 символов.");
   return text;
 }
 function setQueryBusy(busy) {
   state.queryBusy = busy;
-  byId("query-text").disabled = busy;
   byId("preview-query").disabled = busy;
   byId("decide-query").disabled = busy || state.status?.capabilities?.decide === false;
-  byId("execute-query").disabled = busy || state.status?.capabilities?.query === false;
+  byId("execute-query").disabled = busy || state.queryExpired || !byId("query-text").value.trim() || state.status?.capabilities?.query === false;
   byId("new-query-dialog").disabled = busy;
+  byId("chat-context").textContent = busy ? "Ждём ответ…" : state.queryExpired ? "Контекст завершён — начните новый диалог" : state.queryDialog ? "Диалог продолжается" : "Новый диалог";
 }
 async function previewQuery(event) {
   event.preventDefault();
@@ -412,11 +411,11 @@ async function decideQuery(event) {
 }
 function renderQueryPlayback(result) {
   const playback = result.playback || [];
-  byId("playback-report").hidden = !playback.length;
-  byId("playback-notice").textContent = result.playback_simulated ? "Воспроизведение имитируется. Ни одна из этих команд не отправлена плееру колонки." : "Подготовленные команды плееру. Доставка на колонку не подтверждена.";
+  const report = element("details", "chat-playback");
+  report.append(element("summary", "", "Подготовленные команды плееру"), element("p", "muted small", result.playback_simulated ? "Воспроизведение имитируется. Команды не отправлены плееру колонки." : "Доставка команд на колонку не подтверждена."));
   const sounds = { notification: "Сигнал уведомления", success: "Сигнал успеха", error: "Сигнал ошибки", timer: "Сигнал таймера" };
   const commands = { pause: "Пауза", stop: "Остановка воспроизведения" };
-  byId("playback-items").replaceChildren(...playback.map((request, index) => {
+  report.append(...playback.map((request, index) => {
     const entry = element("div", "history-item");
     entry.append(element("h4", "history-query", (index + 1) + ". " + (request.title || sounds[request.sound] || commands[request.command] || "Музыка")));
     const tracks = request.tracks?.length ? request.tracks : request.url ? [{ url: request.url, title: request.title }] : [];
@@ -432,31 +431,125 @@ function renderQueryPlayback(result) {
     }
     return entry;
   }));
+  return report;
 }
-async function executeQuery() {
-  if (state.queryBusy) return;
+function saveChat() {
+  try {
+    const messages = state.queryMessages.slice(-80);
+    while (JSON.stringify(messages).length > 300000) messages.shift();
+    sessionStorage.setItem("quasarBridge.chat", JSON.stringify({ dialog_id: state.queryDialog, messages, draft: byId("query-text").value, expired: state.queryExpired }));
+  } catch (_) { /* Storage can be unavailable; the open chat remains usable. */ }
+}
+function sizeQueryInput() {
+  const input = byId("query-text");
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 180) + "px";
+  const length = [...input.value].length;
+  byId("chat-count").textContent = length.toLocaleString("ru-RU") + " / 8 000";
+  byId("chat-count").hidden = length < 7000;
+  setQueryBusy(state.queryBusy);
+}
+async function copyChatText(text, button) {
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    else {
+      const input = element("textarea", "visually-hidden", text);
+      document.body.append(input); input.select();
+      try { if (!document.execCommand("copy")) throw new Error("copy failed"); }
+      finally { input.remove(); button.focus(); }
+    }
+    button.textContent = "Скопировано";
+  } catch (_) { button.textContent = "Выделите текст для копирования"; }
+}
+function chatMessageNode(record) {
+  const entry = element("article", "chat-message from-" + record.role + (record.status ? " is-" + record.status : ""));
+  const meta = element("div", "chat-message-meta");
+  const author = record.role === "user" ? "Вы" : record.route === "yandex" ? "Алиса" : record.route === "llm" ? "Нейросеть" : "Bridge";
+  meta.append(element("strong", "", author));
+  if (record.time) {
+    const time = element("time", "", new Date(record.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }));
+    time.dateTime = record.time; meta.append(time);
+  }
+  const bubble = element("div", "chat-bubble");
+  bubble.append(element("p", "chat-text", record.text));
+  if (Array.isArray(record.playback) && record.playback.length) bubble.append(renderQueryPlayback(record));
+  entry.append(meta, bubble);
+  if (record.role === "assistant" && !record.status) {
+    const tools = element("div", "chat-message-tools");
+    const timing = typeof record.elapsed_ms === "number" ? (record.elapsed_ms / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " с" : "";
+    tools.append(element("span", "", [routeName(record.route), timing].filter(Boolean).join(" · ")));
+    const copy = element("button", "quiet", "Скопировать"); copy.type = "button";
+    copy.addEventListener("click", () => copyChatText(record.text, copy)); tools.append(copy); entry.append(tools);
+  }
+  if (record.status === "error" && record.retry) {
+    const retry = element("button", "quiet chat-retry", "Вернуть сообщение в поле ввода"); retry.type = "button";
+    retry.addEventListener("click", () => { byId("query-text").value = record.retry; sizeQueryInput(); saveChat(); byId("query-text").focus(); }); entry.append(retry);
+  }
+  return entry;
+}
+function appendChatMessage(record) {
+  state.queryMessages.push(record);
+  const node = chatMessageNode(record);
+  byId("chat-messages").append(node);
+  if (state.queryMessages.length > 80) { state.queryMessages.shift(); byId("chat-messages").firstElementChild.remove(); }
+  byId("chat-empty").hidden = true;
+  byId("chat-scroll").scrollTop = byId("chat-scroll").scrollHeight;
+  saveChat();
+  return node;
+}
+function restoreChat() {
+  try {
+    const raw = sessionStorage.getItem("quasarBridge.chat");
+    const saved = raw && raw.length < 400000 ? JSON.parse(raw) : null;
+    if (saved?.dialog_id === state.queryDialog && Array.isArray(saved.messages)) {
+      state.queryExpired = saved.expired === true;
+      state.queryMessages = saved.messages.slice(-80).filter(record => record && ["user", "assistant"].includes(record.role) && typeof record.text === "string");
+      for (const record of state.queryMessages) {
+        if (record.status === "pending") { record.status = "error"; record.text = "Страница была закрыта до получения ответа. Результат запроса неизвестен; проверьте его перед повторной отправкой."; }
+        byId("chat-messages").append(chatMessageNode(record));
+      }
+      byId("query-text").value = typeof saved.draft === "string" ? saved.draft.slice(0, 8000) : "";
+    }
+  } catch (_) { /* Ignore unavailable storage or an invalid saved transcript. */ }
+  byId("chat-empty").hidden = !!state.queryMessages.length;
+  sizeQueryInput();
+}
+async function executeQuery(event) {
+  event?.preventDefault();
+  if (state.queryBusy || state.queryExpired) return;
   let text;
-  try { text = queryText(); } catch (error) { message("query-message", error.message, true); return; }
+  try { text = queryText(); } catch (error) { message("chat-feedback", error.message, true); return; }
+  message("chat-feedback");
+  appendChatMessage({ role: "user", text, time: new Date().toISOString() });
+  byId("query-text").value = "";
   setQueryBusy(true);
-  message("query-message", "Bridge выполняет запрос. Дождитесь ответа…");
-  byId("answer-section").hidden = true;
+  sizeQueryInput();
+  const reply = { role: "assistant", text: "Ждём ответ…", status: "pending", retry: text };
+  const pending = appendChatMessage(reply);
+  byId("query-text").focus({ preventScroll: true });
   try {
     const payload = { text };
     if (state.queryDialog) payload.dialog_id = state.queryDialog;
     const result = await post("api/query", payload, 180000);
     saveQueryDialog(result.dialog_id || "");
-    byId("answer-title").textContent = result.route === "yandex" ? "Ответ Алисы" : "Ответ Bridge";
-    byId("answer-text").textContent = result.answer || "Bridge завершил запрос без текстового ответа.";
-    byId("answer-meta").textContent = routeName(result.route) + (typeof result.elapsed_ms === "number" ? " · " + (result.elapsed_ms / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " с" : "");
-    renderQueryPlayback(result);
-    byId("answer-section").hidden = false;
-    message("query-message", result.route === "yandex" ? "Алиса ответила текстом. Звук на колонке не запускается." : result.playback_simulated ? "Запрос обработан. Воспроизведение имитируется: звук не запускается." : "Bridge обработал запрос.");
-    await loadStatus();
-    await loadConfig(false);
+    Object.assign(reply, { text: result.answer || "Запрос завершён без текстового ответа.", status: "", retry: "", route: result.route, elapsed_ms: result.elapsed_ms, time: new Date().toISOString(), playback: result.playback, playback_simulated: result.playback_simulated });
+    loadStatus(); loadConfig(false);
   } catch (error) {
-    message("query-message", error.message.includes("unknown or expired dialog_id") ? "Диалог завершён или Bridge был перезапущен. Нажмите «Новый диалог»." : error.message, true);
+    state.queryExpired = error.message.includes("unknown or expired dialog_id");
+    reply.status = "error";
+    const errors = {
+      "Diagnostic query failed; inspect the operational log": "Не удалось получить ответ. Подробности доступны в журнале событий. Перед повторной отправкой команды проверьте, выполнилась ли она.",
+      "Another diagnostic query or route check is running": "Уже выполняется другой запрос или проверка маршрута. Дождитесь завершения и попробуйте снова.",
+      "Text query control is unavailable": "Обработчик сообщений недоступен. Проверьте состояние Bridge.",
+      "too many active query dialogs; retry after an idle dialog expires": "Достигнут лимит активных диалогов. Подождите, пока завершится один из неиспользуемых диалогов, и попробуйте снова."
+    };
+    reply.text = state.queryExpired ? "Контекст диалога истёк или Bridge был перезапущен. Нажмите «Новый диалог», чтобы продолжить." : errors[error.message] || error.message;
+  } finally {
+    const scroll = byId("chat-scroll"), nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 120;
+    pending.replaceWith(chatMessageNode(reply));
+    setQueryBusy(false); saveChat();
+    if (nearBottom) scroll.scrollTop = scroll.scrollHeight;
   }
-  finally { setQueryBusy(false); }
 }
 async function airPlayAction(action) {
   if (state.airplayBusy) return;
@@ -542,6 +635,10 @@ function navigate() {
   if (page === "settings") loadConfig();
   if (page === "history") loadHistory();
   if (page === "logs") loadLogs();
+  if (page === "query") {
+    sizeQueryInput();
+    byId("chat-scroll").scrollTop = byId("chat-scroll").scrollHeight;
+  }
   window.scrollTo(0, 0);
 }
 document.querySelector(".skip-link").addEventListener("click", event => { event.preventDefault(); byId("content").focus(); });
@@ -554,15 +651,22 @@ byId("reload-config").addEventListener("click", () => applyConfig("reload"));
 byId("restart-config").addEventListener("click", () => { byId("restart-confirmation").hidden = false; byId("confirm-restart").focus(); });
 byId("cancel-restart").addEventListener("click", () => { byId("restart-confirmation").hidden = true; byId("restart-config").focus(); });
 byId("confirm-restart").addEventListener("click", () => applyConfig("restart"));
-byId("query-form").addEventListener("submit", decideQuery);
+byId("query-form").addEventListener("submit", executeQuery);
+byId("decide-query").addEventListener("click", decideQuery);
 byId("preview-query").addEventListener("click", previewQuery);
-byId("query-text").addEventListener("input", () => { byId("decision-section").hidden = true; byId("route-result").hidden = true; byId("answer-section").hidden = true; message("query-message"); });
-byId("execute-query").addEventListener("click", executeQuery);
+byId("query-text").addEventListener("input", () => { sizeQueryInput(); saveChat(); byId("decision-section").hidden = true; byId("route-result").hidden = true; message("query-message"); message("chat-feedback"); });
+byId("query-text").addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); byId("query-form").requestSubmit(); }
+});
+document.querySelectorAll("[data-chat-prompt]").forEach(button => button.addEventListener("click", () => { byId("query-text").value = button.dataset.chatPrompt; sizeQueryInput(); saveChat(); byId("query-text").focus(); }));
 byId("new-query-dialog").addEventListener("click", () => {
   if (state.queryBusy) return;
   saveQueryDialog("");
-  byId("answer-section").hidden = true;
-  message("query-message", "Следующий запрос начнёт новый диалог без прежнего контекста.");
+  state.queryMessages = []; state.queryExpired = false;
+  byId("chat-messages").replaceChildren(); byId("chat-empty").hidden = false;
+  byId("decision-section").hidden = true; byId("route-result").hidden = true;
+  message("query-message"); message("chat-feedback");
+  setQueryBusy(false); saveChat();
   byId("query-text").focus();
 });
 document.querySelectorAll("[data-airplay]").forEach(button => button.addEventListener("click", () => airPlayAction(button.dataset.airplay)));
@@ -576,6 +680,7 @@ document.querySelectorAll("[data-settings-filter]").forEach(link => link.addEven
 window.addEventListener("hashchange", navigate);
 window.addEventListener("beforeunload", event => { if (dirtySettings().length) { event.preventDefault(); event.returnValue = ""; } });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadStatus(); loadLogs(); } });
+restoreChat();
 loadStatus();
 if (location.hash !== "#settings") loadConfig();
 navigate();

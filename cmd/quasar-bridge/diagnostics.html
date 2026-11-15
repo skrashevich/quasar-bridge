@@ -16,7 +16,7 @@
     <nav aria-label="Разделы панели">
       <a href="#overview" class="nav-link active" aria-current="page"><span aria-hidden="true">◉</span> Обзор</a>
       <a href="#settings" class="nav-link"><span aria-hidden="true">≡</span> Настройки <span id="nav-dirty" class="nav-count" hidden></span></a>
-      <a href="#query" class="nav-link"><span aria-hidden="true">↗</span> Проверка запроса</a>
+      <a href="#query" class="nav-link"><span aria-hidden="true">↗</span> Чат</a>
       <a href="#airplay" class="nav-link"><span aria-hidden="true">♫</span> AirPlay</a>
       <a href="#history" class="nav-link"><span aria-hidden="true">◷</span> История</a>
       <a href="#logs" class="nav-link"><span aria-hidden="true">▤</span> Журнал событий</a>
@@ -36,7 +36,7 @@
       <div class="section-heading"><h2>Сейчас в работе</h2><button id="refresh-status" type="button" class="quiet">Обновить</button></div>
       <dl id="overview-state" class="facts"><div><dt>Bridge</dt><dd>Загружаем состояние…</dd></div></dl>
       <div class="overview-columns">
-        <section class="surface" aria-labelledby="overview-routing-title"><h3 id="overview-routing-title">Куда направляются запросы</h3><dl id="routing-state" class="detail-list"></dl><a class="text-link" href="#query">Проверить фразу</a></section>
+        <section class="surface" aria-labelledby="overview-routing-title"><h3 id="overview-routing-title">Куда направляются запросы</h3><dl id="routing-state" class="detail-list"></dl><a class="text-link" href="#query">Открыть чат</a></section>
         <section class="surface" aria-labelledby="overview-settings-title"><h3 id="overview-settings-title">Сохранено и применяется</h3><p id="overview-config">Загружаем настройки…</p><a class="text-link" href="#settings">Открыть настройки</a><p class="muted small">Сохранение файла и применение настроек — отдельные действия.</p></section>
       </div>
       <section class="surface" aria-labelledby="overview-features-title"><h3 id="overview-features-title">Возможности</h3><div id="feature-state" class="feature-list"><span>Загружаем…</span></div></section>
@@ -52,13 +52,18 @@
       <div id="restart-confirmation" class="confirmation" hidden><div><strong>Перезапустить Bridge сейчас?</strong><p>Текущие запросы и AirPlay прервутся. Панель попробует подключиться к новому процессу автоматически.</p></div><div class="actions"><button id="cancel-restart" type="button">Отмена</button><button id="confirm-restart" type="button" class="danger">Перезапустить</button></div></div>
     </section>
     <section id="query" class="page" aria-labelledby="query-title" hidden>
-      <h2 id="query-title" class="visually-hidden">Проверка запроса</h2>
-      <p class="intro">Проверьте выбор маршрута как с флагом -route: с классификатором модели и встроенными обработчиками, без выполнения команды. Сравнение правил отдельно показывает действующие и сохранённые настройки без обращения к модели.</p>
-      <form id="query-form" class="surface"><label for="query-text" class="field-label">Фраза для колонки</label><textarea id="query-text" rows="4" maxlength="8000" placeholder="Например: спроси нейросеть, почему небо голубое" required></textarea><div class="query-actions"><button id="decide-query" type="submit" class="primary">Проверить маршрут</button><button id="preview-query" type="button">Сравнить правила</button></div></form>
-      <p id="query-message" class="notice" role="status" hidden></p><div id="route-result" class="route-result" hidden></div>
-      <section id="decision-section" class="surface" aria-labelledby="decision-title" hidden><div class="section-heading"><h3 id="decision-title">Выбранный маршрут</h3><span id="decision-meta" class="muted small"></span></div><p id="decision-route" class="route-name"></p><p id="decision-source" class="route-explanation"></p><details class="raw-state"><summary>Результат в JSON</summary><pre id="decision-json" tabindex="0" aria-label="Результат проверки маршрута в JSON"></pre></details></section>
-      <section class="execution-section" aria-labelledby="execute-title"><div><h3 id="execute-title">Выполнить запрос</h3><p id="execute-help">Как с флагом -query: Bridge обработает фразу. Воспроизведение имитируется и показывается в результате; звук на колонке не запускается. Другие команды могут реально управлять устройствами или менять настройки. Последующие запросы продолжают диалог; кнопка «Новый диалог» очищает его контекст.</p></div><div class="actions"><button id="execute-query" type="button">Выполнить запрос</button><button id="new-query-dialog" class="quiet" type="button">Новый диалог</button></div></section>
-      <section id="answer-section" class="surface" aria-labelledby="answer-title" hidden><div class="section-heading"><h3 id="answer-title">Ответ Bridge</h3><span id="answer-meta" class="muted small"></span></div><p id="answer-text" class="answer-text"></p><div id="playback-report" hidden><h4>Подготовленные команды плееру</h4><p id="playback-notice" class="notice" role="status"></p><div id="playback-items"></div></div></section>
+      <h2 id="query-title" class="visually-hidden">Чат с колонкой</h2>
+      <p class="intro chat-intro">Общайтесь с Алисой или начните сообщение со «спроси нейросеть», чтобы обратиться к модели.</p>
+      <section class="chat" aria-label="Чат с колонкой">
+        <header class="chat-header"><div><h3>Диалог с колонкой</h3><p id="chat-context" class="muted small">Новый диалог</p></div><button id="new-query-dialog" class="quiet" type="button">Новый диалог</button></header>
+        <div id="chat-scroll" class="chat-scroll" tabindex="0" aria-label="История сообщений">
+          <div id="chat-empty" class="chat-empty"><span class="chat-mark" aria-hidden="true">⇄</span><h3>О чём спросим?</h3><p>Пишите как говорите. Ответ появится здесь, без звука на колонке.</p><div class="chat-suggestions"><button type="button" data-chat-prompt="Который час?">Который час?</button><button type="button" data-chat-prompt="Какая погода в Токио?">Погода в Токио</button><button type="button" data-chat-prompt="спроси нейросеть: почему небо голубое?">Вопрос нейросети</button></div></div>
+          <div id="chat-messages" class="chat-messages" role="log" aria-label="Сообщения диалога" aria-live="polite" aria-relevant="additions text"></div>
+        </div>
+        <form id="query-form" class="chat-composer"><label for="query-text" class="visually-hidden">Сообщение</label><div class="chat-input-row"><textarea id="query-text" rows="1" maxlength="8000" placeholder="Напишите сообщение…" aria-describedby="chat-input-help execute-help" required></textarea><button id="execute-query" type="submit" class="primary">Отправить <span aria-hidden="true">↑</span></button></div><div class="chat-composer-meta"><span id="chat-input-help">Enter — отправить, Shift+Enter — новая строка</span><span id="chat-count" hidden></span></div><p id="chat-feedback" class="field-error" role="status" hidden></p></form>
+      </section>
+      <p id="execute-help" class="chat-footnote">Ответы приходят без озвучивания. Воспроизведение имитируется; команды умного дома и изменения настроек выполняются.</p>
+      <details id="query-diagnostics" class="surface technical-details query-diagnostics"><summary>Проверка маршрутизации</summary><p class="muted small">Введите фразу в поле чата и проверьте, кто её обработает. Эти проверки не отправляют сообщение и не выполняют команду.</p><div class="query-actions"><button id="decide-query" type="button">Проверить маршрут</button><button id="preview-query" type="button">Сравнить правила</button></div><p id="query-message" class="notice" role="status" hidden></p><div id="route-result" class="route-result" hidden></div><section id="decision-section" aria-labelledby="decision-title" hidden><div class="section-heading"><h3 id="decision-title">Выбранный маршрут</h3><span id="decision-meta" class="muted small"></span></div><p id="decision-route" class="route-name"></p><p id="decision-source" class="route-explanation"></p><details class="raw-state"><summary>Результат в JSON</summary><pre id="decision-json" tabindex="0" aria-label="Результат проверки маршрута в JSON"></pre></details></section></details>
     </section>
     <section id="airplay" class="page" aria-labelledby="airplay-title" hidden>
       <h2 id="airplay-title" class="visually-hidden">Управление AirPlay</h2><p class="intro">Включите приёмник и выберите колонку в списке AirPlay на телефоне или компьютере.</p>
