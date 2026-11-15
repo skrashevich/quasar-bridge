@@ -4,7 +4,7 @@ info:
   title: Quasar Bridge — внешние HTTP API и веб-панель
   version: 0.8.0-prerelease
   description: |-
-    Контракт реализации ветки cdx/yandex-text-query (commit d0b0e59a257cb1902df0403c807080bcfe46a607).
+    Контракт реализации ветки cdx/yandex-text-query (commit 935421954765cd61c29710ee16358362db9896b5).
     Основан на предрелизе v0.8.0 и дополнен текстовыми ответами Алисы и диалогами в API.
 
     Основной набор — 9 JSON-операций /diagnostics/api/*, а также /diagnostics/logs и /diagnostics/download.
@@ -38,7 +38,7 @@ info:
     url: https://github.com/skrashevich/quasar-bridge/blob/v0.8.0/LICENSE
 externalDocs:
   description: Исходники реализации текстовых запросов и диалогов
-  url: https://github.com/skrashevich/quasar-bridge/tree/d0b0e59a257cb1902df0403c807080bcfe46a607
+  url: https://github.com/skrashevich/quasar-bridge/tree/935421954765cd61c29710ee16358362db9896b5
 servers:
 - url: http://{host}:{port}
   description: Отдельный HTTP listener панели. diagnostics.network_access=true открывает IPv4 0.0.0.0; false
@@ -75,7 +75,7 @@ tags:
 - name: Bridge
   description: 'Основной listener: health, музыка и WebSocket.'
 x-source-ref: cdx/yandex-text-query
-x-source-commit: d0b0e59a257cb1902df0403c807080bcfe46a607
+x-source-commit: 935421954765cd61c29710ee16358362db9896b5
 x-source-files:
 - cmd/quasar-bridge/main.go
 - cmd/quasar-bridge/diagnostics_api.go
@@ -340,7 +340,10 @@ paths:
         Тайм-аут 75 секунд. Может выполнять инструменты и менять состояние устройств или аккаунта.
         Маршрут yandex получает текст Алисы через отдельное соединение без микрофона и озвучивания.
         Без dialog_id создаётся новый диалог; UUID из ответа передаётся в следующих запросах для
-        сохранения контекста Алисы или LLM. Разные диалоги изолированы от колонок и друг друга.
+        сохранения контекста Алисы, LLM или обработчика умного дома. При включённом
+        dialogue_context.enabled короткие уточнения продолжают последний локальный обработчик;
+        явные запросы могут переключить маршрут. Перед действием умный дом перечитывает
+        доступность и состояния устройств. Разные диалоги изолированы от колонок и друг друга.
         Неактивные диалоги истекают по dialogue_context.ttl_seconds (по умолчанию 300 секунд),
         перезапуск процесса удаляет их. До 32 активных диалогов. Общая блокировка с /decide.
         Физическое воспроизведение симулируется и возвращается в playback; прочие действия реальны.
