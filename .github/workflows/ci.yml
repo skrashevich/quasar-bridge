@@ -42,9 +42,13 @@ jobs:
       - run: CGO_ENABLED=0 go build -trimpath -o /tmp/station-pcm-package github.com/skrashevich/station-airplay/cmd/station-pcm-package
       - name: Check shell syntax
         run: |
-          for script in install.sh packaging/speaker/*.sh packaging/speaker/S96quasar-bridge; do
+          for script in install.sh packaging/speaker/*.sh packaging/speaker/S96quasar-bridge packaging/android/*.sh; do
             sh -n "$script"
           done
+      - name: Test Android packaging and launcher
+        run: python3 scripts/test-android-package.py
+      - name: Build experimental Android archive
+        run: python3 scripts/build-android-package.py
       - name: Test standalone installation with BusyBox
         run: |
           docker run --rm -v "$PWD:/src:ro" -v /tmp/quasar-bridge:/test-binary:ro \

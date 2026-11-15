@@ -113,6 +113,46 @@ func TestRecoveryRejectsUnmanagedInstallationAndInvalidAction(t *testing.T) {
 	}
 }
 
+// Android rollback needs an explicit service restart, never an automatic reboot.
+func TestAndroidRollbackRequiresManualControl(t *testing.T) {
+	u, state := standaloneUpdaterFixture(t)
+	if err := os.WriteFile(filepath.Join(state, "app", "PLATFORM"), []byte("android\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, backup := range []bool{false, true} {
+		if backup {
+			if err := os.WriteFile(filepath.Join(state, "endpoint-backup.json"), []byte(`{}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		result, err := u.Recover(t.Context(), "rollback")
+		if err == nil || !strings.Contains(err.Error(), "Android") || !strings.Contains(err.Error(), "manually") || result.Done != nil {
+			t.Fatalf("Android rollback not blocked before scheduling (backup=%v): %+v %v", backup, result, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(state, "recovery.log")); !os.IsNotExist(err) {
+		t.Fatalf("rejected Android rollback launched a helper: %v", err)
+	}
+	data, err := os.ReadFile(u.configPath)
+	if err != nil || string(data) != "{}" {
+		t.Fatalf("rejected Android rollback changed configuration: %s %v", data, err)
+	}
+	for _, action := range []string{"restart", "observe"} {
+		if err := os.Remove(filepath.Join(state, "bridge.pid")); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		var err error
+		if action == "restart" {
+			_, err = u.Restart(t.Context())
+		} else {
+			_, err = u.Recover(t.Context(), action)
+		}
+		if err == nil || strings.Contains(err.Error(), "Android") {
+			t.Fatalf("Android %s incorrectly rejected by manual-rollback guard: %v", action, err)
+		}
+	}
+}
+
 func TestSaveObserveOverridesRuntimeModeAndPreservesSecrets(t *testing.T) {
 	for _, assignment := range []string{`QUASAR_MODE="hybrid"`, `export QUASAR_MODE='hybrid'`, `QUASAR_MODE=$(printf hybrid)`} {
 		t.Run(assignment, func(t *testing.T) {

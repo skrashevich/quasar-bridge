@@ -163,6 +163,22 @@ func TestExtractRejectsUnsafeArchive(t *testing.T) {
 }
 
 func TestStandaloneRequiresMatchingProcessAndConfig(t *testing.T) {
+	u, state := standaloneUpdaterFixture(t)
+	exe := u.executable
+	if got, err := standaloneState(exe, filepath.Join(state, "config.json")); err != nil || got != state {
+		t.Fatalf("state=%q, %v", got, err)
+	}
+	if _, err := standaloneState(exe, filepath.Join(state, "other.json")); err == nil {
+		t.Fatal("accepted unrelated config")
+	}
+	os.WriteFile(filepath.Join(state, "bridge.pid"), []byte(fmt.Sprint(os.Getpid()+1)), 0600)
+	if _, err := standaloneState(exe, filepath.Join(state, "config.json")); err == nil {
+		t.Fatal("accepted another service PID")
+	}
+}
+
+func standaloneUpdaterFixture(t *testing.T) (*Updater, string) {
+	t.Helper()
 	state := t.TempDir()
 	exe := filepath.Join(state, "app", "bin", "quasar-bridge")
 	if err := os.MkdirAll(filepath.Dir(exe), 0700); err != nil {
@@ -173,15 +189,45 @@ func TestStandaloneRequiresMatchingProcessAndConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got, err := standaloneState(exe, filepath.Join(state, "config.json")); err != nil || got != state {
-		t.Fatalf("state=%q, %v", got, err)
+	return &Updater{currentVersion: "1.2.3", executable: exe, configPath: filepath.Join(state, "config.json")}, state
+}
+
+// Android packages must not be replaced by the Linux release's init.d installer.
+func TestAndroidUpdateRejectsLinuxPackage(t *testing.T) {
+	u, state := standaloneUpdaterFixture(t)
+	if _, err := u.installState(); err != nil && strings.Contains(err.Error(), "Android") {
+		t.Fatalf("legacy Linux package without marker rejected as Android: %v", err)
 	}
-	if _, err := standaloneState(exe, filepath.Join(state, "other.json")); err == nil {
-		t.Fatal("accepted unrelated config")
+	if err := os.WriteFile(filepath.Join(state, "app", "PLATFORM"), []byte("android\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(state, "bridge.pid"), []byte(fmt.Sprint(os.Getpid()+1)), 0600)
-	if _, err := standaloneState(exe, filepath.Join(state, "config.json")); err == nil {
-		t.Fatal("accepted another service PID")
+	for _, version := range []string{"1.2.3", "dev"} {
+		u.currentVersion = version
+		if _, err := u.installState(); err == nil || !strings.Contains(err.Error(), "Android") || !strings.Contains(err.Error(), "manually") {
+			t.Fatalf("Android package installation not blocked clearly: %v", err)
+		}
+		if _, err := u.Install(t.Context()); err == nil || !strings.Contains(err.Error(), "Android") {
+			t.Fatalf("Android Install did not reject before release download: %v", err)
+		}
+	}
+	remote := releaseServer(t, "v1.2.4", http.StatusOK)
+	u.currentVersion, u.client = "1.2.3", remote.client
+	status, err := u.Check(t.Context())
+	if err != nil || status.InstallSupported || !strings.Contains(status.InstallUnavailableReason, "Android") {
+		t.Fatalf("Android update status claims Linux install support: %+v, %v", status, err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "update.log")); !os.IsNotExist(err) {
+		t.Fatalf("rejected Android installation created an update log: %v", err)
+	}
+	// The marker must not make standalone restart/observe layout validation fail.
+	if got, err := standaloneState(u.executable, u.configPath); err != nil || got != state {
+		t.Fatalf("Android service layout rejected: %q %v", got, err)
+	}
+	if err := os.Remove(filepath.Join(state, "app", "PLATFORM")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.installState(); err != nil && strings.Contains(err.Error(), "Android") {
+		t.Fatalf("removed Android marker still blocks legacy Linux update: %v", err)
 	}
 }
 

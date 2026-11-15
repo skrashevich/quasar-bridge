@@ -34,6 +34,7 @@ import (
 
 func main() {
 	version := flag.Bool("v", false, "print version and exit")
+	healthURL := flag.String("healthcheck", "", "check a loopback HTTP /healthz endpoint without loading configuration")
 	path := flag.String("config", "config.json", "configuration file")
 	query := flag.String("query", "", "run one text query for diagnostics with simulated speaker audio playback")
 	check := flag.Bool("check-backends", false, "check LLM and configured Home Assistant connectivity")
@@ -53,6 +54,14 @@ func main() {
 		fmt.Println(update.Version)
 		return
 	}
+	if *healthURL != "" {
+		if err := checkHealth(context.Background(), *healthURL); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("Bridge healthy")
+		return
+	}
 	if *speakerAction != "" {
 		if err := setSpeakerEndpoint(*speakerConfig, *speakerBackup, *speakerURL, *speakerAction); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -60,6 +69,10 @@ func main() {
 		}
 		fmt.Println("Speaker endpoint updated; restart the voice service to apply")
 		return
+	}
+	if err := configureDNS(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 	diagnosticLogs := newDiagnosticLog(1 << 20)
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stderr, diagnosticLogs), nil))

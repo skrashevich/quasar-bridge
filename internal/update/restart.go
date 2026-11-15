@@ -33,6 +33,9 @@ func (u *Updater) Recover(ctx context.Context, action string) (RestartResult, er
 	if action != "observe" && action != "rollback" {
 		return RestartResult{}, errors.New("recovery action must be observe or rollback")
 	}
+	if action == "rollback" && u.androidPackage() {
+		return RestartResult{}, errors.New("Android endpoint rollback must be run manually")
+	}
 	return u.scheduleServiceAction(ctx, action)
 }
 

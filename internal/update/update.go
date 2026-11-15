@@ -151,6 +151,9 @@ func (u *Updater) latestReleaseTag(ctx context.Context) (string, error) {
 }
 
 func (u *Updater) installState() (string, error) {
+	if u.androidPackage() {
+		return "", errors.New("Android packages must be updated manually; automatic installation supports Linux speaker packages only")
+	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" && runtime.GOARCH != "arm" || os.Geteuid() != 0 {
 		return "", errors.New("automatic installation requires a standalone Linux ARM64/ARMv7 speaker running as root")
 	}
@@ -158,6 +161,11 @@ func (u *Updater) installState() (string, error) {
 		return "", errors.New("current version is unknown; update development builds manually")
 	}
 	return standaloneState(u.executable, u.configPath)
+}
+
+func (u *Updater) androidPackage() bool {
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(u.executable)), "PLATFORM"))
+	return err == nil && strings.TrimSpace(string(data)) == "android"
 }
 
 func standaloneState(executable, configPath string) (string, error) {
