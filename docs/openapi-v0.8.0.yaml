@@ -336,10 +336,14 @@ paths:
       - Panel
       operationId: executeTextQuery
       summary: Выполнить текстовый запрос
-      description: 'Тайм-аут 75 секунд. Может выполнять инструменты, менять конфигурацию, управлять AirPlay/Home
-        Assistant и иметь другие побочные эффекты. Общий для вкладок диалог quasar-bridge-dashboard, отдельный
-        от физических колонок; общая блокировка с /decide. sound.Request перехватывается и возвращается в playback:
-        физическое воспроизведение этим транспортом симулируется. Иные побочные эффекты инструментов не симулируются.'
+      description: >-
+        Тайм-аут 75 секунд. Может выполнять инструменты и менять состояние устройств или аккаунта.
+        Маршрут yandex получает текст Алисы через отдельное соединение без микрофона и озвучивания.
+        Без dialog_id создаётся новый диалог; UUID из ответа передаётся в следующих запросах для
+        сохранения контекста Алисы или LLM. Разные диалоги изолированы от колонок и друг друга.
+        Неактивные диалоги истекают по dialogue_context.ttl_seconds (по умолчанию 300 секунд),
+        перезапуск процесса удаляет их. До 32 активных диалогов. Общая блокировка с /decide.
+        Физическое воспроизведение симулируется и возвращается в playback; прочие действия реальны.
       responses:
         '200':
           description: Успешный ответ.
@@ -363,6 +367,12 @@ paths:
           $ref: '#/components/responses/InternalError'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Неизвестный или истёкший dialog_id. Не создаёт новый диалог молча.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '413':
           $ref: '#/components/responses/TooLarge'
         '415':
@@ -374,7 +384,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/TextRequest'
+              $ref: '#/components/schemas/QueryRequest'
             example:
               text: Который час?
       x-max-request-body-bytes: 262144
@@ -945,6 +955,18 @@ components:
       required:
       - text
       additionalProperties: false
+    QueryRequest:
+      type: object
+      properties:
+        text:
+          $ref: '#/components/schemas/TextRequest/properties/text'
+        dialog_id:
+          type: string
+          format: uuid
+          description: UUID из предыдущего ответа query. Если отсутствует или пуст, начинается новый диалог.
+      required:
+      - text
+      additionalProperties: false
     RouteDecision:
       type: object
       properties:
@@ -1022,6 +1044,10 @@ components:
     QueryResult:
       type: object
       properties:
+        dialog_id:
+          type: string
+          format: uuid
+          description: Локальный идентификатор Bridge; служебный контекст Яндекса не раскрывается.
         route:
           type: string
         answer:
@@ -1039,6 +1065,7 @@ components:
           const: true
           description: Присутствует только при непустом playback.
       required:
+      - dialog_id
       - route
       - answer
       - elapsed_ms

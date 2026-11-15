@@ -2,7 +2,17 @@
 
 const byId = id => document.getElementById(id);
 const pageNames = { overview: "Обзор", settings: "Настройки", query: "Проверка запроса", airplay: "AirPlay", history: "История", logs: "Журнал событий" };
-const state = { page: "overview", status: null, config: null, restartRun: "", settings: new Map(), drafts: new Map(), configBusy: false, statusBusy: false, historyBusy: false, airplayBusy: false, queryBusy: false };
+const state = { page: "overview", status: null, config: null, restartRun: "", settings: new Map(), drafts: new Map(), configBusy: false, statusBusy: false, historyBusy: false, airplayBusy: false, queryBusy: false, queryDialog: storedQueryDialog() };
+function storedQueryDialog() {
+  try { return sessionStorage.getItem("quasarBridge.queryDialog") || ""; } catch (_) { return ""; }
+}
+function saveQueryDialog(id) {
+  state.queryDialog = id;
+  try {
+    if (id) sessionStorage.setItem("quasarBridge.queryDialog", id);
+    else sessionStorage.removeItem("quasarBridge.queryDialog");
+  } catch (_) { /* The current tab still keeps its in-memory context. */ }
+}
 const logState = { cursor: 0, run: "", text: "", paused: false, busy: false };
 const settingLabels = {
   mode: "Режим Bridge", listen: "Адрес HTTP-сервера", upstream: "Сервер Алисы", allowed_ips: "Разрешённые адреса",
@@ -105,7 +115,7 @@ function renderStatus(data) {
   byId("decide-query").disabled = state.queryBusy || data.capabilities?.decide === false;
   if (data.capabilities?.query === false) byId("execute-query").title = "Обработчик запросов недоступен";
   else byId("execute-query").removeAttribute("title");
-  byId("execute-help").textContent = data.capabilities?.query === false ? "Обработчик запросов недоступен. Проверьте состояние Bridge и повторите подключение." : "Как с флагом -query: Bridge обработает фразу. Воспроизведение имитируется и показывается в результате; звук на колонке не запускается. Другие команды могут реально управлять устройствами или менять настройки. Диагностика доступна и в режиме наблюдения.";
+  byId("execute-help").textContent = data.capabilities?.query === false ? "Обработчик запросов недоступен. Проверьте состояние Bridge и повторите подключение." : "Как с флагом -query: Bridge обработает фразу. Воспроизведение имитируется и показывается в результате; звук на колонке не запускается. Другие команды могут реально управлять устройствами или менять настройки. Последующие запросы продолжают диалог; кнопка «Новый диалог» очищает его контекст. Диагностика доступна и в режиме наблюдения.";
   byId("last-updated").textContent = "Состояние обновлено в " + new Date().toLocaleTimeString("ru-RU");
 }
 async function loadStatus(reportError = false) {
@@ -359,6 +369,7 @@ function setQueryBusy(busy) {
   byId("preview-query").disabled = busy;
   byId("decide-query").disabled = busy || state.status?.capabilities?.decide === false;
   byId("execute-query").disabled = busy || state.status?.capabilities?.query === false;
+  byId("new-query-dialog").disabled = busy;
 }
 async function previewQuery(event) {
   event.preventDefault();
@@ -430,15 +441,21 @@ async function executeQuery() {
   message("query-message", "Bridge выполняет запрос. Дождитесь ответа…");
   byId("answer-section").hidden = true;
   try {
-    const result = await post("api/query", { text }, 180000);
-    byId("answer-text").textContent = result.answer || (result.route === "yandex" ? "Запрос направлен Алисе. Вне голосовой сессии колонки этот маршрут может завершиться без текстового ответа. Для проверки ответа модели используйте фразу, которая направляется в модель." : "Bridge завершил запрос без текстового ответа.");
+    const payload = { text };
+    if (state.queryDialog) payload.dialog_id = state.queryDialog;
+    const result = await post("api/query", payload, 180000);
+    saveQueryDialog(result.dialog_id || "");
+    byId("answer-title").textContent = result.route === "yandex" ? "Ответ Алисы" : "Ответ Bridge";
+    byId("answer-text").textContent = result.answer || "Bridge завершил запрос без текстового ответа.";
     byId("answer-meta").textContent = routeName(result.route) + (typeof result.elapsed_ms === "number" ? " · " + (result.elapsed_ms / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " с" : "");
     renderQueryPlayback(result);
     byId("answer-section").hidden = false;
-    message("query-message", result.playback_simulated ? "Запрос обработан. Воспроизведение имитируется: звук не запускается." : "Bridge обработал запрос.");
+    message("query-message", result.route === "yandex" ? "Алиса ответила текстом. Звук на колонке не запускается." : result.playback_simulated ? "Запрос обработан. Воспроизведение имитируется: звук не запускается." : "Bridge обработал запрос.");
     await loadStatus();
     await loadConfig(false);
-  } catch (error) { message("query-message", error.message, true); }
+  } catch (error) {
+    message("query-message", error.message.includes("unknown or expired dialog_id") ? "Диалог завершён или Bridge был перезапущен. Нажмите «Новый диалог»." : error.message, true);
+  }
   finally { setQueryBusy(false); }
 }
 async function airPlayAction(action) {
@@ -541,6 +558,13 @@ byId("query-form").addEventListener("submit", decideQuery);
 byId("preview-query").addEventListener("click", previewQuery);
 byId("query-text").addEventListener("input", () => { byId("decision-section").hidden = true; byId("route-result").hidden = true; byId("answer-section").hidden = true; message("query-message"); });
 byId("execute-query").addEventListener("click", executeQuery);
+byId("new-query-dialog").addEventListener("click", () => {
+  if (state.queryBusy) return;
+  saveQueryDialog("");
+  byId("answer-section").hidden = true;
+  message("query-message", "Следующий запрос начнёт новый диалог без прежнего контекста.");
+  byId("query-text").focus();
+});
 document.querySelectorAll("[data-airplay]").forEach(button => button.addEventListener("click", () => airPlayAction(button.dataset.airplay)));
 byId("volume-level").addEventListener("input", () => { byId("volume-value").value = byId("volume-level").value + "%"; });
 byId("set-volume").addEventListener("click", () => airPlayAction("volume:" + byId("volume-level").value));
