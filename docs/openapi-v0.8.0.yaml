@@ -1,11 +1,11 @@
-# Контракт тега v0.8.0; см. info.description и x-source-commit.
+# Контракт ветки cdx/yandex-text-query; см. info.description и x-source-commit.
 openapi: 3.1.0
 info:
   title: Quasar Bridge — внешние HTTP API и веб-панель
   version: 0.8.0-prerelease
   description: |-
-    Контракт реализации предрелиза v0.8.0 (commit 0a763221aeb01aeb5c9bd0b605ebd4b4852010e5).
-    Составлен по исходникам тега, не по текущей рабочей ветке. Изменения более поздних версий сюда не включены.
+    Контракт реализации ветки cdx/yandex-text-query (commit d0b0e59a257cb1902df0403c807080bcfe46a607).
+    Основан на предрелизе v0.8.0 и дополнен текстовыми ответами Алисы и диалогами в API.
 
     Основной набор — 9 JSON-операций /diagnostics/api/*, а также /diagnostics/logs и /diagnostics/download.
     Для полного описания HTTP-поверхности добавлены HTML/JS/CSS, перенаправления панели и маршруты
@@ -37,8 +37,8 @@ info:
     name: Apache-2.0
     url: https://github.com/skrashevich/quasar-bridge/blob/v0.8.0/LICENSE
 externalDocs:
-  description: Исходники предрелиза v0.8.0
-  url: https://github.com/skrashevich/quasar-bridge/tree/v0.8.0
+  description: Исходники реализации текстовых запросов и диалогов
+  url: https://github.com/skrashevich/quasar-bridge/tree/d0b0e59a257cb1902df0403c807080bcfe46a607
 servers:
 - url: http://{host}:{port}
   description: Отдельный HTTP listener панели. diagnostics.network_access=true открывает IPv4 0.0.0.0; false
@@ -74,8 +74,8 @@ tags:
   description: Статические файлы и перенаправления панели.
 - name: Bridge
   description: 'Основной listener: health, музыка и WebSocket.'
-x-source-ref: v0.8.0
-x-source-commit: 0a763221aeb01aeb5c9bd0b605ebd4b4852010e5
+x-source-ref: cdx/yandex-text-query
+x-source-commit: d0b0e59a257cb1902df0403c807080bcfe46a607
 x-source-files:
 - cmd/quasar-bridge/main.go
 - cmd/quasar-bridge/diagnostics_api.go
@@ -385,8 +385,16 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/QueryRequest'
-            example:
-              text: Который час?
+            examples:
+              newDialog:
+                summary: Начать новый диалог
+                value:
+                  text: Какая погода в Токио?
+              continueDialog:
+                summary: Продолжить диалог с UUID из предыдущего ответа
+                value:
+                  text: А завтра?
+                  dialog_id: 9e069ed0-af1a-40cd-b072-420e3db3cd15
       x-max-request-body-bytes: 262144
   /diagnostics/api/history:
     get:
@@ -962,7 +970,10 @@ components:
           $ref: '#/components/schemas/TextRequest/properties/text'
         dialog_id:
           type: string
-          format: uuid
+          oneOf:
+          - format: uuid
+            minLength: 1
+          - const: ''
           description: UUID из предыдущего ответа query. Если отсутствует или пуст, начинается новый диалог.
       required:
       - text
