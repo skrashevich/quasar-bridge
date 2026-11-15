@@ -190,6 +190,18 @@ quasar-bridge -config config.json -list-models
 `llm_chat_parameters` требует `llm_api: "chat_completions"` и перезапуска.
 Формат и допустимые значения параметров зависят от выбранного API.
 
+При работе с Gemini через Chat Completions мост сохраняет непрозрачные
+`extra_content` сообщений и вызовов инструментов, включая
+[`google.thought_signature`](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures).
+Для endpoint `generativelanguage.googleapis.com` и моделей с последним
+компонентом имени `gemini-*` (включая `models/gemini-*` и `google/gemini-*`
+через прокси) автоматическая предзагрузка отключена: время, историю и
+страницы запрашивает сама модель через подписанные вызовы. Это может
+потребовать дополнительного раунда в пределах настроенных лимитов.
+Результаты остаются недоверенными данными инструментов; запрет сетевых
+вызовов после чтения истории сохраняется. Обычные OpenAI-совместимые
+endpoint’ы и Responses API сохраняют прежнюю предзагрузку.
+
 Для [OpenAI-совместимого endpoint Anthropic](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk)
 отключите несовместимые параметры явно:
 

@@ -83,7 +83,11 @@ func (a *Agent) complete(ctx context.Context, messages []llm.Message, structured
 	messages = append([]llm.Message{{Role: "system", Content: system}}, conversation...)
 	count := 0
 	seen := map[string]bool{}
-	if p, ok := a.Tools.(Prefetcher); ok {
+	prefetch := true
+	if policy, ok := a.Client.(interface{ AllowsToolPrefetch() bool }); ok {
+		prefetch = policy.AllowsToolPrefetch()
+	}
+	if p, ok := a.Tools.(Prefetcher); ok && prefetch {
 		user := ""
 		for i := len(messages) - 1; i >= 0; i-- {
 			if messages[i].Role == "user" {
