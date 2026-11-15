@@ -96,7 +96,7 @@ class AndroidPackageTest(unittest.TestCase):
         bridge = package / "bin/quasar-bridge"
         bridge.write_text('#!/bin/sh\n'
                           'if [ \"$1\" = -v ]; then echo dev; exit 0; fi\n'
-                          'printf "%s\\n" "DNS=$QUASAR_DNS_SERVER" "CA=$SSL_CERT_FILE" "TMP=$TMPDIR" "PWD=$PWD"\n'
+                          'printf "%s\\n" "DNS=$QUASAR_DNS_SERVER" "RELAY=$QUASAR_ANDROID_BACKEND_PROXY" "CA=$SSL_CERT_FILE" "TMP=$TMPDIR" "PWD=$PWD"\n'
                           'printf "ARG=%s\\n" "$@"\n')
         bridge.chmod(0o755)
         for name, value in [("ARCH", "arm64"), ("PLATFORM", "android"), ("VERSION", "dev"),
@@ -127,6 +127,7 @@ class AndroidPackageTest(unittest.TestCase):
             result = subprocess.run(["sh", str(package / "start.sh"), "-check-config"], env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("DNS=192.0.2.53\n", result.stdout)
+            self.assertIn("RELAY=1\n", result.stdout)
             self.assertIn("CA=/system/vendor/quasar/ca-certificates.crt\n", result.stdout)
             self.assertIn(f"TMP={state}/tmp\n", result.stdout)
             self.assertIn(f"PWD={state}\n", result.stdout)
@@ -136,11 +137,12 @@ class AndroidPackageTest(unittest.TestCase):
     def test_launcher_honors_explicit_dns_and_ca(self):
         with tempfile.TemporaryDirectory() as tmp:
             package, state, env = self.fixture(Path(tmp))
-            env.update(QUASAR_DNS_SERVER="[2001:db8::53]:5353", SSL_CERT_FILE="/custom/ca.crt")
+            env.update(QUASAR_DNS_SERVER="[2001:db8::53]:5353", SSL_CERT_FILE="/custom/ca.crt", QUASAR_ANDROID_BACKEND_PROXY="0")
             result = subprocess.run(["sh", str(package / "start.sh"), "-check-config"], env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("DNS=[2001:db8::53]:5353\n", result.stdout)
             self.assertIn("CA=/custom/ca.crt\n", result.stdout)
+            self.assertIn("RELAY=1\n", result.stdout)
 
     def test_missing_android_dns_fails_before_launch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -204,9 +206,20 @@ class AndroidPackageTest(unittest.TestCase):
         bridge = package / "bin/quasar-bridge"
         bridge.write_text(
             '#!/usr/bin/env python3\n'
-            'import pathlib,sys\n'
-            'if sys.argv[1] == "-healthcheck": sys.exit(0)\n'
+            'import os,pathlib,sys\n'
+            'if sys.argv[1] == "-speaker-android-cache-rollback":\n'
+            ' if os.getenv("QUASAR_TEST_CACHE_FAIL") == "1": sys.exit(1)\n'
+            ' path=pathlib.Path(sys.argv[sys.argv.index("-speaker-config")+1])\n'
+            ' assert path.read_bytes() == ' + repr(original) + '\n'
+            ' pathlib.Path(os.environ["QUASAR_DATA_DIR"], "cache-rollback-called").write_text(sys.argv[2])\n'
+            ' sys.exit(0)\n'
+            'if sys.argv[1] == "-healthcheck":\n'
+            ' if "-healthcheck-android-backend" in sys.argv:\n'
+            '  if os.getenv("QUASAR_TEST_NO_RELAY") == "1": sys.exit(1)\n'
+            '  pathlib.Path(os.environ["QUASAR_DATA_DIR"], "relay-health-required").touch()\n'
+            ' sys.exit(0)\n'
             'assert sys.argv[1:3] == ["-speaker-endpoint", "apply"]\n'
+            'assert "-speaker-android" in sys.argv\n'
             'path=pathlib.Path(sys.argv[sys.argv.index("-speaker-config")+1])\n'
             'assert path.name == "speaker-config.json"\n'
             'path.write_text("patched endpoint\\n")\n'
@@ -234,9 +247,11 @@ class AndroidPackageTest(unittest.TestCase):
             self.assertEqual(target.read_text(), "patched endpoint\n")
             self.assertEqual(Path(str(target) + ".original").read_bytes(), original)
             self.assertTrue((state / "endpoint-mount").exists())
+            self.assertTrue((state / "relay-health-required").exists())
             rollback = subprocess.run(["sh", str(package / "control.sh"), "rollback"], env=env, text=True, capture_output=True)
             self.assertEqual(rollback.returncode, 0, rollback.stderr)
             self.assertEqual(target.read_bytes(), original)
+            self.assertEqual((state / "cache-rollback-called").read_text(), "/data/quasar/data/user_config.dat")
             self.assertEqual(mounts.read_text(), "1 0 0:1 / / rw - ext4 /device rw\n")
             self.assertFalse((state / "endpoint-mount").exists())
             self.assertFalse((state / "endpoint-backup.json").exists())
@@ -319,6 +334,40 @@ class AndroidPackageTest(unittest.TestCase):
                         self.assertFalse(record.exists())
                         self.assertFalse(backup.exists())
                         self.assertFalse(copy.exists())
+
+
+    def test_overlay_refuses_bridge_without_android_backend_relay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package, state, env, target, original, mounts = self.overlay_fixture(Path(tmp))
+            env["QUASAR_TEST_NO_RELAY"] = "1"
+            result = subprocess.run(["sh", str(package / "control.sh"), "apply"], env=env, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("with the Android backend relay", result.stderr)
+            self.assertEqual(target.read_bytes(), original)
+            self.assertFalse((state / "endpoint-mount").exists())
+            self.assertFalse((state / "endpoint-backup.json").exists())
+            self.assertFalse((state / "speaker-config.json").exists())
+
+
+    def test_cache_rollback_failure_keeps_recovery_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package, state, env, target, original, mounts = self.overlay_fixture(Path(tmp))
+            apply = subprocess.run(["sh", str(package / "control.sh"), "apply"], env=env, text=True, capture_output=True)
+            self.assertEqual(apply.returncode, 0, apply.stderr)
+            env["QUASAR_TEST_CACHE_FAIL"] = "1"
+            rollback = subprocess.run(["sh", str(package / "control.sh"), "rollback"], env=env, text=True, capture_output=True)
+            self.assertNotEqual(rollback.returncode, 0)
+            self.assertEqual(target.read_bytes(), original)
+            self.assertTrue((state / "endpoint-mount").exists())
+            self.assertTrue((state / "endpoint-backup.json").exists())
+            self.assertTrue((state / "speaker-config.json").exists())
+            # A second attempt can repair the cache after the overlay is gone.
+            env.pop("QUASAR_TEST_CACHE_FAIL")
+            env["QUASAR_NATIVE_CONFIG_STORAGE"] = "/custom/native-config.dat"
+            retry = subprocess.run(["sh", str(package / "control.sh"), "rollback"], env=env, text=True, capture_output=True)
+            self.assertEqual(retry.returncode, 0, retry.stderr)
+            self.assertEqual((state / "cache-rollback-called").read_text(), "/custom/native-config.dat")
+            self.assertFalse((state / "endpoint-mount").exists())
 
 if __name__ == "__main__":
     unittest.main()

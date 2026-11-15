@@ -9,17 +9,26 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 )
 
 type speakerBackup struct {
-	Config string         `json:"config"`
-	Local  string         `json:"local"`
-	URL    jsontext.Value `json:"url"`
-	QUIC   jsontext.Value `json:"quic,omitempty"`
+	Config       string         `json:"config"`
+	Local        string         `json:"local"`
+	URL          jsontext.Value `json:"url"`
+	QUIC         jsontext.Value `json:"quic,omitempty"`
+	Backend      jsontext.Value `json:"backend,omitempty"`
+	BackendLocal string         `json:"backend_local,omitempty"`
 }
 
 // Patch only the two endpoints. All firmware-specific members remain intact.
 func setSpeakerEndpoint(path, backupPath, local, action string) error {
+	return setSpeakerEndpointForPlatform(path, backupPath, local, action, false)
+}
+
+// Android firmware receives an authoritative uniProxyUrl through backend sync.
+// Its opt-in relay changes only that cloud field while retaining native sync.
+func setSpeakerEndpointForPlatform(path, backupPath, local, action string, android bool) error {
 	if action != "apply" && action != "rollback" {
 		return errors.New("speaker-endpoint must be apply or rollback")
 	}
@@ -43,12 +52,27 @@ func setSpeakerEndpoint(path, backupPath, local, action string) error {
 	if json.Unmarshal(doc["aliced"], &alice) != nil || alice == nil {
 		return errors.New("missing aliced configuration")
 	}
+	var common map[string]jsontext.Value
+	var backendLocal string
+	if android {
+		if json.Unmarshal(doc["common"], &common) != nil || common == nil {
+			return errors.New("missing common configuration for Android backend relay")
+		}
+		backend := u.Clone()
+		backend.Scheme = "http"
+		if u.Scheme == "wss" {
+			backend.Scheme = "https"
+		}
+		backend.Path = "/android-backend"
+		backend.RawPath = ""
+		backendLocal = backend.String()
+	}
 	var current string
 	_ = json.Unmarshal(alice["uniProxyUrl"], &current)
 	var saved speakerBackup
 	previous, readErr := os.ReadFile(backupPath)
 	if readErr == nil {
-		if json.Unmarshal(previous, &saved) != nil || saved.Config != path || saved.Local != local {
+		if json.Unmarshal(previous, &saved) != nil || saved.Config != path || saved.Local != local || saved.BackendLocal != backendLocal || (saved.Backend != nil) != android {
 			return errors.New("endpoint backup does not match this configuration")
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -57,6 +81,13 @@ func setSpeakerEndpoint(path, backupPath, local, action string) error {
 	if action == "apply" {
 		if readErr != nil {
 			saved = speakerBackup{Config: path, Local: local, URL: alice["uniProxyUrl"], QUIC: alice["uniProxyQuicUrl"]}
+			if android {
+				var originalBackend string
+				if json.Unmarshal(common["backendUrl"], &originalBackend) != nil || strings.TrimSuffix(originalBackend, "/") != "https://quasar.yandex.net" {
+					return errors.New("Android backend relay requires the official HTTPS Quasar backend")
+				}
+				saved.Backend, saved.BackendLocal = common["backendUrl"], backendLocal
+			}
 			if saved.URL == nil {
 				return errors.New("missing original endpoint")
 			}
@@ -78,24 +109,35 @@ func setSpeakerEndpoint(path, backupPath, local, action string) error {
 			}
 		} else {
 			expectedURL, expectedQUIC := saved.URL, saved.QUIC
+			expectedBackend := saved.Backend
 			if current == local {
 				expectedURL, _ = json.Marshal(local)
 				expectedQUIC = jsontext.Value(`""`)
+				if android {
+					expectedBackend, _ = json.Marshal(backendLocal)
+				}
 			}
-			if !sameEndpoint(alice["uniProxyUrl"], expectedURL) || !sameEndpoint(alice["uniProxyQuicUrl"], expectedQUIC) {
+			if !sameEndpoint(alice["uniProxyUrl"], expectedURL) || !sameEndpoint(alice["uniProxyQuicUrl"], expectedQUIC) || (android && !sameEndpoint(common["backendUrl"], expectedBackend)) {
 				return errors.New("speaker endpoints changed externally; inspect the saved backup")
 			}
 		}
 		alice["uniProxyUrl"], _ = json.Marshal(local)
 		alice["uniProxyQuicUrl"] = jsontext.Value(`""`)
+		if android {
+			common["backendUrl"], _ = json.Marshal(backendLocal)
+		}
 	} else {
 		if readErr != nil {
 			return errors.New("no endpoint backup")
 		}
-		if current != local || !sameEndpoint(alice["uniProxyQuicUrl"], jsontext.Value(`""`)) {
+		expectedBackend, _ := json.Marshal(backendLocal)
+		if current != local || !sameEndpoint(alice["uniProxyQuicUrl"], jsontext.Value(`""`)) || (android && !sameEndpoint(common["backendUrl"], expectedBackend)) {
 			return errors.New("speaker endpoints changed externally; refusing rollback")
 		}
 		alice["uniProxyUrl"] = saved.URL
+		if android {
+			common["backendUrl"] = saved.Backend
+		}
 		if saved.QUIC != nil {
 			alice["uniProxyQuicUrl"] = saved.QUIC
 		} else {
@@ -103,6 +145,9 @@ func setSpeakerEndpoint(path, backupPath, local, action string) error {
 		}
 	}
 	doc["aliced"], _ = json.Marshal(alice)
+	if android {
+		doc["common"], _ = json.Marshal(common)
+	}
 	data, err := json.Marshal(doc)
 	if err != nil {
 		return err

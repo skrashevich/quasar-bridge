@@ -13,6 +13,10 @@ import (
 
 // The device controller must work without wget or curl on Android firmware.
 func checkHealth(ctx context.Context, address string) error {
+	return checkHealthWithBackend(ctx, address, false)
+}
+
+func checkHealthWithBackend(ctx context.Context, address string, requireAndroid bool) error {
 	u, err := url.Parse(address)
 	if err != nil {
 		return errors.New("invalid loopback health URL")
@@ -37,9 +41,10 @@ func checkHealth(ctx context.Context, address string) error {
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4097))
 	var health struct {
-		Status string `json:"status"`
+		Status         string `json:"status"`
+		AndroidBackend bool   `json:"android_backend_proxy"`
 	}
-	if err != nil || len(data) > 4096 || resp.StatusCode != http.StatusOK || json.Unmarshal(data, &health) != nil || health.Status != "ok" {
+	if err != nil || len(data) > 4096 || resp.StatusCode != http.StatusOK || json.Unmarshal(data, &health) != nil || health.Status != "ok" || requireAndroid && !health.AndroidBackend {
 		return errors.New("bridge is not healthy")
 	}
 	return nil

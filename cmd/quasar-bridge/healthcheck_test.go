@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,6 +54,9 @@ func TestHealthcheckProcess(t *testing.T) {
 	if address := os.Getenv("QUASAR_TEST_HEALTH_URL"); address != "" {
 		flag.CommandLine = flag.NewFlagSet("quasar-bridge", flag.ExitOnError)
 		os.Args = []string{"quasar-bridge", "-config", "/missing/config.json", "-healthcheck", address}
+		if os.Getenv("QUASAR_TEST_HEALTH_ANDROID") == "1" {
+			os.Args = append(os.Args, "-healthcheck-android-backend")
+		}
 		main()
 		os.Exit(0)
 	}
@@ -63,5 +67,36 @@ func TestHealthcheckProcess(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "Bridge healthy") {
 		t.Fatalf("health CLI failed without configuration: %v %s", err, out)
+	}
+}
+
+func TestHealthcheckRequiresAndroidBackend(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintf(w, `{"status":"ok","android_backend_proxy":%t}`, enabled)
+			}))
+			defer server.Close()
+			if err := checkHealthWithBackend(t.Context(), server.URL+"/healthz", true); (err == nil) != enabled {
+				t.Fatalf("healthcheck with required Android backend: %v; enabled=%v", err, enabled)
+			}
+		})
+	}
+}
+
+func TestAndroidHealthcheckProcess(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintf(w, `{"status":"ok","android_backend_proxy":%t}`, enabled)
+			}))
+			defer server.Close()
+			command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHealthcheckProcess$")
+			command.Env = append(os.Environ(), "QUASAR_TEST_HEALTH_URL="+server.URL+"/healthz", "QUASAR_TEST_HEALTH_ANDROID=1")
+			output, err := command.CombinedOutput()
+			if (err == nil) != enabled {
+				t.Fatalf("CLI required backend: err=%v output=%s enabled=%v", err, output, enabled)
+			}
+		})
 	}
 }

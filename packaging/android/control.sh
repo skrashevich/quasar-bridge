@@ -18,6 +18,7 @@ valid_path() {
 }
 valid_path "$state" || fail 'Unsupported QUASAR_DATA_DIR path.'
 healthy() { "$package/bin/quasar-bridge" -healthcheck "$health" >/dev/null 2>&1; }
+healthy_backend() { "$package/bin/quasar-bridge" -healthcheck "$health" -healthcheck-android-backend >/dev/null 2>&1; }
 running() {
  test -s "$pidfile" || return 1
  pid=$(cat "$pidfile")
@@ -80,7 +81,7 @@ stop() {
  rm -f "$pidfile"
 }
 apply() {
- running && healthy || fail 'Start this bridge and check health before apply.'
+ running && healthy && healthy_backend || fail 'Start this bridge with the Android backend relay before apply.'
  test ! -e "$record" || fail 'An endpoint overlay record exists; run rollback first.'
  target=$(readlink -f "${QUASAR_DEVICE_CONFIG:-/system/vendor/quasar/quasar.cfg}")
  valid_path "$target" || fail 'Unsupported resolved firmware path.'
@@ -95,7 +96,7 @@ apply() {
  test ! -e "$backup" || fail 'A previous endpoint backup exists; inspect it first.'
  cp "$target" "$copy"
  chmod 0600 "$copy"
- "$package/bin/quasar-bridge" -speaker-endpoint apply -speaker-config "$copy" -speaker-backup "$backup"
+ "$package/bin/quasar-bridge" -speaker-endpoint apply -speaker-android -speaker-config "$copy" -speaker-backup "$backup"
  # The overlay is read by native services that may run under an Android app UID.
  # Only this non-secret firmware config is made readable; state stays root-only.
  chmod 0644 "$copy"
@@ -127,6 +128,8 @@ rollback() {
   test "$mount_result" = 1 || fail 'Cannot inspect firmware mounts; keeping recovery files.'
   echo 'Endpoint overlay is already absent (for example, after reboot).'
  fi
+ "$package/bin/quasar-bridge" -speaker-android-cache-rollback "${QUASAR_NATIVE_CONFIG_STORAGE:-/data/quasar/data/user_config.dat}" \
+  -speaker-config "$target" -speaker-backup "$backup"
  rm -f "$record" "$backup" "$copy"
  echo 'Original firmware endpoint restored. Restart the native voice service manually.'
 }

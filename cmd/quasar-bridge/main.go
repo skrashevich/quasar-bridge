@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,7 @@ import (
 func main() {
 	version := flag.Bool("v", false, "print version and exit")
 	healthURL := flag.String("healthcheck", "", "check a loopback HTTP /healthz endpoint without loading configuration")
+	requireAndroidBackend := flag.Bool("healthcheck-android-backend", false, "require the Android backend relay in the health response")
 	path := flag.String("config", "config.json", "configuration file")
 	query := flag.String("query", "", "run one text query for diagnostics with simulated speaker audio playback")
 	check := flag.Bool("check-backends", false, "check LLM and configured Home Assistant connectivity")
@@ -46,6 +48,8 @@ func main() {
 	chatGPTAuth := flag.String("chatgpt-auth", "", "manage ChatGPT subscription: login, status, logout or models")
 	chatGPTListen := flag.String("chatgpt-login-listen", "127.0.0.1:1455", "loopback address for ChatGPT browser sign-in (use SSH forwarding on a speaker)")
 	speakerAction := flag.String("speaker-endpoint", "", "apply or rollback the on-device loopback endpoint (requires writable firmware)")
+	speakerAndroid := flag.Bool("speaker-android", false, "also configure the Android backend relay in the writable firmware copy")
+	speakerCacheRollback := flag.String("speaker-android-cache-rollback", "", "restore the cached endpoint in this native Android protobuf file")
 	speakerConfig := flag.String("speaker-config", "/system/vendor/quasar/quasar.cfg", "firmware configuration path")
 	speakerBackup := flag.String("speaker-backup", "/data/opt/quasar-bridge/endpoint-backup.json", "persistent endpoint backup")
 	speakerURL := flag.String("speaker-url", "ws://127.0.0.1:8443/uni.ws", "on-device bridge URL")
@@ -55,15 +59,23 @@ func main() {
 		return
 	}
 	if *healthURL != "" {
-		if err := checkHealth(context.Background(), *healthURL); err != nil {
+		if err := checkHealthWithBackend(context.Background(), *healthURL, *requireAndroidBackend); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		fmt.Println("Bridge healthy")
 		return
 	}
+	if *speakerCacheRollback != "" {
+		if err := restoreAndroidCachedEndpoint(*speakerConfig, *speakerCacheRollback, *speakerURL, filepath.Join(filepath.Dir(*speakerBackup), "backups")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("Android cached endpoint restored")
+		return
+	}
 	if *speakerAction != "" {
-		if err := setSpeakerEndpoint(*speakerConfig, *speakerBackup, *speakerURL, *speakerAction); err != nil {
+		if err := setSpeakerEndpointForPlatform(*speakerConfig, *speakerBackup, *speakerURL, *speakerAction, *speakerAndroid); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -71,6 +83,11 @@ func main() {
 		return
 	}
 	if err := configureDNS(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	androidBackendProxy, err := androidBackendProxyEnabled()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -388,6 +405,9 @@ func main() {
 		}
 	}
 	mux := http.NewServeMux()
+	if androidBackendProxy {
+		registerAndroidBackend(mux, "ws://127.0.0.1:8443/uni.ws")
+	}
 	if musicQueue != nil {
 		mux.Handle("/music-stream/", musicQueue)
 	}
@@ -403,7 +423,7 @@ func main() {
 	var panel *diagnosticsListener
 	status := func() map[string]any {
 		state := engine.RoutingStatus()
-		return map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()}
+		return map[string]any{"status": "ok", "mode": cfg.Mode, "android_backend_proxy": androidBackendProxy, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()}
 	}
 	panelStatus := func() map[string]any {
 		result := status()
