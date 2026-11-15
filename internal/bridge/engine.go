@@ -14,6 +14,7 @@ import (
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/playback"
 	"quasarbridge/internal/reply"
+	"quasarbridge/internal/speaker"
 	"quasarbridge/internal/webaddress"
 )
 
@@ -42,6 +43,9 @@ type Engine struct {
 	Music         MusicStarter
 	Dialogue      *dialogue.Store
 	TTSMarkup     bool
+	// SpeakerContext adds one sentence about the current speaker to the
+	// system prompt of LLM answers. The zero value leaves the prompt unchanged.
+	SpeakerContext speaker.Config
 	// StripPrefixes are model addresses removed only from outbound requests.
 	// An empty list disables stripping.
 	StripPrefixes []string
@@ -191,7 +195,7 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома." + e.ttsInstructions()}}
+	messages := []llm.Message{{Role: "system", Content: "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома." + e.ttsInstructions() + e.speakerInstructions(ctx)}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	messages = e.modelMessages(messages)
@@ -217,6 +221,23 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 		return Resolution{Route: r.Route}, context.Canceled
 	}
 	return r, nil
+}
+
+// speakerInstructions is empty unless speaker_context is enabled and the
+// station reported a sufficiently confident classification for this request.
+func (e *Engine) speakerInstructions(ctx context.Context) string {
+	if !e.SpeakerContext.Enabled {
+		return ""
+	}
+	s, ok := speaker.FromContext(ctx)
+	if !ok {
+		return ""
+	}
+	sentence := e.SpeakerContext.Sentence(s)
+	if sentence == "" {
+		return ""
+	}
+	return "\n" + sentence
 }
 func containsOne(text string, needles []string) bool {
 	for _, s := range needles {

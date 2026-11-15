@@ -28,6 +28,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/reply"
 	"quasarbridge/internal/sound"
+	"quasarbridge/internal/speaker"
 	"quasarbridge/internal/wire"
 )
 
@@ -100,11 +101,36 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+
+	// SpeakerContext records MatchedUser classifications for the LLM prompt.
+	SpeakerContext bool
+	speakers       *speaker.Store
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
 	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}}
+}
+func (n *Native) speakerStore() *speaker.Store {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.speakers == nil {
+		n.speakers = speaker.NewStore()
+	}
+	return n.speakers
+}
+
+// withSpeaker resolves the classification lazily: MatchedUser may follow the
+// voice request on the wire.
+func (n *Native) withSpeaker(ctx context.Context, requestID string) context.Context {
+	store := n.speakerStore()
+	return speaker.WithLookup(ctx, func() (speaker.Context, bool) {
+		c, ok := store.Lookup(requestID)
+		if !ok {
+			store.WarnOnce()
+		}
+		return c, ok
+	})
 }
 func (n *Native) Close() {
 	n.cancel()
@@ -123,6 +149,11 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		return n.up(ctx, k, data)
 	}
 	e := f.Client.GetEvent()
+	if n.SpeakerContext && e.GetMatchedUser() != nil {
+		if c, ok := speaker.Parse(f.Client); ok {
+			n.speakerStore().Record(c)
+		}
+	}
 	if stat := e.GetRequestStat(); stat != nil {
 		kind := "none"
 		raw := strings.ToLower(stat.GetError())
@@ -165,6 +196,9 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		pctx = reply.WithPolicy(pctx)
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)
+		if n.SpeakerContext {
+			pctx = n.withSpeaker(pctx, req.GetHeader().GetRequestId())
+		}
 		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
 		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel}
 		p.ctx = sound.WithPlayer(p.ctx, func(ctx context.Context, request sound.Request) error {
