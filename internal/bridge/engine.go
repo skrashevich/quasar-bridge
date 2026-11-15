@@ -81,7 +81,7 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	} else {
 		ctx = e.Prepare(ctx)
 	}
-	_, _, ticket := e.dialogue().Start(ctx)
+	ctx, snapshot, ticket := e.dialogue().Start(ctx)
 	if ctx.Err() != nil {
 		return Resolution{Route: route}, ctx.Err()
 	}
@@ -99,8 +99,11 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		}
 		return Resolution{Route: "llm", Answer: "Начинаем новый разговор."}, nil
 	}
-	if route != "llm" && !e.dialogue().Clear(ctx, ticket) {
-		return Resolution{Route: route}, context.Canceled
+	if (route != "llm" && route != "home") || (snapshot.Route != "" && snapshot.Route != route) {
+		if !e.dialogue().Clear(ctx, ticket) {
+			return Resolution{Route: route}, context.Canceled
+		}
+		snapshot = dialogue.Snapshot{}
 	}
 	result := Resolution{Route: route}
 	switch route {
@@ -178,7 +181,19 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
-		answer, err := e.Home.Handle(ctx, e.stripModelPrefix(text))
+		question := e.stripModelPrefix(text)
+		var answer string
+		var err error
+		if contextual, ok := e.Home.(interface {
+			HandleDialogue(context.Context, string, []llm.Message) (string, error)
+		}); ok {
+			answer, err = contextual.HandleDialogue(ctx, question, snapshot.Messages)
+		} else {
+			answer, err = e.Home.Handle(ctx, question)
+		}
+		if !e.dialogue().Current(ctx, ticket) || (err == nil && !e.dialogue().CommitRoute(ctx, ticket, "home", question, answer, false)) {
+			return result, context.Canceled
+		}
 		result.Answer = answer
 		return result, err
 	case "llm":
@@ -314,7 +329,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		return d
 	}
 	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
-		return RouteDecision{Route: "llm", Source: "dialogue"}
+		return RouteDecision{Route: snapshot.Route, Source: "dialogue"}
 	}
 	if !p.classifierEnabled {
 		return RouteDecision{Route: p.defaultRoute, Source: "default"}

@@ -24,6 +24,59 @@ type homeFixture struct {
 	fail       bool
 }
 
+func TestHomeClarificationUsesFreshAvailability(t *testing.T) {
+	fixture := &homeFixture{state: "unavailable"}
+	history := []llm.Message{
+		{Role: "user", Content: "Включи свет в кабинете"},
+		{Role: "assistant", Content: "Включить доступный светильник?"},
+	}
+	c := Controller{Tools: fixture, Planner: plannerFunc(func(_ context.Context, messages []llm.Message, structured bool) (string, error) {
+		if !structured || len(messages) != 4 || !strings.Contains(messages[3].Content, `"state":"unavailable"`) {
+			t.Errorf("home clarification did not use current inventory: %+v", messages)
+		}
+		return `{"answer":"Включаю свет","actions":[{"domain":"light","service":"turn_on","entity_id":"light.office","data":{}}]}`, nil
+	})}
+	if _, err := c.HandleDialogue(t.Context(), "да", history); err == nil || fixture.actions != 0 {
+		t.Fatalf("old consent bypassed current availability: err=%v actions=%d", err, fixture.actions)
+	}
+}
+
+func TestHomeClarificationPrefersTheNewRoom(t *testing.T) {
+	entities := []Entity{
+		{ID: "light.office", Name: "Свет в кабинете", State: "off", Area: "Кабинет"},
+		{ID: "light.bedroom", Name: "Свет в спальне", State: "on", Area: "Спальня"},
+	}
+	c := Controller{Tools: toolFunc(func(_ context.Context, name string, args map[string]any) (jsontext.Value, error) {
+		switch name {
+		case "ha_get_skill_guide":
+			return json.Marshal(map[string]any{"success": true})
+		case "ha_search":
+			if args["domain_filter"] == "light" {
+				return json.Marshal(map[string]any{"entities": entities, "has_more": false})
+			}
+			return json.Marshal(map[string]any{"entities": []Entity{}, "has_more": false})
+		case "ha_get_entity_exposure":
+			if args["entity_id"] != "light.bedroom" {
+				t.Error("previous room captured a new explicit room", args)
+			}
+			return json.Marshal(map[string]any{"exposed_to": map[string]any{"conversation": true}})
+		default:
+			t.Fatalf("read-only followup called %q", name)
+			return nil, nil
+		}
+	}), Planner: plannerFunc(func(_ context.Context, messages []llm.Message, _ bool) (string, error) {
+		inventory := messages[len(messages)-1].Content
+		if strings.Contains(inventory, "light.office") || !strings.Contains(inventory, "light.bedroom") {
+			t.Error("new room was not used for inventory", inventory)
+		}
+		return `{"answer":"В спальне свет включён.","actions":[]}`, nil
+	})}
+	answer, err := c.HandleDialogue(t.Context(), "а в спальне?", []llm.Message{{Role: "user", Content: "Горит ли свет в кабинете?"}, {Role: "assistant", Content: "В кабинете свет выключен."}})
+	if err != nil || answer != "В спальне свет включён." {
+		t.Fatal(answer, err)
+	}
+}
+
 func (f *homeFixture) Call(ctx context.Context, name string, args map[string]any) (jsontext.Value, error) {
 	var value any
 	switch name {

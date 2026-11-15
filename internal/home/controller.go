@@ -114,18 +114,35 @@ func (c *Controller) Entities(ctx context.Context) ([]Entity, error) {
 }
 
 func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
+	return c.HandleDialogue(ctx, text, nil)
+}
+
+// HandleDialogue uses prior turns to resolve clarifications, fetching current HA state each time.
+func (c *Controller) HandleDialogue(ctx context.Context, text string, history []llm.Message) (string, error) {
 	if err := c.guides(ctx); err != nil {
 		return "", err
 	}
 	inventory := Controller{Tools: c.Tools, Planner: c.Planner, Domains: c.Domains}
 	if len(inventory.Domains) == 0 {
 		inventory.Domains = controlDomains(text)
+		for i := len(history) - 1; len(inventory.Domains) == 0 && i >= 0; i-- {
+			if history[i].Role == "user" {
+				inventory.Domains = controlDomains(history[i].Content)
+			}
+		}
 	}
 	entities, err := inventory.Entities(ctx)
 	if err != nil {
 		return "", err
 	}
-	entities = scopeEntities(text, entities)
+	scoped := scopeEntities(text, entities)
+	// Prefer a room in the current request; otherwise retain the latest user-specified room.
+	for i := len(history) - 1; len(scoped) == len(entities) && i >= 0; i-- {
+		if history[i].Role == "user" {
+			scoped = scopeEntities(history[i].Content, entities)
+		}
+	}
+	entities = scoped
 	start := time.Now()
 	enriched := make([]Entity, len(entities))
 	visible := make([]bool, len(entities))
@@ -172,7 +189,10 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 		return "Уточните комнату и тип устройства: найдено слишком много устройств.", nil
 	}
 	if stateQuestion(text) {
-		answer, err := c.Planner.Complete(ctx, []llm.Message{{Role: "system", Content: "Ответь на вопрос о состоянии умного дома по текущему списку HA. Только 1–2 коротких предложения по-русски. Никаких действий. Для освещения учитывай группы и отдельные светильники; переключатели Adaptive Lighting — настройки автоматики, а не источники света. unavailable/unknown означает отсутствие данных. Не придумывай значения и единицы измерения. Называй устройства по friendly_name, никогда не упоминай entity_id в ответе: его читают вслух."}, {Role: "user", Content: "Устройства: " + string(data) + "\nВопрос: " + text}}, false)
+		messages := []llm.Message{{Role: "system", Content: "Ответь на вопрос о состоянии умного дома по текущему списку HA. История нужна только для понимания уточнений; состояния бери из текущего списка, а не из прошлых ответов. Только 1–2 коротких предложения по-русски. Никаких действий. Для освещения учитывай группы и отдельные светильники; переключатели Adaptive Lighting — настройки автоматики, а не источники света. unavailable/unknown означает отсутствие данных. Не придумывай значения и единицы измерения. Называй устройства по friendly_name, никогда не упоминай entity_id в ответе: его читают вслух."}}
+		messages = append(messages, history...)
+		messages = append(messages, llm.Message{Role: "user", Content: "Устройства: " + string(data) + "\nВопрос: " + text})
+		answer, err := c.Planner.Complete(ctx, messages, false)
 		if err != nil {
 			return "", err
 		}
@@ -184,7 +204,11 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 		services = append(services, name)
 	}
 	slices.Sort(services)
-	answer, err := c.Planner.Complete(ctx, []llm.Message{{Role: "system", Content: prompt + strings.Join(services, ", ")}, {Role: "user", Content: "Устройства: " + string(data) + "\nЗапрос: " + text}}, true)
+	prompt += strings.Join(services, ", ") + ". История нужна для понимания последнего уточнения. Ответ «да» подтверждает только последнее заданное уточнение, «нет» отменяет его. Не повторяй уже выполненные действия из истории и не трактуй «да» как разрешение на новое действие без ожидающего подтверждения. Состояния и доступность бери только из текущего списка устройств."
+	messages := []llm.Message{{Role: "system", Content: prompt}}
+	messages = append(messages, history...)
+	messages = append(messages, llm.Message{Role: "user", Content: "Устройства: " + string(data) + "\nЗапрос: " + text})
+	answer, err := c.Planner.Complete(ctx, messages, true)
 	if err != nil {
 		return "", err
 	}

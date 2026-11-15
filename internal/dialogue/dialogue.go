@@ -45,6 +45,7 @@ func SpeakerKey(ctx context.Context) string { return key(ctx) }
 
 type turn struct {
 	user, answer string
+	route        string
 	private      bool
 }
 type entry struct {
@@ -61,6 +62,7 @@ type entry struct {
 type Snapshot struct {
 	Messages       []llm.Message
 	PrivateHistory bool
+	Route          string
 }
 type Ticket struct {
 	key        string
@@ -90,7 +92,11 @@ func snapshot(e *entry) Snapshot {
 		for _, t := range e.turns {
 			v.Messages = append(v.Messages, llm.Message{Role: "user", Content: t.user}, llm.Message{Role: "assistant", Content: t.answer})
 			v.PrivateHistory = v.PrivateHistory || t.private
+			v.Route = t.route
 		}
+	}
+	if len(v.Messages) > 0 && v.Route == "" {
+		v.Route = "llm"
 	}
 	return v
 }
@@ -164,6 +170,11 @@ func (s *Store) Begin(ctx context.Context) (Snapshot, Ticket) {
 	return snapshot(e), Ticket{key: k, generation: e.generation, replay: replay}
 }
 func (s *Store) Commit(ctx context.Context, ticket Ticket, user, answer string, private bool) bool {
+	return s.CommitRoute(ctx, ticket, "llm", user, answer, private)
+}
+
+// CommitRoute keeps the handler that owns the next elliptical reply with its history.
+func (s *Store) CommitRoute(ctx context.Context, ticket Ticket, route, user, answer string, private bool) bool {
 	if s == nil || !s.cfg.Enabled {
 		return ctx.Err() == nil
 	}
@@ -185,7 +196,7 @@ func (s *Store) Commit(ctx context.Context, ticket Ticket, user, answer string, 
 		e.turns = nil
 		return true
 	}
-	e.turns = append(e.turns, turn{user: user, answer: answer, private: private})
+	e.turns = append(e.turns, turn{user: user, answer: answer, route: route, private: private})
 	e.at = s.now()
 	chars := 0
 	for _, t := range e.turns {
