@@ -1,11 +1,11 @@
-# Контракт тега v0.8.0; см. info.description и x-source-commit.
+# Контракт ветки cdx/yandex-text-query; см. info.description и x-source-commit.
 openapi: 3.1.0
 info:
   title: Quasar Bridge — внешние HTTP API и веб-панель
   version: 0.8.0-prerelease
   description: |-
-    Контракт реализации предрелиза v0.8.0 (commit 0a763221aeb01aeb5c9bd0b605ebd4b4852010e5).
-    Составлен по исходникам тега, не по текущей рабочей ветке. Изменения более поздних версий сюда не включены.
+    Контракт реализации ветки cdx/yandex-text-query (commit 935421954765cd61c29710ee16358362db9896b5).
+    Основан на предрелизе v0.8.0 и дополнен текстовыми ответами Алисы и диалогами в API.
 
     Основной набор — 9 JSON-операций /diagnostics/api/*, а также /diagnostics/logs и /diagnostics/download.
     Для полного описания HTTP-поверхности добавлены HTML/JS/CSS, перенаправления панели и маршруты
@@ -37,8 +37,8 @@ info:
     name: Apache-2.0
     url: https://github.com/skrashevich/quasar-bridge/blob/v0.8.0/LICENSE
 externalDocs:
-  description: Исходники предрелиза v0.8.0
-  url: https://github.com/skrashevich/quasar-bridge/tree/v0.8.0
+  description: Исходники реализации текстовых запросов и диалогов
+  url: https://github.com/skrashevich/quasar-bridge/tree/935421954765cd61c29710ee16358362db9896b5
 servers:
 - url: http://{host}:{port}
   description: Отдельный HTTP listener панели. diagnostics.network_access=true открывает IPv4 0.0.0.0; false
@@ -74,8 +74,8 @@ tags:
   description: Статические файлы и перенаправления панели.
 - name: Bridge
   description: 'Основной listener: health, музыка и WebSocket.'
-x-source-ref: v0.8.0
-x-source-commit: 0a763221aeb01aeb5c9bd0b605ebd4b4852010e5
+x-source-ref: cdx/yandex-text-query
+x-source-commit: 935421954765cd61c29710ee16358362db9896b5
 x-source-files:
 - cmd/quasar-bridge/main.go
 - cmd/quasar-bridge/diagnostics_api.go
@@ -336,10 +336,17 @@ paths:
       - Panel
       operationId: executeTextQuery
       summary: Выполнить текстовый запрос
-      description: 'Тайм-аут 75 секунд. Может выполнять инструменты, менять конфигурацию, управлять AirPlay/Home
-        Assistant и иметь другие побочные эффекты. Общий для вкладок диалог quasar-bridge-dashboard, отдельный
-        от физических колонок; общая блокировка с /decide. sound.Request перехватывается и возвращается в playback:
-        физическое воспроизведение этим транспортом симулируется. Иные побочные эффекты инструментов не симулируются.'
+      description: >-
+        Тайм-аут 75 секунд. Может выполнять инструменты и менять состояние устройств или аккаунта.
+        Маршрут yandex получает текст Алисы через отдельное соединение без микрофона и озвучивания.
+        Без dialog_id создаётся новый диалог; UUID из ответа передаётся в следующих запросах для
+        сохранения контекста Алисы, LLM или обработчика умного дома. При включённом
+        dialogue_context.enabled короткие уточнения продолжают последний локальный обработчик;
+        явные запросы могут переключить маршрут. Перед действием умный дом перечитывает
+        доступность и состояния устройств. Разные диалоги изолированы от колонок и друг друга.
+        Неактивные диалоги истекают по dialogue_context.ttl_seconds (по умолчанию 300 секунд),
+        перезапуск процесса удаляет их. До 32 активных диалогов. Общая блокировка с /decide.
+        Физическое воспроизведение симулируется и возвращается в playback; прочие действия реальны.
       responses:
         '200':
           description: Успешный ответ.
@@ -363,6 +370,12 @@ paths:
           $ref: '#/components/responses/InternalError'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Неизвестный или истёкший dialog_id. Не создаёт новый диалог молча.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '413':
           $ref: '#/components/responses/TooLarge'
         '415':
@@ -374,9 +387,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/TextRequest'
-            example:
-              text: Который час?
+              $ref: '#/components/schemas/QueryRequest'
+            examples:
+              newDialog:
+                summary: Начать новый диалог
+                value:
+                  text: Какая погода в Токио?
+              continueDialog:
+                summary: Продолжить диалог с UUID из предыдущего ответа
+                value:
+                  text: А завтра?
+                  dialog_id: 9e069ed0-af1a-40cd-b072-420e3db3cd15
       x-max-request-body-bytes: 262144
   /diagnostics/api/history:
     get:
@@ -945,6 +966,21 @@ components:
       required:
       - text
       additionalProperties: false
+    QueryRequest:
+      type: object
+      properties:
+        text:
+          $ref: '#/components/schemas/TextRequest/properties/text'
+        dialog_id:
+          type: string
+          oneOf:
+          - format: uuid
+            minLength: 1
+          - const: ''
+          description: UUID из предыдущего ответа query. Если отсутствует или пуст, начинается новый диалог.
+      required:
+      - text
+      additionalProperties: false
     RouteDecision:
       type: object
       properties:
@@ -1022,6 +1058,10 @@ components:
     QueryResult:
       type: object
       properties:
+        dialog_id:
+          type: string
+          format: uuid
+          description: Локальный идентификатор Bridge; служебный контекст Яндекса не раскрывается.
         route:
           type: string
         answer:
@@ -1039,6 +1079,7 @@ components:
           const: true
           description: Присутствует только при непустом playback.
       required:
+      - dialog_id
       - route
       - answer
       - elapsed_ms

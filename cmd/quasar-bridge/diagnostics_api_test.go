@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,9 +16,11 @@ import (
 	"time"
 
 	airplay "github.com/skrashevich/station-airplay"
+	"quasarbridge/internal/bridge"
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/yandex"
 )
 
 type diagnosticCompleter func(context.Context, []llm.Message, bool) (string, error)
@@ -138,6 +141,120 @@ func TestDiagnosticAPIPreviewDoesNotExecuteAndQueryIsBounded(t *testing.T) {
 	}
 	if len(c.engine.Dialogue.View(t.Context()).Messages) != 0 {
 		t.Fatal("dashboard query contaminated unnamed speaker conversation")
+	}
+}
+
+func TestDiagnosticAPIYandexReturnsAnswerOrError(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+			engine := new(bridge.Engine)
+			mux := http.NewServeMux()
+			registerDiagnosticsAPI(mux, diagnosticControl{Engine: engine, YandexQuery: func(ctx context.Context, text string, _ *queryDialog) (string, error) {
+				if text != "который час" {
+					t.Errorf("original query changed: %q", text)
+				}
+				if fail {
+					return "", errors.New("private-provider-detail")
+				}
+				return "В Москве 5:46.", nil
+			}})
+			r := diagnosticAPIRequest(mux, "POST", "query", `{"text":"который час"}`, "application/json")
+			if fail {
+				if r.Code != http.StatusBadGateway || strings.Contains(r.Body.String(), "private-provider-detail") {
+					t.Fatalf("unsafe Yandex failure: %d %s", r.Code, r.Body)
+				}
+				return
+			}
+			var result struct {
+				Route  string `json:"route"`
+				Answer string `json:"answer"`
+			}
+			if json.Unmarshal(r.Body.Bytes(), &result) != nil || r.Code != http.StatusOK || result.Route != "yandex" || result.Answer != "В Москве 5:46." {
+				t.Fatalf("Yandex answer missing: %d %s", r.Code, r.Body)
+			}
+		})
+	}
+}
+
+func TestDiagnosticAPIResumesIndependentDialogs(t *testing.T) {
+	c := configurationFixture(t, `{"mode":"hybrid","llm_base_url":"http://127.0.0.1:1/v1","llm_model":"fixture","airplay":{"disabled":true},"routing":{"rules":[],"default_route":"llm"}}`)
+	c.engine.LLM = diagnosticCompleter(func(ctx context.Context, messages []llm.Message, structured bool) (string, error) {
+		last := messages[len(messages)-1].Content
+		seen := false
+		for _, m := range messages[:len(messages)-1] {
+			seen = seen || m.Role == "user" && m.Content == "Запомни число 47"
+		}
+		if last == "Какое число?" && !seen {
+			t.Error("same-dialog follow-up lost history")
+		}
+		if last == "Отдельный разговор" && seen {
+			t.Error("history crossed dialog boundaries")
+		}
+		return "Ответ", nil
+	})
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, diagnosticControl{Engine: c.engine})
+	first := diagnosticAPIRequest(mux, "POST", "query", `{"text":"Запомни число 47"}`, "application/json")
+	var result struct {
+		ID string `json:"dialog_id"`
+	}
+	if json.Unmarshal(first.Body.Bytes(), &result) != nil || first.Code != 200 || result.ID == "" {
+		t.Fatalf("first query did not return dialog_id: %d %s", first.Code, first.Body)
+	}
+	body, _ := json.Marshal(map[string]string{"text": "Какое число?", "dialog_id": result.ID})
+	second := diagnosticAPIRequest(mux, "POST", "query", string(body), "application/json")
+	var resumed struct {
+		ID string `json:"dialog_id"`
+	}
+	if json.Unmarshal(second.Body.Bytes(), &resumed) != nil || second.Code != 200 || resumed.ID != result.ID {
+		t.Fatalf("dialog continuation failed: %d %s", second.Code, second.Body)
+	}
+	third := diagnosticAPIRequest(mux, "POST", "query", `{"text":"Отдельный разговор"}`, "application/json")
+	var isolated struct {
+		ID string `json:"dialog_id"`
+	}
+	if json.Unmarshal(third.Body.Bytes(), &isolated) != nil || third.Code != 200 || isolated.ID == "" || isolated.ID == result.ID {
+		t.Fatalf("new conversation was not isolated: %d %s", third.Code, third.Body)
+	}
+	missing := diagnosticAPIRequest(mux, "POST", "query", `{"text":"Продолжи","dialog_id":"00000000-0000-4000-8000-000000000000"}`, "application/json")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("unknown dialog silently started over: %d %s", missing.Code, missing.Body)
+	}
+}
+
+func TestDiagnosticAPIExplicitResetClearsYandexContext(t *testing.T) {
+	calls := 0
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, diagnosticControl{Engine: new(bridge.Engine), YandexQuery: func(_ context.Context, _ string, dialog *queryDialog) (string, error) {
+		calls++
+		if dialog.yandex != nil {
+			t.Error("explicit dialogue reset kept old Yandex client/session")
+		}
+		dialog.yandex = new(yandex.Client)
+		return "Тестовый ответ", nil
+	}})
+	ask := func(text, id string) string {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"text": text, "dialog_id": id})
+		response := diagnosticAPIRequest(mux, "POST", "query", string(body), "application/json")
+		var result struct {
+			ID string `json:"dialog_id"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil {
+			t.Fatalf("query failed: %d %s", response.Code, response.Body)
+		}
+		return result.ID
+	}
+	id := ask("который час", "")
+	if got := ask("начни новый разговор", id); got != id {
+		t.Fatal("reset changed local dialog handle")
+	}
+	if calls != 1 {
+		t.Fatal("reset reached Yandex backend")
+	}
+	ask("который час", id)
+	if calls != 2 {
+		t.Fatal("missing Yandex turn")
 	}
 }
 

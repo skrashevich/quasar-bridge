@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	"quasarbridge/internal/assistant"
 	"quasarbridge/internal/bridge"
@@ -21,7 +22,7 @@ type queryPlayback struct {
 }
 
 // resolveQuery captures speaker audio requests without a physical player transport.
-func resolveQuery(ctx context.Context, resolver bridge.Resolver, queue *assistant.MusicQueue, text string) (queryResolution, error) {
+func resolveQuery(ctx context.Context, resolver bridge.Resolver, queue *assistant.MusicQueue, text string, yandexQuery func(context.Context, string) (string, error)) (queryResolution, error) {
 	var playback []queryPlayback
 	if dialogue.SpeakerKey(ctx) == "" {
 		ctx = dialogue.WithSpeaker(ctx, "query-diagnostics")
@@ -48,6 +49,15 @@ func resolveQuery(ctx context.Context, resolver bridge.Resolver, queue *assistan
 		return nil
 	})
 	resolution, err := resolver.Resolve(ctx, text)
+	if err == nil && resolution.Route == "yandex" {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		} else if yandexQuery == nil {
+			err = errors.New("Yandex text query backend is unavailable")
+		} else {
+			resolution.Answer, err = yandexQuery(ctx, text)
+		}
+	}
 	if err == nil {
 		err = ctx.Err()
 	}

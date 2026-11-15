@@ -48,7 +48,7 @@ func TestResolveQueryDiscardsFailedPlayback(t *testing.T) {
 					return resolution, nil
 				}
 				return resolution, want
-			}), nil, "play a signal")
+			}), nil, "play a signal", nil)
 			if !errors.Is(err, want) || report.Route != "llm" || report.Answer != "" || len(report.Playback) != 0 || report.PlaybackSimulated {
 				t.Fatalf("failed playback reported as success: report=%+v error=%v want=%v", report, err, want)
 			}
@@ -61,7 +61,7 @@ func TestResolveQueryRejectsCanceledPlayback(t *testing.T) {
 	cancel()
 	report, err := resolveQuery(ctx, queryResolverFunc(func(ctx context.Context, _ string) (bridge.Resolution, error) {
 		return bridge.Resolution{Route: "music"}, sound.Play(ctx, sound.Request{URL: "https://audio.example/live.m3u8"})
-	}), nil, "play a stream")
+	}), nil, "play a stream", nil)
 	if !errors.Is(err, context.Canceled) || len(report.Playback) != 0 || report.PlaybackSimulated {
 		t.Fatalf("canceled playback reported as success: report=%+v error=%v", report, err)
 	}
@@ -79,7 +79,7 @@ func TestResolveQueryIncludesOriginalQueueTracks(t *testing.T) {
 	}
 	report, err := resolveQuery(t.Context(), queryResolverFunc(func(ctx context.Context, _ string) (bridge.Resolution, error) {
 		return bridge.Resolution{Route: "music", Answer: "Включаю музыку."}, player.Start(ctx, want)
-	}), queue, "play music")
+	}), queue, "play music", nil)
 	if err != nil || !report.PlaybackSimulated || len(report.Playback) != 1 {
 		t.Fatalf("missing playback: report=%+v error=%v", report, err)
 	}

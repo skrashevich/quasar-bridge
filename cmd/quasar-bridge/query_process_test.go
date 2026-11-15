@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,7 +23,7 @@ import (
 func TestQueryPlaybackProcess(t *testing.T) {
 	if path := os.Getenv("QUASAR_TEST_QUERY_CONFIG"); path != "" {
 		flag.CommandLine = flag.NewFlagSet("quasar-bridge", flag.ExitOnError)
-		os.Args = []string{"quasar-bridge", "-config", path, "-query", os.Getenv("QUASAR_TEST_QUERY_TEXT")}
+		os.Args = []string{"quasar-bridge", "-config", path, "-speaker-config", os.Getenv("QUASAR_TEST_QUERY_SPEAKER_CONFIG"), "-query", os.Getenv("QUASAR_TEST_QUERY_TEXT")}
 		main()
 		os.Exit(0)
 	}
@@ -39,11 +40,17 @@ func TestQueryPlaybackProcess(t *testing.T) {
 		{name: "direct HLS", listen: "localhost:8443", text: "Включи радио https://hls.rpfm.ru/rpfm/aac_hifi.m3u8", wantURL: "https://hls.rpfm.ru/rpfm/aac_hifi.m3u8"},
 		{name: "direct HLS without queue origin", listen: ":8443", tls: `,"tls_cert":"unused-cert","tls_key":"unused-key"`, text: "Включи радио https://hls.rpfm.ru/rpfm/aac_hifi.m3u8", wantURL: "https://hls.rpfm.ru/rpfm/aac_hifi.m3u8"},
 		{name: "MP3 without queue origin", listen: ":8443", text: "Включи музыку https://audio.example/track.mp3", queue: true},
-		{name: "plain query", listen: "localhost:8443", text: "Какая погода"},
+		{name: "Yandex query without native credentials", listen: "localhost:8443", text: "Какая погода"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := configFile(t, fmt.Sprintf(`{"mode":"hybrid","airplay":{"disabled":true},"listen":%q%s,"llm_base_url":%q,"llm_model":"fixture","assistant_tools":{"enabled":true,"web":true,"play_sound":true},"routing":{"rules":[{"name":"music","route":"llm","match":{"starts_with_any":["включи"]}}],"default_route":"yandex","classifier":{"enabled":false}}}`, tc.listen, tc.tls, api.URL))
 			stdout, stderr, err := runQueryProcess(t, path, tc.text)
+			if tc.wantURL == "" && !tc.queue {
+				if err == nil || stdout != "" || !strings.Contains(stderr, "Yandex text queries require the native speaker configuration") {
+					t.Fatalf("missing Yandex credentials produced a blank success: stdout=%s stderr=%s error=%v", stdout, stderr, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("query failed: %v stdout=%s stderr=%s", err, stdout, stderr)
 			}
@@ -58,12 +65,6 @@ func TestQueryPlaybackProcess(t *testing.T) {
 			}
 			if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 				t.Fatalf("missing query JSON: %v stdout=%s stderr=%s", err, stdout, stderr)
-			}
-			if tc.wantURL == "" && !tc.queue {
-				if report.Route != "yandex" || strings.Contains(stdout, "playback") {
-					t.Fatalf("plain query acquired simulated playback: %s", stdout)
-				}
-				return
 			}
 			if report.Route != "music" || !report.PlaybackSimulated || len(report.Playback) != 1 {
 				t.Fatalf("missing simulated music request: %s", stdout)
@@ -182,6 +183,7 @@ func runQueryProcess(t *testing.T, configPath, text string) (string, string, err
 		}
 	}
 	child.Env = append(child.Env, "QUASAR_TEST_QUERY_CONFIG="+configPath, "QUASAR_TEST_QUERY_TEXT="+text)
+	child.Env = append(child.Env, "QUASAR_TEST_QUERY_SPEAKER_CONFIG="+filepath.Join(t.TempDir(), "missing-native-config"))
 	var stdout, stderr strings.Builder
 	child.Stdout, child.Stderr = &stdout, &stderr
 	err := child.Run()

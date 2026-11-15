@@ -91,6 +91,7 @@ func TestMilestoneDiagnosticsQueryCapturesSound(t *testing.T) {
 	registerDiagnosticsAPI(mux, diagnosticControl{Engine: engine})
 	response := diagnosticAPIRequest(mux, "POST", "query", `{"text":"`+question+`"}`, "application/json")
 	var report struct {
+		DialogID          string          `json:"dialog_id"`
 		Route             string          `json:"route"`
 		Answer            string          `json:"answer"`
 		ElapsedMS         int64           `json:"elapsed_ms"`
@@ -109,7 +110,7 @@ func TestMilestoneDiagnosticsQueryCapturesSound(t *testing.T) {
 	if calls.Load() != 2 {
 		t.Errorf("LLM calls=%d, want 2", calls.Load())
 	}
-	if got := engine.Dialogue.View(dialogue.WithSpeaker(t.Context(), "quasar-bridge-dashboard")).Messages; len(got) != 2 || got[0].Role != "user" || got[0].Content != question || got[1].Role != "assistant" || got[1].Content != "Готово." {
+	if got := engine.Dialogue.View(dialogue.WithSpeaker(t.Context(), "quasar-bridge-dashboard:"+report.DialogID)).Messages; report.DialogID == "" || len(got) != 2 || got[0].Role != "user" || got[0].Content != question || got[1].Role != "assistant" || got[1].Content != "Готово." {
 		t.Errorf("dashboard history lost its identity or plain answer: %+v", got)
 	}
 	for _, ctx := range []string{"query-diagnostics", "physical-speaker"} {
@@ -191,7 +192,7 @@ func TestResolveQueryReadsExistingQueueSources(t *testing.T) {
 	}
 	report, err := resolveQuery(t.Context(), queryResolverFunc(func(ctx context.Context, _ string) (bridge.Resolution, error) {
 		return bridge.Resolution{Route: "llm", Answer: "Готово."}, sound.Play(ctx, sound.Request{URL: stream})
-	}), queue, "Повтори этот звук")
+	}), queue, "Повтори этот звук", nil)
 	if err != nil || !report.PlaybackSimulated || len(report.Playback) != 1 || !slices.Equal(report.Playback[0].Tracks, tracks) {
 		t.Fatalf("existing queue sources were lost: report=%+v error=%v", report, err)
 	}

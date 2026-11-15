@@ -29,6 +29,7 @@ import (
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/update"
 	"quasarbridge/internal/wire"
+	"quasarbridge/internal/yandex"
 )
 
 func main() {
@@ -214,6 +215,26 @@ func main() {
 		return "Аварийный откат запланирован после этого ответа. После успешного восстановления подключения к Яндексу колонка перезагрузится.", nil
 	}
 	configuration := &configurationControl{path: *path, active: cfg, engine: engine, logs: logs}
+	yandexQuery := func(ctx context.Context, text string, dialog *queryDialog) (string, error) {
+		configuration.mu.Lock()
+		timezone := configuration.active.AssistantTools.Timezone
+		configuration.mu.Unlock()
+		var client *yandex.Client
+		if dialog != nil {
+			client = dialog.yandex
+		}
+		if client == nil {
+			var err error
+			client, err = yandex.NewSpeaker(*speakerConfig, timezone)
+			if err != nil {
+				return "", err
+			}
+			if dialog != nil {
+				dialog.yandex = client
+			}
+		}
+		return client.Query(ctx, text)
+	}
 	configuration.restart = func(ctx context.Context) (any, error) { return update.New(*path).Restart(ctx) }
 	engine.Configuration = cfg.AssistantTools.Enabled && cfg.AssistantTools.Configuration
 	if cfg.Mode == "hybrid" {
@@ -307,7 +328,7 @@ func main() {
 			fmt.Printf("LLM: ok; Home Assistant: %d entities\n", len(entities))
 			return
 		}
-		r, err := resolveQuery(ctx, engine, musicQueue, *query)
+		r, err := resolveQuery(ctx, engine, musicQueue, *query, func(ctx context.Context, text string) (string, error) { return yandexQuery(ctx, text, nil) })
 		if err != nil {
 			slog.Error("query failed", "route", r.Route, "error", err)
 			os.Exit(1)
@@ -379,7 +400,7 @@ func main() {
 		result["diagnostics"] = map[string]any{"network_access": configuration.diagnosticsNetworkAccess(), "port": cfg.Diagnostics.Port, "address": panel.Address()}
 		return result
 	}
-	panelControl := diagnosticControl{Configuration: configuration, Engine: engine, Logs: logs, MusicQueue: musicQueue, Status: panelStatus, AirPlay: airPlay, Network: configuration.diagnosticsNetworkAccess, QueryBusy: new(atomic.Bool)}
+	panelControl := diagnosticControl{Configuration: configuration, Engine: engine, Logs: logs, MusicQueue: musicQueue, Status: panelStatus, AirPlay: airPlay, Network: configuration.diagnosticsNetworkAccess, QueryBusy: new(atomic.Bool), YandexQuery: yandexQuery, Dialogs: newQueryDialogs(time.Duration(cfg.DialogueContext.TTLSeconds) * time.Second)}
 	registerPanel := func(m *http.ServeMux) {
 		registerDiagnostics(m, diagnosticLogs, func() map[string]any { return airPlayHealth(airPlay) }, configuration.diagnosticsNetworkAccess)
 		registerDiagnosticsAPI(m, panelControl)

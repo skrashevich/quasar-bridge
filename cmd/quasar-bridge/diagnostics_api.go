@@ -33,9 +33,14 @@ type diagnosticControl struct {
 	AirPlay       *airPlayControl
 	Network       func() bool
 	QueryBusy     *atomic.Bool
+	YandexQuery   func(context.Context, string, *queryDialog) (string, error)
+	Dialogs       *queryDialogs
 }
 
 func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
+	if control.Dialogs == nil {
+		control.Dialogs = newQueryDialogs(5 * time.Minute)
+	}
 	if control.QueryBusy == nil {
 		control.QueryBusy = new(atomic.Bool)
 	}
@@ -137,7 +142,8 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 	})
 	register("POST /diagnostics/api/query", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Text string `json:"text"`
+			Text     string `json:"text"`
+			DialogID string `json:"dialog_id"`
 		}
 		if !readDiagnosticJSON(w, r, &request) || !validDiagnosticText(w, request.Text) {
 			return
@@ -151,13 +157,28 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 			return
 		}
 		defer control.QueryBusy.Store(false)
-		// Dashboard tests have their own dialogue identity, separate from every
-		// speaker and unnamed CLI request. All tabs intentionally share one test
-		// conversation, bounded by the normal dialogue policy and query lock.
-		ctx, cancel := context.WithTimeout(dialogue.WithSpeaker(r.Context(), "quasar-bridge-dashboard"), 75*time.Second)
+		dialog, created, err := control.Dialogs.acquire(request.DialogID)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errMissingQueryDialog) {
+				status = http.StatusNotFound
+			} else if errors.Is(err, errQueryDialogLimit) {
+				status = http.StatusServiceUnavailable
+			}
+			writeDiagnosticError(w, status, err.Error())
+			return
+		}
+		failed := true
+		defer func() { control.Dialogs.finish(dialog.id, created && failed) }()
+		// Explicit API dialogs are isolated from physical speakers and each other.
+		ctx, cancel := context.WithTimeout(dialogue.WithSpeaker(r.Context(), "quasar-bridge-dashboard:"+dialog.id), 75*time.Second)
 		defer cancel()
 		started := time.Now()
-		result, err := resolveQuery(ctx, control.Engine, control.MusicQueue, request.Text)
+		var askYandex func(context.Context, string) (string, error)
+		if control.YandexQuery != nil {
+			askYandex = func(ctx context.Context, text string) (string, error) { return control.YandexQuery(ctx, text, dialog) }
+		}
+		result, err := resolveQuery(ctx, control.Engine, control.MusicQueue, request.Text, askYandex)
 		if err != nil {
 			status := http.StatusBadGateway
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -169,13 +190,18 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 			writeDiagnosticError(w, status, "Diagnostic query failed; inspect the operational log")
 			return
 		}
+		if dialogue.IsReset(request.Text) {
+			dialog.yandex = nil
+		}
+		failed = false
 		writeDiagnosticJSON(w, http.StatusOK, struct {
+			DialogID          string          `json:"dialog_id"`
 			Route             string          `json:"route"`
 			Answer            string          `json:"answer"`
 			ElapsedMS         int64           `json:"elapsed_ms"`
 			Playback          []queryPlayback `json:"playback,omitempty"`
 			PlaybackSimulated bool            `json:"playback_simulated,omitzero"`
-		}{result.Route, result.Answer, time.Since(started).Milliseconds(), result.Playback, result.PlaybackSimulated})
+		}{dialog.id, result.Route, result.Answer, time.Since(started).Milliseconds(), result.Playback, result.PlaybackSimulated})
 	})
 	register("GET /diagnostics/api/history", func(w http.ResponseWriter, r *http.Request) {
 		if control.Logs == nil || control.Logs.Config().Path == "" {
