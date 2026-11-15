@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -47,6 +48,7 @@ type config struct {
 	LLMStripPrefixes   []string             `json:"llm_strip_prefixes"`
 	LLMTTSMarkup       bool                 `json:"llm_tts_markup"`
 	HomeWarmArea       string               `json:"home_warm_area"`
+	HomeDelayScript    string               `json:"home_delay_script"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
 }
@@ -65,6 +67,8 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 	return parseConfig(raw, modelOptional)
 }
 
+var homeScriptID = regexp.MustCompile(`^script\.[a-z0-9_]+$`)
+
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
@@ -76,7 +80,7 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 		"QUASAR_MODE": &cfg.Mode, "QUASAR_LLM_BASE_URL": &cfg.LLMBaseURL,
 		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
 		"QUASAR_LLM_API": &cfg.LLMAPI, "QUASAR_LLM_REASONING_EFFORT": &cfg.LLMReasoningEffort,
-		"QUASAR_LLM_CHATGPT_AUTH_FILE": &cfg.LLMChatGPTAuthFile,
+		"QUASAR_LLM_CHATGPT_AUTH_FILE": &cfg.LLMChatGPTAuthFile, "QUASAR_HOME_DELAY_SCRIPT": &cfg.HomeDelayScript,
 	} {
 		if value, ok := os.LookupEnv(name); ok {
 			*target = value
@@ -111,6 +115,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	}
 	if cfg.LLMAPI == "" {
 		cfg.LLMAPI = "chat_completions"
+	}
+	if cfg.HomeDelayScript != "" && !homeScriptID.MatchString(cfg.HomeDelayScript) {
+		return cfg, errors.New("home_delay_script must be a script entity_id such as script.delayed_action")
 	}
 	if cfg.LLMAPI != "chat_completions" && cfg.LLMAPI != "responses" && cfg.LLMAPI != "chatgpt" {
 		return cfg, errors.New("llm_api must be chat_completions, responses or chatgpt")

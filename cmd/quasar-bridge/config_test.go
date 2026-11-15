@@ -253,3 +253,24 @@ func TestMCPExampleAndUnknownConfiguration(t *testing.T) {
 		t.Fatal("unknown MCP option accepted")
 	}
 }
+
+func TestHomeDelayScriptMustBeScriptEntity(t *testing.T) {
+	t.Setenv("QUASAR_HOME_DELAY_SCRIPT", "")
+	os.Unsetenv("QUASAR_HOME_DELAY_SCRIPT")
+	for body, ok := range map[string]bool{
+		`{"mode":"observe","home_delay_script":"script.delayed_action"}`: true,
+		`{"mode":"observe","home_delay_script":""}`:                      true,
+		`{"mode":"observe","home_delay_script":"light.office"}`:          false,
+		`{"mode":"observe","home_delay_script":"script.a,script.b"}`:     false,
+		`{"mode":"observe","home_delay_script":"script."}`:               false,
+	} {
+		if _, err := readConfig(configFile(t, body)); (err == nil) != ok {
+			t.Errorf("%s: err=%v", body, err)
+		}
+	}
+	t.Setenv("QUASAR_HOME_DELAY_SCRIPT", "script.from_env")
+	cfg, err := readConfig(configFile(t, `{"mode":"observe","home_delay_script":"script.from_file"}`))
+	if err != nil || cfg.HomeDelayScript != "script.from_env" {
+		t.Fatalf("env override: %q err=%v", cfg.HomeDelayScript, err)
+	}
+}

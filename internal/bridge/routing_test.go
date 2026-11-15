@@ -329,3 +329,16 @@ func TestBridgeUpdateRequestsNeverReachHomeClassifier(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultDelayedCancelGoesHomeAndTimersStayWithYandex(t *testing.T) {
+	for _, tc := range []struct{ text, route, rule string }{
+		{"Отмени отложенные команды", "home", "home_delayed_cancel"},
+		{"Сбрось отложенное выключение телевизора", "home", "home_devices"},
+		{"Отмени отложенный таймер", "home", "home_delayed_cancel"},
+		{"Отмени таймер", "yandex", "yandex_services"},
+	} {
+		if d := builtInRouting.Preview(tc.text); d.Route != tc.route || d.Rule != tc.rule {
+			t.Errorf("%q: %+v, want %s/%s", tc.text, d, tc.route, tc.rule)
+		}
+	}
+}

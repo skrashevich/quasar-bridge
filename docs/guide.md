@@ -486,6 +486,105 @@ QUASAR_LLM_API_KEY=''
 Имя `home_warm_area` лишь подготавливает кеш и **не задаёт комнату по умолчанию**
 для команд: комнату лучше называть в запросе.
 
+### Отложенные команды
+
+Команды «выключи телевизор через 30 минут», «выключи свет в 23:00» или
+«включи свет на 10 минут» выполняет скрипт Home Assistant: таймер живёт в HA,
+а не на колонке. Без `home_delay_script` планировщик не откладывает команды и
+предлагает выполнить их сразу.
+
+Создайте скрипт в HA (**Настройки → Автоматизации и сцены → Скрипты**, режим YAML):
+
+```yaml
+alias: Отложенное действие
+mode: parallel
+max: 20
+fields:
+  service:
+    selector:
+      text: {}
+  entity_id:
+    required: true
+    selector:
+      entity: {}
+  data:
+    selector:
+      object: {}
+  after_minutes:
+    selector:
+      number:
+        min: 1
+        max: 1440
+  at:
+    selector:
+      text: {}
+  cancel:
+    selector:
+      boolean: {}
+sequence:
+  - if: "{{ cancel | default(false) }}"
+    then:
+      - event: quasar_delayed_cancel
+        event_data:
+          entity_id: "{{ entity_id }}"
+          service: "{{ service | default('') }}"
+      - stop: cancel sent
+  - variables:
+      deadline: >-
+        {% if at is defined and at %}{% set t = today_at(at) %}{{ as_timestamp(t
+        if t > now() else t + timedelta(days=1)) }}{% else %}{{ as_timestamp(now())
+        + (after_minutes | int(0)) * 60 }}{% endif %}
+      cancelled: false
+  - repeat:
+      while: "{{ not cancelled and as_timestamp(now()) < deadline | float }}"
+      sequence:
+        - wait_for_trigger:
+            - trigger: event
+              event_type: quasar_delayed_cancel
+          timeout:
+            seconds: "{{ [0, deadline | float - as_timestamp(now())] | max | round(0, 'ceil') | int }}"
+          continue_on_timeout: true
+        - variables:
+            cancelled: >-
+              {{ wait.trigger is not none
+              and wait.trigger.event.data.entity_id == entity_id
+              and wait.trigger.event.data.service in ['', service] }}
+  - condition: "{{ not cancelled }}"
+  - action: "{{ service }}"
+    target:
+      entity_id: "{{ entity_id }}"
+    data: "{{ data | default({}, true) }}"
+```
+
+Укажите entity_id скрипта в `config.json` или `runtime.env` и перезапустите сервис:
+
+```json
+"home_delay_script": "script.delayed_action"
+```
+
+```sh
+QUASAR_HOME_DELAY_SCRIPT=script.delayed_action
+```
+
+Открывать скрипт для Assist не нужно. Отложенное действие проходит те же проверки,
+что и немедленное: разрешённый сервис и параметры, устройство открыто для Assist,
+в плане не больше четырёх действий. Затем Bridge вызывает `script.turn_on` с
+переменными `service`, `entity_id`, `data` и `after_minutes` (1–1440) либо `at`
+(`ЧЧ:ММ` по времени HA; уже прошедшее сегодня время переносится на завтра).
+Состояние устройства сразу не проверяется, колонка отвечает «Через 30 минут:
+Телевизор.» или «В 23:00: Телевизор.». Одно устройство может получить в одном
+плане немедленное и отложенное действие.
+
+«Отмени включение света» или «не выключай телевизор» планировщик превращает в
+действие с `"cancel": true`: Bridge вызывает скрипт с переменными `cancel`,
+`entity_id` и `service`, скрипт посылает событие `quasar_delayed_cancel`, и
+ожидающие запуски этого сервиса на этом устройстве завершаются без действия.
+Колонка отвечает «Отменяю отложенное: Свет.»; есть ли такие запуски, Bridge не
+проверяет. «Отмени отложенные команды» без названия устройства (правило
+`home_delayed_cancel`) вызывает `script.turn_off` без обращения к LLM и
+останавливает все ожидающие запуски. Ожидающие действия не переживают
+перезапуск Home Assistant.
+
 ### Проверка обработчиков без колонки
 
 Загрузите окружение в текущую оболочку и проверьте API:
@@ -1824,8 +1923,9 @@ LLM получает задачи с рассуждением в несколь�
 | 5. `tts_whisper` | Штатные команды шёпота, например «скажи шёпотом» или «скажи шёпотом привет» | `yandex` |
 | 6. `tts_markup` | Просьба озвучить конкретный ответ шёпотом, другим голосом, с эффектом или звуковой вставкой | `llm` |
 | 7. `home_devices` | Домашнее устройство/показатель и слово действия/состояния, кроме музыкальных маркеров | `home` |
-| 8. `complex_queries` | Явный запрос к модели или сложная задача | `llm` |
-| 9. `yandex_services` | Погода, музыка, таймер, будильник, время | `yandex` |
+| 8. `home_delayed_cancel` | Отмена отложенных команд: «отмени», «сбрось» или «удали» вместе с «отложенн…» | `home` |
+| 9. `complex_queries` | Явный запрос к модели или сложная задача | `llm` |
+| 10. `yandex_services` | Погода, музыка, таймер, будильник, время | `yandex` |
 | Нет совпадений | LLM-классификатор, при ошибке запрос идёт в Яндекс | `classify` |
 
 «Объяви шёпотом отправление поезда» идёт в `llm`, в том числе если в той же
@@ -2151,6 +2251,7 @@ sudo systemctl disable --now quasar-bridge
 | `llm_max_output_tokens` | — | Положительный бюджет Responses с учётом reasoning, по умолчанию 4096; в `chatgpt` не отправляется |
 | `llm_hosted_tools` | — | `web_search` и/или `code_interpreter` для Responses, только `web_search` для `chatgpt`; по умолчанию пуст |
 | `home_warm_area` | `QUASAR_HOME_WARM_AREA` | Подготовка кеша света/выключателей области, не область по умолчанию |
+| `home_delay_script` | `QUASAR_HOME_DELAY_SCRIPT` | entity_id скрипта HA для [отложенных команд](#отложенные-команды); пустой отключает их, требуется перезапуск |
 | `dialogue_context` | — | Короткая память локального диалога; по умолчанию включена, требуется перезапуск |
 | `local_progress` | — | Потоковое ожидание долгих локальных ответов; по умолчанию выключено, требуется перезапуск |
 | `listen_after_reply` | — | Снова слушать после локального голосового ответа; по умолчанию `true`, `false` завершает диалог; требуется перезапуск |
