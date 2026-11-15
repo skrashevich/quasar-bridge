@@ -8,15 +8,25 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/update"
 	"regexp"
+	"slices"
 	"strings"
 )
 
 type RoutingConfig struct {
+	// ExtraRules are checked before Rules. They let a configuration add its own
+	// rules while Rules keeps the built-in defaults of the running version.
+	ExtraRules   []RoutingRule    `json:"extra_rules,omitempty"`
 	Rules        []RoutingRule    `json:"rules"`
 	DefaultRoute string           `json:"default_route"`
 	Classifier   ClassifierConfig `json:"classifier"`
 	Refusal      RefusalConfig    `json:"refusal"`
 }
+
+// AllRules returns the rules in matching order: extra rules, then rules.
+func (c RoutingConfig) AllRules() []RoutingRule {
+	return append(slices.Clone(c.ExtraRules), c.Rules...)
+}
+
 type RoutingRule struct {
 	Name     string       `json:"name"`
 	Route    string       `json:"route"`
@@ -177,7 +187,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	}
 	p := &RoutingPolicy{defaultRoute: cfg.DefaultDestination(), classifier: cfg.Classifier, classifierEnabled: cfg.ClassifierEnabled(), refusalEnabled: cfg.Refusal.Enabled}
 	names := map[string]bool{}
-	for i, rule := range cfg.Rules {
+	for i, rule := range cfg.AllRules() {
 		fail := func(reason string) (*RoutingPolicy, error) { return nil, fmt.Errorf("routing rule %d: %s", i, reason) }
 		if strings.TrimSpace(rule.Name) == "" || names[rule.Name] {
 			return fail("name must be nonempty and unique")
