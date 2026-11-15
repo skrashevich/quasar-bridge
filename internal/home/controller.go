@@ -135,11 +135,11 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	if err != nil {
 		return "", err
 	}
-	scoped := scopeEntities(text, entities)
+	scoped, roomSpecified := scopeRoomEntities(text, entities)
 	// Prefer a room in the current request; otherwise retain the latest user-specified room.
-	for i := len(history) - 1; len(scoped) == len(entities) && i >= 0; i-- {
+	for i := len(history) - 1; !roomSpecified && i >= 0; i-- {
 		if history[i].Role == "user" {
-			scoped = scopeEntities(history[i].Content, entities)
+			scoped, roomSpecified = scopeRoomEntities(history[i].Content, entities)
 		}
 	}
 	entities = scoped
@@ -390,6 +390,11 @@ func controlDomains(text string) []string {
 // Scope by explicit room names, retaining fixtures that are named for the room
 // even when their HA area is missing. Ambiguous matches remain for clarification.
 func scopeEntities(text string, entities []Entity) []Entity {
+	scoped, _ := scopeRoomEntities(text, entities)
+	return scoped
+}
+
+func scopeRoomEntities(text string, entities []Entity) ([]Entity, bool) {
 	text = strings.ToLower(text)
 	var stems []string
 	for _, e := range entities {
@@ -411,7 +416,7 @@ func scopeEntities(text string, entities []Entity) []Entity {
 		}
 	}
 	if len(stems) == 0 {
-		return entities
+		return entities, false
 	}
 	var out []Entity
 	for _, e := range entities {
@@ -423,7 +428,7 @@ func scopeEntities(text string, entities []Entity) []Entity {
 			}
 		}
 	}
-	return out
+	return out, true
 }
 
 func (c *Controller) enrich(ctx context.Context, e Entity) (Entity, bool, error) {

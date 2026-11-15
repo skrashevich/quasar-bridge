@@ -190,6 +190,9 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 			writeDiagnosticError(w, status, "Diagnostic query failed; inspect the operational log")
 			return
 		}
+		if dialogue.IsReset(request.Text) {
+			dialog.yandex = nil
+		}
 		failed = false
 		writeDiagnosticJSON(w, http.StatusOK, struct {
 			DialogID          string          `json:"dialog_id"`

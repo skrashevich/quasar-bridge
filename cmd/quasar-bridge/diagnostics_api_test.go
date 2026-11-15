@@ -20,6 +20,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/yandex"
 )
 
 type diagnosticCompleter func(context.Context, []llm.Message, bool) (string, error)
@@ -218,6 +219,42 @@ func TestDiagnosticAPIResumesIndependentDialogs(t *testing.T) {
 	missing := diagnosticAPIRequest(mux, "POST", "query", `{"text":"Продолжи","dialog_id":"00000000-0000-4000-8000-000000000000"}`, "application/json")
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("unknown dialog silently started over: %d %s", missing.Code, missing.Body)
+	}
+}
+
+func TestDiagnosticAPIExplicitResetClearsYandexContext(t *testing.T) {
+	calls := 0
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, diagnosticControl{Engine: new(bridge.Engine), YandexQuery: func(_ context.Context, _ string, dialog *queryDialog) (string, error) {
+		calls++
+		if dialog.yandex != nil {
+			t.Error("explicit dialogue reset kept old Yandex client/session")
+		}
+		dialog.yandex = new(yandex.Client)
+		return "Тестовый ответ", nil
+	}})
+	ask := func(text, id string) string {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"text": text, "dialog_id": id})
+		response := diagnosticAPIRequest(mux, "POST", "query", string(body), "application/json")
+		var result struct {
+			ID string `json:"dialog_id"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil {
+			t.Fatalf("query failed: %d %s", response.Code, response.Body)
+		}
+		return result.ID
+	}
+	id := ask("который час", "")
+	if got := ask("начни новый разговор", id); got != id {
+		t.Fatal("reset changed local dialog handle")
+	}
+	if calls != 1 {
+		t.Fatal("reset reached Yandex backend")
+	}
+	ask("который час", id)
+	if calls != 2 {
+		t.Fatal("missing Yandex turn")
 	}
 }
 

@@ -77,6 +77,42 @@ func TestHomeClarificationPrefersTheNewRoom(t *testing.T) {
 	}
 }
 
+func TestExplicitRoomsOverridePreviousRoom(t *testing.T) {
+	entities := []Entity{
+		{ID: "light.office", Name: "Свет в кабинете", State: "off", Area: "Кабинет"},
+		{ID: "light.bedroom", Name: "Свет в спальне", State: "off", Area: "Спальня"},
+	}
+	c := Controller{Tools: toolFunc(func(_ context.Context, name string, args map[string]any) (jsontext.Value, error) {
+		switch name {
+		case "ha_get_skill_guide":
+			return json.Marshal(map[string]any{"success": true})
+		case "ha_search":
+			if args["domain_filter"] == "light" {
+				return json.Marshal(map[string]any{"entities": entities, "has_more": false})
+			}
+			return json.Marshal(map[string]any{"entities": []Entity{}, "has_more": false})
+		case "ha_get_entity_exposure":
+			return json.Marshal(map[string]any{"exposed_to": map[string]any{"conversation": true}})
+		default:
+			t.Fatalf("unexpected tool %q", name)
+			return nil, nil
+		}
+	}), Planner: plannerFunc(func(_ context.Context, messages []llm.Message, _ bool) (string, error) {
+		inventory := messages[len(messages)-1].Content
+		if !strings.Contains(inventory, "light.office") || !strings.Contains(inventory, "light.bedroom") {
+			t.Errorf("explicit request for both rooms was narrowed by old office context: %s", inventory)
+		}
+		return `{"answer":"Уточните действие.","actions":[]}`, nil
+	})}
+	_, err := c.HandleDialogue(t.Context(), "Включи свет в кабинете и спальне", []llm.Message{
+		{Role: "user", Content: "Горит ли свет в кабинете?"},
+		{Role: "assistant", Content: "В кабинете свет выключен."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *homeFixture) Call(ctx context.Context, name string, args map[string]any) (jsontext.Value, error) {
 	var value any
 	switch name {
