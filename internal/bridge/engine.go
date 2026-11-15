@@ -23,6 +23,34 @@ type Completer interface {
 type HomeHandler interface {
 	Handle(context.Context, string) (string, error)
 }
+
+// Optional: a handler that can resume its own clarifying question.
+type HomeFollowupHandler interface {
+	HandleFollowup(ctx context.Context, text, request, question string) (string, error)
+}
+
+// homeFollowupTTL bounds how long the next utterance counts as an answer to a
+// home clarifying question; the Station keeps listening after the reply.
+const homeFollowupTTL = 45 * time.Second
+const maxHomeSessions = 128
+
+type homeQuestion struct {
+	request, question string
+	at                time.Time
+}
+
+type homeSession struct {
+	generation uint64
+	at         time.Time
+	pending    *homeQuestion
+}
+
+type homeRequestKey struct{}
+type homeRequest struct {
+	engine     *Engine
+	speaker    string
+	generation uint64
+}
 type PlaybackController interface {
 	Active(context.Context) bool
 	Control(context.Context, string) (string, error)
@@ -44,9 +72,12 @@ type Engine struct {
 	TTSMarkup     bool
 	// StripPrefixes are model addresses removed only from outbound requests.
 	// An empty list disables stripping.
-	StripPrefixes []string
-	dialogueOnce  sync.Once
-	routing       atomic.Pointer[RoutingPolicy]
+	StripPrefixes  []string
+	homeMu         sync.Mutex
+	homeSessions   map[string]*homeSession
+	homeGeneration uint64
+	dialogueOnce   sync.Once
+	routing        atomic.Pointer[RoutingPolicy]
 }
 
 func (e *Engine) dialogue() *dialogue.Store {
@@ -63,6 +94,36 @@ func (e *Engine) Prepare(ctx context.Context) context.Context {
 	if ctx.Err() != nil {
 		return ctx
 	}
+	e.homeMu.Lock()
+	defer e.homeMu.Unlock()
+	request, prepared := ctx.Value(homeRequestKey{}).(homeRequest)
+	key := dialogue.SpeakerKey(ctx)
+	if !prepared || request.engine != e || request.speaker != key {
+		if e.homeSessions == nil {
+			e.homeSessions = make(map[string]*homeSession)
+		}
+		session := e.homeSessions[key]
+		if session == nil {
+			if len(e.homeSessions) >= maxHomeSessions {
+				var oldest string
+				var at time.Time
+				for key, current := range e.homeSessions {
+					if at.IsZero() || current.at.Before(at) {
+						oldest, at = key, current.at
+					}
+				}
+				delete(e.homeSessions, oldest)
+			}
+			session = new(homeSession)
+			e.homeSessions[key] = session
+		}
+		e.homeGeneration++
+		session.generation = e.homeGeneration
+		session.at = time.Now()
+		request = homeRequest{engine: e, speaker: key, generation: session.generation}
+		ctx = context.WithValue(ctx, homeRequestKey{}, request)
+	}
+	// Reserve both generations together so parallel requests cannot invert them.
 	ctx, _, _ = e.dialogue().Start(ctx)
 	return ctx
 }
@@ -73,7 +134,11 @@ func (e *Engine) Resolve(ctx context.Context, text string) (Resolution, error) {
 func (e *Engine) ResolveDecision(ctx context.Context, text string, decision RouteDecision) (Resolution, error) {
 	route := decision.Route
 	if decision.prepared {
+		if decision.homeRequest.engine != e || decision.homeRequest.speaker != dialogue.SpeakerKey(ctx) {
+			return Resolution{Route: route}, context.Canceled
+		}
 		ctx = e.dialogue().Use(ctx, decision.ticket)
+		ctx = context.WithValue(ctx, homeRequestKey{}, decision.homeRequest)
 	} else {
 		ctx = e.Prepare(ctx)
 	}
@@ -166,7 +231,30 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
-		answer, err := e.Home.Handle(ctx, e.stripModelPrefix(text))
+		text = e.stripModelPrefix(text)
+		var answer string
+		var err error
+		q, current := e.takeHomeQuestion(ctx, ticket)
+		if !current {
+			return result, context.Canceled
+		}
+		if f, ok := e.Home.(HomeFollowupHandler); ok && q != nil && decision.Source == "home_followup" {
+			answer, err = f.HandleFollowup(ctx, text, q.request, q.question)
+		} else {
+			answer, err = e.Home.Handle(ctx, text)
+		}
+		if !e.homeRequestCurrent(ctx, ticket) {
+			return result, context.Canceled
+		}
+		if err == nil && isQuestion(answer) {
+			request := text
+			if q != nil && decision.Source == "home_followup" {
+				request = q.request + ". " + text
+			}
+			if !e.rememberHomeQuestion(ctx, ticket, request, answer) {
+				return result, context.Canceled
+			}
+		}
 		result.Answer = answer
 		return result, err
 	case "llm":
@@ -218,6 +306,79 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	}
 	return r, nil
 }
+
+// homeSessionLocked checks the home generation even when LLM history is off.
+// The caller must hold homeMu.
+func (e *Engine) homeSessionLocked(ctx context.Context, ticket dialogue.Ticket) *homeSession {
+	request, ok := ctx.Value(homeRequestKey{}).(homeRequest)
+	if !ok || request.engine != e || request.speaker != dialogue.SpeakerKey(ctx) || ctx.Err() != nil || !e.dialogue().Current(ctx, ticket) {
+		return nil
+	}
+	session := e.homeSessions[request.speaker]
+	if session == nil || session.generation != request.generation {
+		return nil
+	}
+	return session
+}
+
+func (e *Engine) homeRequestCurrent(ctx context.Context, ticket dialogue.Ticket) bool {
+	e.homeMu.Lock()
+	defer e.homeMu.Unlock()
+	return e.homeSessionLocked(ctx, ticket) != nil
+}
+
+func (e *Engine) rememberHomeQuestion(ctx context.Context, ticket dialogue.Ticket, request, question string) bool {
+	e.homeMu.Lock()
+	defer e.homeMu.Unlock()
+	// Keep the generation check and publication under the same lock as clears:
+	// an obsolete handler must not restore a question after a newer command.
+	session := e.homeSessionLocked(ctx, ticket)
+	if session == nil {
+		return false
+	}
+	now := time.Now()
+	session.pending = &homeQuestion{request: request, question: question, at: now}
+	session.at = now
+	return true
+}
+
+func (e *Engine) peekHomeQuestion(ctx context.Context, ticket dialogue.Ticket) bool {
+	e.homeMu.Lock()
+	defer e.homeMu.Unlock()
+	session := e.homeSessionLocked(ctx, ticket)
+	if session == nil {
+		return false
+	}
+	q := session.pending
+	if q != nil && time.Since(q.at) >= homeFollowupTTL {
+		session.pending = nil
+		return false
+	}
+	return q != nil
+}
+
+// takeHomeQuestion consumes the pending question: it answers exactly one turn.
+func (e *Engine) takeHomeQuestion(ctx context.Context, ticket dialogue.Ticket) (*homeQuestion, bool) {
+	e.homeMu.Lock()
+	defer e.homeMu.Unlock()
+	session := e.homeSessionLocked(ctx, ticket)
+	if session == nil {
+		return nil, false
+	}
+	q := session.pending
+	session.pending = nil
+	if q != nil && time.Since(q.at) >= homeFollowupTTL {
+		return nil, true
+	}
+	return q, true
+}
+
+// Models often phrase clarifications as "Уточните, …." without a question mark.
+func isQuestion(answer string) bool {
+	a := strings.ToLower(answer)
+	return strings.Contains(a, "?") || strings.Contains(a, "уточни")
+}
+
 func containsOne(text string, needles []string) bool {
 	for _, s := range needles {
 		if strings.Contains(text, s) {
@@ -255,14 +416,20 @@ func (e *Engine) RoutingStatus() RoutingStatus {
 func (e *Engine) IsRefusal(text string) bool { return e.policy().isRefusal(text) }
 func IsRefusal(text string) bool             { return builtInRouting.isRefusal(text) }
 func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecision) {
+	ctx = e.Prepare(ctx)
 	ctx, snapshot, ticket := e.dialogue().Start(ctx)
+	request, _ := ctx.Value(homeRequestKey{}).(homeRequest)
 	defer func() {
 		// Choose the cloud path before Native can start local progress/TTS.
 		if decision.Route == "home" && e.Home == nil {
 			decision.Route = "yandex"
 			decision.Source = "home_disabled"
 		}
+		if decision.Route != "home" {
+			e.takeHomeQuestion(ctx, ticket)
+		}
 		decision.ticket = ticket
+		decision.homeRequest = request
 		decision.prepared = true
 	}()
 	p := e.policy()
@@ -287,11 +454,18 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}
 	}
+	// An explicit non-home rule (timer, music, …) abandons the pending question.
 	if d, ok := p.match(text); ok {
+		if d.Route == "home" && e.peekHomeQuestion(ctx, ticket) {
+			return RouteDecision{Route: "home", Source: "home_followup"}
+		}
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
 			d.Route = "music"
 		}
 		return d
+	}
+	if e.peekHomeQuestion(ctx, ticket) {
+		return RouteDecision{Route: "home", Source: "home_followup"}
 	}
 	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue"}
