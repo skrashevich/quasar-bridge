@@ -22,8 +22,9 @@ SELinux permissive. Совместимость с другими прошивк�
 - Конфигурация `/system/vendor/quasar/quasar.cfg` с разделом `aliced`.
 - Доступный DNS-сервер и комплект доверенных сертификатов прошивки.
 
-Пакет использует статическую сборку `GOOS=linux`, поэтому NDK и установка APK
-для Bridge не требуются. Настройки DNS задаются только для процесса Bridge:
+Сам Bridge использует статическую сборку `GOOS=linux`; APK не требуется.
+Для включённого в пакет native-аудиовыхода AirPlay нужен Android NDK при
+сборке (на колонке NDK не нужен). Настройки DNS задаются только для процесса Bridge:
 обычный Go resolver иначе обращается к отсутствующему локальному DNS.
 Android launcher также включает `QUASAR_ANDROID_BACKEND_PROXY=1`: локальный
 relay настроек нужен старой прошивке, в которой облачный `uniProxyUrl`
@@ -38,6 +39,7 @@ relay настроек нужен старой прошивке, в которо
 На компьютере в checkout нужной ветки:
 
 ```sh
+export ANDROID_NDK_HOME=/path/to/android-ndk
 python3 scripts/build-android-package.py
 ```
 
@@ -79,7 +81,7 @@ ssh -p 2222 -L 2704:127.0.0.1:2704 root@SPEAKER_IP
 ```
 
 Откройте `http://127.0.0.1:2704` на компьютере. Для нейросети настройте `hybrid`
-и параметры LLM по основному руководству, сохранив `airplay.disabled: true`.
+и параметры LLM по основному руководству.
 Секреты можно разместить в `runtime.env` рядом с конфигурацией (режим `0600`).
 Например, туда же добавляются `QUASAR_DNS_SERVER` или `SSL_CERT_FILE` при
 необходимости изменить значения launcher. После изменения выполните `restart`.
@@ -157,7 +159,17 @@ writer и его supervisor, чтобы восстановить кеш и уб�
 
 ## Ограничения и проверки
 
-AirPlay отключён: текущие PCM-модули используют glibc/ALSA, а Android — Bionic.
+Пакет включает отдельный `bin/android-pcm` для Bionic/OpenSL ES. Launcher
+задаёт его через `QUASAR_AIRPLAY_APLAY`, если в конфигурации нет явного
+`airplay.aplay`. Так Android обходит встроенный Linux PCM payload и ALSA.
+По умолчанию AirPlay в примере выключен; после включения через панель
+используется native-выход Android. Исходники и сборочная инструкция helper
+входят в архив под `src/`; подробности — в `packaging/android/pcm/README.md`.
+Сборка поддерживает `--pcm-binary` для заранее собранного Bionic ARM64 ELF.
+На Максе helper прошёл инициализацию OpenSL ES, подачу конечного PCM-потока
+на 44,1/48 кГц с drain и остановку по SIGTERM с открытым stdin за 0,41 с
+(включая SSH). AirPlay-приёмник запущен; музыкальный прогон с настоящего
+отправителя и акустическая оценка требуют отдельного подтверждения.
 Автообновление и автоматический откат endpoint с перезагрузкой недоступны;
 обновление пакета и откат выполняются вручную. Обычный `restart` Bridge и
 переключение в `observe` остаются доступны.
@@ -174,6 +186,7 @@ AirPlay отключён: текущие PCM-модули используют g
 go test -race ./... -count=1 -timeout=60s
 go vet ./...
 python3 scripts/test-android-package.py
+python3 scripts/test-android-pcm.py
 ```
 
 Устройство также проверено циклом `apply` → `rollback` с сохранением исходной

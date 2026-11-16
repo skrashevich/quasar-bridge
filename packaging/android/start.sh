@@ -22,6 +22,7 @@ fi
 # Cloud sync otherwise replaces the firmware uniProxyUrl with the public one.
 export QUASAR_ANDROID_BACKEND_PROXY=1
 export QUASAR_DNS_SERVER
+export QUASAR_AIRPLAY_APLAY="${QUASAR_AIRPLAY_APLAY:-$package/bin/android-pcm}"
 export SSL_CERT_FILE="${SSL_CERT_FILE:-/system/vendor/quasar/ca-certificates.crt}"
 export TMPDIR="$state/tmp"
 export GOMAXPROCS="${GOMAXPROCS:-1}"
