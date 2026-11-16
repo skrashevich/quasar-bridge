@@ -155,8 +155,8 @@ func chatGPTErrorCode(data []byte) error {
 		code = envelope.Code
 	}
 	switch code {
-	case "subscription_sharing_usage_limit_exceeded":
-		return errors.New("ChatGPT usage limit reached; review https://chatgpt.com/settings/usage")
+	case "subscription_sharing_usage_limit_exceeded", "insufficient_quota", "credit_balance_exhausted":
+		return ErrChatGPTQuota
 	case "subscription_sharing_user_not_eligible":
 		return errors.New("ChatGPT plan usage is unavailable for this account or workspace")
 	case "subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable":

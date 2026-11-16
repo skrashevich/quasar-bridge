@@ -35,6 +35,7 @@ type Engine struct {
 	Configuration bool
 	Recovery      func(context.Context, string) (string, error)
 	AirPlay       AirPlayController
+	Classifier    Completer
 	LLM           Completer
 	Assistant     Completer
 	Home          HomeHandler
@@ -300,7 +301,11 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		return RouteDecision{Route: p.defaultRoute, Source: "default"}
 	}
 	failed := RouteDecision{Route: p.classifier.OnError, Source: "classifier_error"}
-	if e.LLM == nil {
+	classifier := e.Classifier
+	if classifier == nil {
+		classifier = e.LLM
+	}
+	if classifier == nil {
 		return failed
 	}
 	classCtx, cancel := context.WithTimeout(ctx, time.Duration(p.classifier.TimeoutMS)*time.Millisecond)
@@ -308,7 +313,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	messages := []llm.Message{{Role: "system", Content: p.classifier.Prompt}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
-	answer, err := e.LLM.Complete(classCtx, messages, true)
+	answer, err := classifier.Complete(classCtx, messages, true)
 	if err != nil {
 		return failed
 	}

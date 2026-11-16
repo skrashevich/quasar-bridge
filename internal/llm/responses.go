@@ -27,7 +27,7 @@ func (c *Client) responses(ctx context.Context, messages []Message, structured b
 	}
 	input := make([]any, 0, len(messages))
 	for _, message := range messages {
-		if len(message.responseOutput) > 0 {
+		if len(message.responseOutput) > 0 && (message.responseAPI == "" || message.responseAPI == c.API) {
 			for _, item := range message.responseOutput {
 				input = append(input, item)
 			}
@@ -63,6 +63,9 @@ func (c *Client) responses(ctx context.Context, messages []Message, structured b
 		"store": false, "max_output_tokens": budget,
 		"include": []string{"reasoning.encrypted_content"},
 	}
+	if c.API == "openrouter" {
+		delete(request, "include")
+	}
 	if c.ReasoningEffort != "" {
 		request["reasoning"] = map[string]string{"effort": c.ReasoningEffort}
 	}
@@ -94,7 +97,11 @@ func (c *Client) responses(ctx context.Context, messages []Message, structured b
 		for _, tool := range c.HostedTools {
 			switch tool {
 			case "web_search":
-				definitions = append(definitions, map[string]any{"type": tool})
+				kind := tool
+				if c.API == "openrouter" {
+					kind = "openrouter:web_search"
+				}
+				definitions = append(definitions, map[string]any{"type": kind})
 			case "code_interpreter":
 				definitions = append(definitions, map[string]any{"type": tool, "container": map[string]string{"type": "auto"}})
 			default:
