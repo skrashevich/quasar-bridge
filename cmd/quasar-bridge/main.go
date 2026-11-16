@@ -338,6 +338,7 @@ func main() {
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
 			if cfg.LocalProgress.Enabled {
+				n.ProgressCue = cfg.LocalProgress.GPTCue
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond
 			}
