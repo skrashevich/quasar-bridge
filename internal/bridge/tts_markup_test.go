@@ -82,8 +82,8 @@ func TestLocalTTSMarkupStaysInSynthesis(t *testing.T) {
 				close(release)
 			}
 			final := nextSoundFrame(t, up).Client.GetEvent()
-			if got := final.GetTtsGenerate().GetText(); got != speech {
-				t.Fatalf("synthesis text = %q, want %q", got, speech)
+			if got := final.GetTtsGenerate().GetText(); got != "sil <[150]> "+speech {
+				t.Fatalf("synthesis text = %q, want %q", got, "sil <[150]> "+speech)
 			}
 			firstPacket := []byte{0xf8, 0x12, 0x34, 0x56}
 			secondPacket := []byte{0xf8, 0x65, 0x43, 0x21}

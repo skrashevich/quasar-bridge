@@ -240,7 +240,7 @@ func TestNativeRoutesBeforeCloudExecutionAndCorrelatesTTS(t *testing.T) {
 						}
 
 					case "TtsGenerate":
-						if route != "llm" || f.Client.GetEvent().GetTtsGenerate().GetText() != "Ответ своей модели" {
+						if route != "llm" || f.Client.GetEvent().GetTtsGenerate().GetText() != "sil <[150]> Ответ своей модели" {
 							errCh <- "wrong TTS text"
 							return
 						}

@@ -53,7 +53,7 @@ func TestNativeNeverSynthesizesRawToolMarkup(t *testing.T) {
 			for {
 				f := nextSoundFrame(t, up)
 				if tts := f.Client.GetEvent().GetTtsGenerate(); tts != nil {
-					if text := tts.GetText(); strings.Contains(text, "<") || strings.Contains(text, "example.org") || !strings.Contains(text, "локальной модели") {
+					if text := strings.TrimPrefix(tts.GetText(), "sil <[150]> "); strings.Contains(text, "<") || strings.Contains(text, "example.org") || !strings.Contains(text, "локальной модели") {
 						t.Fatalf("unsafe TTS request: %q", text)
 					}
 					break
