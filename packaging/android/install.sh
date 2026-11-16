@@ -11,7 +11,6 @@ case "$state" in /*) ;; *) fail 'QUASAR_DATA_DIR must be absolute.' ;; esac
 case "$state" in *[!a-zA-Z0-9_./-]*|*/../*|*/..) fail 'Unsupported QUASAR_DATA_DIR path.' ;; esac
 case "$(uname -m):$(cat "$package/ARCH")" in aarch64:arm64|arm64:arm64) ;; *) fail 'This experimental package requires ARM64 Android.' ;; esac
 test "$("$package/bin/quasar-bridge" -v)" = dev || fail 'Android packages require a dev binary; stable Linux updater is incompatible.'
-test -f "$package/bin/android-pcm" || fail 'Android PCM helper is missing from this archive.'
 command -v getprop >/dev/null 2>&1 || fail 'Android getprop was not found.'
 test -n "$(getprop ro.build.version.sdk)" || fail 'Android version was not reported.'
 test ! -e "$state/app" || fail 'An installation exists; stop it and preserve it before replacing app/ manually.'
@@ -29,7 +28,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 stage=$(mktemp -d "$state/.install.XXXXXX")
-for name in bin start.sh control.sh install.sh config.device.example.json ARCH PLATFORM VERSION LICENSE NOTICE THIRD_PARTY_NOTICES SOURCE.md docs src; do
+for name in bin start.sh control.sh install.sh config.device.example.json ARCH PLATFORM VERSION LICENSE NOTICE THIRD_PARTY_NOTICES SOURCE.md docs; do
  cp -R "$package/$name" "$stage/$name"
 done
 chmod 0755 "$stage/"*.sh "$stage/bin/"*

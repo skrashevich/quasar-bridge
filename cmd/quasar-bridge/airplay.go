@@ -28,9 +28,6 @@ type airPlayConfig struct {
 }
 
 func (c *airPlayConfig) defaults() {
-	if c.Aplay == "" {
-		c.Aplay = os.Getenv("QUASAR_AIRPLAY_APLAY")
-	}
 	if c.DataDir == "" {
 		state := os.Getenv("QUASAR_DATA_DIR")
 		if state == "" {

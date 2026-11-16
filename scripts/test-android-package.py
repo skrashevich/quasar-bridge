@@ -30,38 +30,31 @@ def elf(interpreter=False):
     return bytes(data)
 
 
-def android_pcm_elf(interpreter=b"/system/bin/linker64\0"):
-    data = bytearray(120 + len(interpreter))
-    data[:6] = b"\x7fELF\x02\x01"
-    data[18:20] = b"\xb7\x00"
-    struct.pack_into("<HH", data, 16, 3, 183)
-    struct.pack_into("<Q", data, 32, 64)
-    struct.pack_into("<HH", data, 54, 56, 1)
-    struct.pack_into("<IIQQQQQQ", data, 64, 3, 4, 120, 0, 0, len(interpreter), len(interpreter), 1)
-    data[120:] = interpreter
-    return bytes(data)
-
 
 class AndroidPackageTest(unittest.TestCase):
+    def bundle(self, command, **kwargs):
+        prefix = ["go", "run", "github.com/skrashevich/station-airplay/cmd/station-pcm-package"]
+        self.assertEqual(command[:3], prefix)
+        self.assertEqual(command[3:6], ["-arch", "arm64", "-binary"])
+        target = Path(command[6])
+        target.write_bytes(target.read_bytes() + b"embedded-station-pcm")
+        return subprocess.CompletedProcess(command, 0)
+
     def test_archive_is_separate_manual_android_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             supplied = root / "bridge"
             supplied.write_bytes(elf())
             original = supplied.read_bytes()
-            pcm = root / "android-pcm"
-            pcm.write_bytes(android_pcm_elf())
-            pcm_original = pcm.read_bytes()
             output = root / "android.tar.gz"
-            PACKAGE.build(output=output, binary=supplied, pcm_binary=pcm)
+            with mock.patch.object(PACKAGE.subprocess, "run", side_effect=self.bundle):
+                PACKAGE.build(output=output, binary=supplied)
             self.assertEqual(supplied.read_bytes(), original)
-            self.assertEqual(pcm.read_bytes(), pcm_original)
             with tarfile.open(output) as archive:
                 names = archive.getnames()
                 self.assertEqual(len(names), len(set(names)))
                 self.assertTrue(all(not Path(name).is_absolute() and ".." not in Path(name).parts for name in names))
-                self.assertEqual(archive.extractfile("bin/quasar-bridge").read(), original)
-                self.assertEqual(archive.extractfile("bin/android-pcm").read(), pcm_original)
+                self.assertEqual(archive.extractfile("bin/quasar-bridge").read(), original + b"embedded-station-pcm")
                 self.assertEqual(archive.extractfile("PLATFORM").read(), b"android\n")
                 self.assertEqual(archive.extractfile("VERSION").read(), b"dev\n")
                 self.assertEqual(archive.extractfile("ARCH").read(), b"arm64\n")
@@ -70,16 +63,8 @@ class AndroidPackageTest(unittest.TestCase):
                 self.assertTrue(any(name.startswith("docs/licenses/") for name in names))
                 self.assertNotIn("S96quasar-bridge", names)
                 self.assertNotIn("firmware.sh", names)
-                self.assertEqual([name for name in names if name.startswith("bin/")], ["bin/quasar-bridge", "bin/android-pcm"])
-                sources = [path for path in (ROOT / "packaging/android/pcm").glob("*")
-                           if path.is_file() and path.suffix in (".c", ".h", ".md", ".txt")]
-                self.assertTrue(sources)
-                for source in sources:
-                    bundled = archive.extractfile("src/" + str(source.relative_to(ROOT))).read()
-                    self.assertEqual(hashlib.sha256(bundled).digest(), hashlib.sha256(source.read_bytes()).digest())
-                self.assertEqual(archive.extractfile("src/scripts/build-android-pcm.py").read(),
-                                 (ROOT / "scripts/build-android-pcm.py").read_bytes())
-                self.assertEqual(archive.extractfile("src/LICENSE").read(), (ROOT / "LICENSE").read_bytes())
+                self.assertEqual([name for name in names if name.startswith("bin/")], ["bin/quasar-bridge"])
+                self.assertFalse(any(name.startswith("src/") for name in names))
                 for member in archive.getmembers():
                     self.assertTrue(member.isfile())
                     self.assertEqual(member.mode, 0o755 if member.name.endswith(".sh") or member.name.startswith("bin/") else 0o644)
@@ -123,19 +108,14 @@ class AndroidPackageTest(unittest.TestCase):
         bridge = package / "bin/quasar-bridge"
         bridge.write_text('#!/bin/sh\n'
                           'if [ \"$1\" = -v ]; then echo dev; exit 0; fi\n'
-                          'printf "%s\\n" "DNS=$QUASAR_DNS_SERVER" "RELAY=$QUASAR_ANDROID_BACKEND_PROXY" "CA=$SSL_CERT_FILE" "APLAY=$QUASAR_AIRPLAY_APLAY" "TMP=$TMPDIR" "PWD=$PWD"\n'
+                          'printf "%s\\n" "DNS=$QUASAR_DNS_SERVER" "RELAY=$QUASAR_ANDROID_BACKEND_PROXY" "CA=$SSL_CERT_FILE" "TMP=$TMPDIR" "PWD=$PWD"\n'
                           'printf "ARG=%s\\n" "$@"\n')
         bridge.chmod(0o755)
-        pcm = package / "bin/android-pcm"
-        pcm.write_bytes(android_pcm_elf())
-        pcm.chmod(0o644)
         for name, value in [("ARCH", "arm64"), ("PLATFORM", "android"), ("VERSION", "dev"),
                             ("LICENSE", "license"), ("NOTICE", "notice"),
                             ("THIRD_PARTY_NOTICES", "notices"), ("SOURCE.md", "source")]:
             (package / name).write_text(value + "\n")
         (package / "docs").mkdir()
-        (package / "src").mkdir()
-        (package / "src/helper-source.txt").write_text("native helper source\n")
         tools = root / "tools"
         tools.mkdir()
         for name, body in {
@@ -161,7 +141,6 @@ class AndroidPackageTest(unittest.TestCase):
             self.assertIn("DNS=192.0.2.53\n", result.stdout)
             self.assertIn("RELAY=1\n", result.stdout)
             self.assertIn("CA=/system/vendor/quasar/ca-certificates.crt\n", result.stdout)
-            self.assertIn(f"APLAY={package}/bin/android-pcm\n", result.stdout)
             self.assertIn(f"TMP={state}/tmp\n", result.stdout)
             self.assertIn(f"PWD={state}\n", result.stdout)
             self.assertIn("ARG=-check-config\n", result.stdout)
@@ -170,12 +149,11 @@ class AndroidPackageTest(unittest.TestCase):
     def test_launcher_honors_explicit_dns_and_ca(self):
         with tempfile.TemporaryDirectory() as tmp:
             package, state, env = self.fixture(Path(tmp))
-            env.update(QUASAR_DNS_SERVER="[2001:db8::53]:5353", SSL_CERT_FILE="/custom/ca.crt", QUASAR_ANDROID_BACKEND_PROXY="0", QUASAR_AIRPLAY_APLAY="/custom/android-player")
+            env.update(QUASAR_DNS_SERVER="[2001:db8::53]:5353", SSL_CERT_FILE="/custom/ca.crt", QUASAR_ANDROID_BACKEND_PROXY="0")
             result = subprocess.run(["sh", str(package / "start.sh"), "-check-config"], env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("DNS=[2001:db8::53]:5353\n", result.stdout)
             self.assertIn("CA=/custom/ca.crt\n", result.stdout)
-            self.assertIn("APLAY=/custom/android-player\n", result.stdout)
             self.assertIn("RELAY=1\n", result.stdout)
 
     def test_missing_android_dns_fails_before_launch(self):
@@ -194,9 +172,6 @@ class AndroidPackageTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((state / "config.json").read_bytes(), original)
             self.assertTrue((state / "app/bin/quasar-bridge").is_file())
-            self.assertTrue((state / "app/bin/android-pcm").is_file())
-            self.assertEqual((state / "app/bin/android-pcm").stat().st_mode & 0o777, 0o755)
-            self.assertEqual((state / "app/src/helper-source.txt").read_text(), "native helper source\n")
             self.assertFalse((state / "bridge.pid").exists())
             self.assertFalse((state / "endpoint-mount").exists())
             self.assertEqual(state.stat().st_mode & 0o777, 0o700)
@@ -407,38 +382,17 @@ class AndroidPackageTest(unittest.TestCase):
             self.assertFalse((state / "endpoint-mount").exists())
 
 
-    def test_rejects_non_android_pcm_helpers(self):
+    def test_bundler_failure_does_not_publish_or_modify_supplied_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bridge = root / "bridge"
             bridge.write_bytes(elf())
-            pcm = root / "pcm"
-            wrong_arch = bytearray(android_pcm_elf())
-            wrong_arch[18:20] = b"\x3e\x00"
-            bad_range = bytearray(android_pcm_elf())
-            struct.pack_into("<Q", bad_range, 64 + 8, len(bad_range) + 100)
-            for data in (elf(), android_pcm_elf(b"/lib/ld-linux-aarch64.so.1\0"), bytes(wrong_arch), bytes(bad_range)):
-                with self.subTest(data=data[:20]):
-                    pcm.write_bytes(data)
-                    with self.assertRaises(ValueError):
-                        PACKAGE.build(output=root / "bad.tar.gz", binary=bridge, pcm_binary=pcm)
-                    self.assertEqual(pcm.read_bytes(), data)
-                    self.assertFalse((root / "bad.tar.gz").exists())
-
-    def test_builds_native_pcm_when_not_supplied(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            bridge = root / "bridge"
-            bridge.write_bytes(elf())
-            def build_pcm(command, **kwargs):
-                self.assertEqual(command[1:3], [str(ROOT / "scripts/build-android-pcm.py"), "--output"])
-                Path(command[3]).write_bytes(android_pcm_elf())
-                return subprocess.CompletedProcess(command, 0)
-            with mock.patch.object(PACKAGE.subprocess, "run", side_effect=build_pcm) as build:
-                output = PACKAGE.build(output=root / "android.tar.gz", binary=bridge)
-                build.assert_called_once()
-            with tarfile.open(output) as archive:
-                self.assertEqual(archive.extractfile("bin/android-pcm").read(), android_pcm_elf())
+            output = root / "android.tar.gz"
+            with mock.patch.object(PACKAGE.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "station-pcm-package")):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    PACKAGE.build(output=output, binary=bridge)
+            self.assertEqual(bridge.read_bytes(), elf())
+            self.assertFalse(output.exists())
 
 if __name__ == "__main__":
     unittest.main()

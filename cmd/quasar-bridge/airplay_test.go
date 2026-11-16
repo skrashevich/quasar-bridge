@@ -173,27 +173,3 @@ func TestListenerFailureStopsAirPlayBeforeReturning(t *testing.T) {
 		t.Fatalf("listener error bypassed cleanup: appErr=%v receiver=%+v", app.Err(), r)
 	}
 }
-
-func TestAirPlayPlayerDefaultsFromEnvironment(t *testing.T) {
-	for _, tc := range []struct{ name, environment, configured, want string }{
-		{name: "system default"},
-		{name: "Android package helper", environment: "/data/app/bin/android-pcm", want: "/data/app/bin/android-pcm"},
-		{name: "explicit config wins", environment: "/data/app/bin/android-pcm", configured: "/custom/player", want: "/custom/player"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("QUASAR_AIRPLAY_APLAY", tc.environment)
-			cfg := airPlayConfig{Aplay: tc.configured}
-			cfg.defaults()
-			if cfg.Aplay != tc.want {
-				t.Fatalf("aplay=%q want %q", cfg.Aplay, tc.want)
-			}
-			receiver, err := cfg.receiverConfig()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if receiver.Aplay != tc.want {
-				t.Fatal("player path was not forwarded to receiver")
-			}
-		})
-	}
-}

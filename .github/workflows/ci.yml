@@ -45,8 +45,6 @@ jobs:
           for script in install.sh packaging/speaker/*.sh packaging/speaker/S96quasar-bridge packaging/android/*.sh; do
             sh -n "$script"
           done
-      - name: Test Android PCM framing and cancellation
-        run: python3 scripts/test-android-pcm.py
       - name: Test Android packaging and launcher
         run: python3 scripts/test-android-package.py
       - name: Build experimental Android archive

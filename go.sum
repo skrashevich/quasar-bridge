@@ -45,8 +45,8 @@ github.com/skrashevich/go-opus v0.1.1 h1:ZUY93HyX3jXEYNzimcQbGjg9ujy91ZaRhGikaV3
 github.com/skrashevich/go-opus v0.1.1/go.mod h1:i+iY/zdmge97oxiFkw2dtk3CUnNheH5zhtPkpsvzJHw=
 github.com/skrashevich/quasar-go-genproto v0.3.0 h1:8wwxoOO2vk9wPPT4er0ahzoPBRdWVMPoUftLfxwC5BU=
 github.com/skrashevich/quasar-go-genproto v0.3.0/go.mod h1:atbegTDQSo42CW6gi/pUSY7h5foPMfqeDFP/oPi/Rgk=
-github.com/skrashevich/station-airplay v0.2.2 h1:cTJmuxql3dDUOhWRqJf/ik5hMkZdGyHx6X2kOU2akSM=
-github.com/skrashevich/station-airplay v0.2.2/go.mod h1:89Ukk3O3D4QoKN7L0dxCfsDrnrQ8D9KI8LUfD7n2bBg=
+github.com/skrashevich/station-airplay v0.2.4-0.20261116022008-96d72463d1f1 h1:ckiDm4I9ha2Lsua8PA+mqqoS28SRGPIzL42b9RIWnQc=
+github.com/skrashevich/station-airplay v0.2.4-0.20261116022008-96d72463d1f1/go.mod h1:89Ukk3O3D4QoKN7L0dxCfsDrnrQ8D9KI8LUfD7n2bBg=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=

@@ -60,12 +60,16 @@ are in vendor/. The final two commands above build the necessary PCM ABIs and
 embed them inside each Bridge ELF. Install only the resulting quasar-bridge
 file. No launcher or companion executable is installed beside it. Bridge stays
 static and extracts the selected, hash-verified PCM module into its private
-AirPlay cache on demand. The speaker's ALSA library is not bundled.
+AirPlay cache on demand. The speaker's native audio libraries are not bundled.
+The same ARM64 PCM payload selects ALSA on Linux and OpenSL ES on Android;
+the runtime prepares its private ELF copy for the detected native loader.
+Neither CGo nor Android NDK is required.
 
 For a fully offline build set GOPROXY=off GOSUMDB=off GOFLAGS=-mod=vendor and
 use the installed Go toolchain version recorded in go.mod. This also applies
 to the bundler's helper builds. To produce the complete installation archive,
-run scripts/build-speaker-package.py; it performs the bundling automatically.
+run scripts/build-speaker-package.py (Linux) or scripts/build-android-package.py
+(rooted Android ARM64); both use the same bundler automatically.
 
 License texts are in LICENSE, THIRD_PARTY_NOTICES and docs/licenses/;
 dependency-specific notices are retained in vendor/.
