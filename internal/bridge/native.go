@@ -653,6 +653,11 @@ func (n *Native) sendCancel(ctx context.Context, id string) error {
 func (n *Native) reply(p *nativeRequest, result Resolution) error {
 	text := result.Answer
 	speech := cmp.Or(result.speech, text)
+	// Give the speaker decoder a short silent lead-in before local model speech.
+	// Keep padding out of displayed text, history, and progress setup audio.
+	if result.Route == "llm" && strings.TrimSpace(speech) != "" {
+		speech = "sil <[150]> " + speech
+	}
 	if p.streaming {
 		return n.finishDeferred(p, text, speech)
 	}
