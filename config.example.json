@@ -21,6 +21,7 @@
   "llm_max_output_tokens": 4096,
   "llm_hosted_tools": [],
   "home_warm_area": "",
+  "home_default_area": "",
   "listen_after_reply": true,
   "airplay": {
     "disabled": false

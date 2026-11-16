@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -272,6 +273,195 @@ func TestHomeAnswerNamesDevicesWithoutEntityIDs(t *testing.T) {
 			answer, err := c.Handle(t.Context(), tc.question)
 			if err != nil || answer != tc.want || f.actions != 0 {
 				t.Fatalf("answer=%q want=%q err=%v actions=%d", answer, tc.want, err, f.actions)
+			}
+		})
+	}
+}
+
+// User story: a speaker stands in the bedroom. "Включи свет" there means the
+// bedroom light, not a light in another room the planner happened to pick.
+// home_default_area tells the planner which devices are next to the speaker,
+// while a request that names a room keeps working exactly as before.
+func twoRoomTools(called *[]string) ToolCaller {
+	states := map[string]string{"light.bedroom": "off", "light.office": "off", "light.desk_lamp": "off"}
+	return toolFunc(func(_ context.Context, name string, args map[string]any) (jsontext.Value, error) {
+		var v any = map[string]any{"success": true}
+		switch name {
+		case "ha_search":
+			v = map[string]any{"entities": []Entity{
+				{ID: "light.bedroom", Name: "Свет в спальне", State: states["light.bedroom"], Area: "Спальня"},
+				{ID: "light.office", Name: "Свет в кабинете", State: states["light.office"], Area: "Кабинет"},
+				// Named for the study but assigned to the bedroom area in HA.
+				{ID: "light.desk_lamp", Name: "Лампа из кабинета", State: states["light.desk_lamp"], Area: "Спальня"},
+			}}
+		case "ha_get_entity_exposure":
+			v = map[string]any{"exposed_to": map[string]any{"conversation": true}}
+		case "ha_call_service":
+			id := args["entity_id"].(string)
+			*called = append(*called, id)
+			states[id] = "on"
+		case "ha_get_state":
+			id := args["entity_id"].(string)
+			v = map[string]any{"data": map[string]any{"entity_id": id, "state": states[id]}}
+		}
+		b, _ := json.Marshal(v)
+		return b, nil
+	})
+}
+
+func markedHere(t *testing.T, m []llm.Message) []string {
+	t.Helper()
+	var here []string
+	for _, d := range plannedDevices(t, m) {
+		if d.Here {
+			here = append(here, d.ID)
+		}
+	}
+	return here
+}
+
+// plannedDevices returns the inventory the planner received.
+func plannedDevices(t *testing.T, m []llm.Message) []Entity {
+	t.Helper()
+	body, _, _ := strings.Cut(strings.TrimPrefix(m[1].Content, "Устройства: "), "\n")
+	var devices []Entity
+	if err := json.Unmarshal([]byte(body), &devices); err != nil {
+		t.Fatalf("devices: %v", err)
+	}
+	return devices
+}
+
+func TestDefaultAreaGuidesRequestWithoutRoom(t *testing.T) {
+	var called []string
+	c := Controller{Tools: twoRoomTools(&called), Domains: []string{"light"}, DefaultArea: "спальня", Planner: plannerFunc(func(_ context.Context, m []llm.Message, _ bool) (string, error) {
+		if !strings.Contains(m[0].Content, "«спальня»") {
+			t.Fatalf("system prompt lacks speaker area: %s", m[0].Content)
+		}
+		if here := markedHere(t, m); !slices.Equal(here, []string{"light.bedroom", "light.desk_lamp"}) || !strings.Contains(m[1].Content, "light.office") {
+			t.Fatalf("bedroom devices must be marked, other rooms kept: here=%v devices=%s", here, m[1].Content)
+		}
+		b, _ := json.Marshal(Plan{Answer: "Включаю", Actions: []Action{{Domain: "light", Service: "turn_on", EntityID: "light.bedroom"}}})
+		return string(b), nil
+	})}
+	if _, err := c.Handle(t.Context(), "Включи свет"); err != nil || !slices.Equal(called, []string{"light.bedroom"}) {
+		t.Fatalf("err=%v called=%v", err, called)
+	}
+}
+
+func TestNamedRoomOverridesDefaultArea(t *testing.T) {
+	var called []string
+	c := Controller{Tools: twoRoomTools(&called), Domains: []string{"light"}, DefaultArea: "Спальня", Planner: plannerFunc(func(_ context.Context, m []llm.Message, _ bool) (string, error) {
+		if strings.Contains(m[0].Content, "Спальня") || len(markedHere(t, m)) != 0 || strings.Contains(m[1].Content, "light.bedroom") {
+			t.Fatalf("named room must not get the speaker area hint: %v", m)
+		}
+		b, _ := json.Marshal(Plan{Answer: "Включаю", Actions: []Action{{Domain: "light", Service: "turn_on", EntityID: "light.office"}}})
+		return string(b), nil
+	})}
+	if _, err := c.Handle(t.Context(), "Включи свет в кабинете"); err != nil || !slices.Equal(called, []string{"light.office"}) {
+		t.Fatalf("err=%v called=%v", err, called)
+	}
+}
+
+func TestDefaultAreaKeepsOtherRoomsUnlessInventoryTooLarge(t *testing.T) {
+	small := []Entity{{ID: "vacuum.robot", Area: "Коридор"}, {ID: "light.bedroom", Area: "Спальня"}}
+	got, hint := markDefaultArea("Спальня", small)
+	if len(got) != 2 || got[0].Here || !got[1].Here || hint == "" {
+		t.Fatalf("devices of other rooms must stay available: %+v hint=%q", got, hint)
+	}
+	if got, hint := markDefaultArea("Детская", []Entity{{ID: "light.bedroom", Area: "Спальня"}}); len(got) != 1 || got[0].Here || hint != "" {
+		t.Fatalf("an area without devices must not change the request: %+v hint=%q", got, hint)
+	}
+	large := make([]Entity, 0, 82)
+	for i := range 80 {
+		large = append(large, Entity{ID: "light.other_" + string(rune('a'+i%26)) + string(rune('a'+i/26)), Area: "Гостиная"})
+	}
+	large = append(large, Entity{ID: "light.bedroom", Area: "Спальня"}, Entity{ID: "switch.bedroom", Area: "Спальня"})
+	if got, _ := markDefaultArea("Спальня", large); len(got) != 2 || !got[0].Here || !got[1].Here {
+		t.Fatalf("oversized inventory must narrow to the speaker area: %d devices", len(got))
+	}
+}
+
+// User story: "какая температура дома" asked in the bedroom is about the whole
+// home, so the speaker area must not steer the answer to the bedroom only.
+func TestWholeHomeRequestIgnoresDefaultArea(t *testing.T) {
+	var called []string
+	for _, q := range []string{"Выключи свет во всей квартире", "Что включено дома?"} {
+		c := Controller{Tools: twoRoomTools(&called), Domains: []string{"light"}, DefaultArea: "Спальня", Planner: plannerFunc(func(_ context.Context, m []llm.Message, structured bool) (string, error) {
+			if strings.Contains(m[0].Content, "Спальня") || len(markedHere(t, m)) != 0 {
+				t.Fatalf("%q: whole-home request got the speaker area hint", q)
+			}
+			if !structured {
+				return "Ничего не включено.", nil
+			}
+			return `{"answer":"Уточните","actions":[]}`, nil
+		})}
+		if _, err := c.Handle(t.Context(), q); err != nil {
+			t.Fatalf("%q: %v", q, err)
+		}
+	}
+}
+
+func TestRoomStemsRecognizeDeclinedAreaNames(t *testing.T) {
+	for _, tc := range []struct{ area, text string }{
+		{"Кухня", "включи свет на кухне"}, {"Кухня", "пропылесось кухню"},
+		{"Спальня", "выключи свет в спальне"}, {"Зал", "свет в зале"},
+		{"Ванная", "включи свет в ванной"}, {"Гостиная", "свет в гостиной"},
+		{"Прихожая", "свет в прихожей"},
+	} {
+		if stems := roomStems(tc.text, []Entity{{Area: tc.area}}); len(stems) == 0 {
+			t.Errorf("%q must name area %q", tc.text, tc.area)
+		}
+	}
+	if stems := roomStems("включи свет", []Entity{{Area: "Кухня"}, {Area: "Спальня"}}); len(stems) != 0 {
+		t.Errorf("request without a room named %v", stems)
+	}
+}
+
+// User story: the speaker stands in the bedroom. A request that names the
+// kitchen or covers every room must not be narrowed to the bedroom, whether
+// the inventory is small or larger than the planner limit.
+func spreadTools(others int) ToolCaller {
+	entities := []Entity{{ID: "light.bedroom", Name: "Свет", State: "off", Area: "Спальня"}, {ID: "light.kitchen", Name: "Свет", State: "off", Area: "Кухня"}}
+	for i := range others {
+		entities = append(entities, Entity{ID: fmt.Sprintf("light.office_%d", i), Name: "Свет", State: "off", Area: "Кабинет"})
+	}
+	return toolFunc(func(_ context.Context, name string, _ map[string]any) (jsontext.Value, error) {
+		var v any = map[string]any{"success": true}
+		switch name {
+		case "ha_search":
+			v = map[string]any{"entities": entities}
+		case "ha_get_entity_exposure":
+			v = map[string]any{"exposed_to": map[string]any{"conversation": true}}
+		}
+		b, _ := json.Marshal(v)
+		return b, nil
+	})
+}
+
+func TestDefaultAreaKeepsNamedKitchenAndEveryRoom(t *testing.T) {
+	for _, others := range []int{0, 79} {
+		t.Run(fmt.Sprintf("%d devices", others+2), func(t *testing.T) {
+			var planned []Entity
+			c := Controller{Tools: spreadTools(others), Domains: []string{"light"}, DefaultArea: "Спальня", Planner: plannerFunc(func(_ context.Context, m []llm.Message, _ bool) (string, error) {
+				if strings.Contains(m[0].Content, "Спальня") || len(markedHere(t, m)) != 0 {
+					t.Fatalf("request got the speaker area hint: %s", m[0].Content)
+				}
+				planned = plannedDevices(t, m)
+				return `{"answer":"Уточните","actions":[]}`, nil
+			})}
+			if _, err := c.Handle(t.Context(), "Включи свет на кухне"); err != nil || len(planned) != 1 || planned[0].ID != "light.kitchen" {
+				t.Fatalf("kitchen request: err=%v planned=%+v", err, planned)
+			}
+			planned = nil
+			answer, err := c.Handle(t.Context(), "Выключи свет во всех комнатах")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if others == 0 && len(planned) != 2 {
+				t.Fatalf("every room request must keep all rooms: %+v", planned)
+			}
+			if others > 0 && (planned != nil || !strings.HasPrefix(answer, "Уточните комнату")) {
+				t.Fatalf("oversized every room request must ask to clarify, got %q planned=%d", answer, len(planned))
 			}
 		})
 	}
