@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/binary"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -22,9 +23,16 @@ import (
 func (n *Native) progress(p *nativeRequest) func() {
 	stop := make(chan struct{})
 	done := make(chan struct{})
+	ready := make(chan struct{})
+	signalReady := sync.OnceFunc(func() { close(ready) })
 	n.wg.Go(func() {
 		defer close(done)
-		timer := time.NewTimer(n.ProgressAfter)
+		defer signalReady()
+		delay := n.ProgressAfter
+		if p.progressCue {
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-stop:
@@ -61,6 +69,7 @@ func (n *Native) progress(p *nativeRequest) func() {
 			p.cancel()
 			return
 		}
+		signalReady()
 		slog.Info("native_progress_started", "request", requestTag(p.id))
 		interval := n.ProgressInterval
 		if interval <= 0 {
@@ -82,6 +91,14 @@ func (n *Native) progress(p *nativeRequest) func() {
 			}
 		}
 	})
+	if p.progressCue {
+		// Ensure fast model replies cannot stop the cue setup before it starts.
+		// This waits only for sending the setup request, not its audio or the cue.
+		select {
+		case <-ready:
+		case <-p.ctx.Done():
+		}
+	}
 	return func() { close(stop); <-done }
 }
 func (p *nativeRequest) applicationID() string {

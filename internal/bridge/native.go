@@ -69,6 +69,8 @@ type nativeRequest struct {
 	started, canceled, local, cloud bool
 	continuation                    []byte
 	ttsID                           string
+	progressCue                     bool
+	progressCueSent                 bool
 	progressTTS                     string
 	markedTTS                       bool // <speaker> can produce chained Opus streams.
 	audio                           oggSpeech
@@ -98,6 +100,7 @@ type Native struct {
 	GateText         bool
 	ShouldListen     bool
 	DecisionDelay    time.Duration
+	ProgressCue      bool
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
 }
@@ -340,6 +343,16 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 							return err
 						}
 					}
+					if p.progressCue && !p.progressCueSent {
+						p.progressCueSent = true
+						if cue := p.audio.thinkingCue(); len(cue) > 0 {
+							if err := n.down(p.ctx, k, append(binary.BigEndian.AppendUint32(nil, p.audioStream), cue...)); err != nil {
+								p.cancel()
+								n.mu.Unlock()
+								return err
+							}
+						}
+					}
 					if !p.audioWaiting {
 						p.audioWaiting = true
 						n.waitAudio(p)
@@ -560,10 +573,11 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				decision := routed.Decide(p.ctx, text)
 				n.mu.Lock()
 				p.listenOnStreamStart = decision.Source == "dialogue_retry"
+				p.progressCue = n.ProgressCue && decision.Route == "llm"
 				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
 				stop := func() {}
-				if decision.Route != "yandex" && n.ProgressAfter > 0 {
+				if decision.Route != "yandex" && (n.ProgressAfter > 0 || p.progressCue) {
 					stop = n.progress(p)
 				}
 				result, err = routed.ResolveDecision(p.ctx, text, decision)

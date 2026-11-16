@@ -19,6 +19,7 @@ import (
 )
 
 type progressConfig struct {
+	GPTCue     bool `json:"gpt_cue"`
 	Enabled    bool `json:"enabled"`
 	AfterMS    int  `json:"after_ms"`
 	IntervalMS int  `json:"interval_ms"`
@@ -198,6 +199,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 		if endpoint := os.Getenv("QUASAR_HOME_MCP_URL"); endpoint != "" && !validEndpoint(endpoint, "http", "https") {
 			return cfg, errors.New("invalid QUASAR_HOME_MCP_URL")
 		}
+	}
+	if cfg.LocalProgress.GPTCue && !cfg.LocalProgress.Enabled {
+		return cfg, errors.New("local_progress.gpt_cue requires local_progress.enabled")
 	}
 	if cfg.LocalProgress.AfterMS < 100 || cfg.LocalProgress.AfterMS > 10000 || cfg.LocalProgress.IntervalMS < 1000 || cfg.LocalProgress.IntervalMS > 10000 {
 		return cfg, errors.New("invalid local_progress timing")
