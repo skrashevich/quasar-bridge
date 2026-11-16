@@ -22,6 +22,7 @@ type Message struct {
 	// Preserve reasoning and other Responses items only for this tool loop.
 	// They are deliberately absent from the Chat Completions wire format.
 	responseOutput []jsontext.Value
+	responseAPI    string
 }
 type ToolCall struct {
 	ID       string       `json:"id"`
@@ -102,7 +103,7 @@ func (c *Client) chat(ctx context.Context, messages []Message, structured bool, 
 	switch c.API {
 	case "", "chat_completions":
 		m, err = c.chatCompletions(ctx, messages, structured, tools)
-	case "responses", "chatgpt":
+	case "responses", "chatgpt", "openrouter":
 		if len(c.ChatParameters) > 0 {
 			return Message{}, errors.New("LLM chat parameters require chat_completions API")
 		}
@@ -118,6 +119,7 @@ func (c *Client) chat(ctx context.Context, messages []Message, structured bool, 
 			return Message{}, err
 		}
 	}
+	m.responseAPI = c.API
 	return m, nil
 }
 

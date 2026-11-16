@@ -201,7 +201,23 @@ func main() {
 	}}
 	logs := new(journal.Writer)
 	lc := newLLMClient(cfg, os.Getenv("QUASAR_LLM_API_KEY"))
-	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext), StripPrefixes: cfg.LLMStripPrefixes, TTSMarkup: cfg.LLMTTSMarkup}
+	classifier, fallback, err := openRouterClients(cfg)
+	if err != nil {
+		slog.Error("OpenRouter configuration rejected", "error", err)
+		os.Exit(1)
+	}
+	var answerer interface {
+		bridge.Completer
+		assistant.Chatter
+	} = lc
+	if fallback != nil {
+		answerer = &llm.QuotaFallback{Primary: lc, Secondary: fallback}
+	}
+	engine := &bridge.Engine{LLM: answerer, Dialogue: dialogue.New(cfg.DialogueContext), StripPrefixes: cfg.LLMStripPrefixes, TTSMarkup: cfg.LLMTTSMarkup}
+	if classifier != nil {
+		engine.Classifier = classifier
+		slog.Info("routing_classifier_provider", "provider", "openrouter", "model", classifier.Model)
+	}
 	// Recovery is a direct command path, independent of assistant tool settings
 	// and of the availability of either the classifier or the dialogue model.
 	engine.Recovery = func(ctx context.Context, action string) (string, error) {
@@ -266,7 +282,7 @@ func main() {
 			tools.AirPlay = airPlay
 		}
 		engine.Music = tools
-		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
+		engine.Assistant = &assistant.Agent{Client: answerer, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 	}
 	if err := engine.SetRouting(cfg.Routing); err != nil {
 		slog.Error("routing rejected", "error", err)
@@ -281,11 +297,24 @@ func main() {
 			return
 		}
 		if *check {
-			_, err := lc.Complete(ctx, []llm.Message{{Role: "user", Content: "Ответь одним словом: связь"}}, false)
+			_, err := answerer.Complete(ctx, []llm.Message{{Role: "user", Content: "Ответь одним словом: связь"}}, false)
 			if err != nil {
 				slog.Error("LLM check failed", "error", err)
 				writeLLMProviderError(os.Stderr, err)
 				os.Exit(1)
+			}
+			if classifier != nil {
+				_, err := classifier.Complete(ctx, []llm.Message{{Role: "system", Content: cfg.Routing.Classifier.Prompt}, {Role: "user", Content: "Почему небо голубое?"}}, true)
+				if err != nil {
+					slog.Error("Jev check failed", "error", err)
+					os.Exit(1)
+				}
+				_, err = fallback.Complete(llm.WithoutHostedTools(ctx), []llm.Message{{Role: "user", Content: "Ответь одним словом: связь"}}, false)
+				if err != nil {
+					slog.Error("OpenRouter fallback check failed", "error", err)
+					os.Exit(1)
+				}
+				fmt.Println("OpenRouter: Jev classifier and fallback ok")
 			}
 			if hc == nil {
 				fmt.Println("LLM: ok; Home Assistant: disabled")

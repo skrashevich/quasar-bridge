@@ -25,6 +25,7 @@ type progressConfig struct {
 }
 
 type config struct {
+	OpenRouter         openRouterConfig     `json:"openrouter"`
 	AirPlay            airPlayConfig        `json:"airplay"`
 	DialogueContext    dialogue.Config      `json:"dialogue_context"`
 	LocalProgress      progressConfig       `json:"local_progress"`
@@ -139,6 +140,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 		if err := llm.ValidateChatParameters(cfg.LLMChatParameters); err != nil {
 			return cfg, err
 		}
+	}
+	if err := cfg.OpenRouter.validate(cfg.LLMAPI); err != nil {
+		return cfg, err
 	}
 	if cfg.LLMMaxOutputTokens <= 0 {
 		return cfg, errors.New("llm_max_output_tokens must be positive")
