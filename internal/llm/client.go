@@ -161,8 +161,14 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 	if len(result.Choices) == 0 || (strings.TrimSpace(result.Choices[0].Message.Content) == "" && len(result.Choices[0].Message.ToolCalls) == 0) {
 		return Message{}, errors.New("LLM returned no answer")
 	}
-	if result.Choices[0].FinishReason == "length" {
+	switch result.Choices[0].FinishReason {
+	case "length":
 		return Message{}, errors.New("LLM answer exceeded token budget")
+	case "error":
+		// Some OpenAI-compatible gateways (e.g. Hermes Agent) report a failed provider call as
+		// HTTP 200 with finish_reason "error" and a diagnostic text in content; speaking that
+		// text would read an internal error message aloud.
+		return Message{}, errors.New("LLM backend reported an error")
 	}
 	m := result.Choices[0].Message
 	m.Role = "assistant"
