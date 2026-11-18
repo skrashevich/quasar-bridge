@@ -227,6 +227,36 @@ func TestLocalProgressConfiguration(t *testing.T) {
 	}
 }
 
+func TestLocalProgressMusicFile(t *testing.T) {
+	path := configFile(t, `{"local_progress":{"enabled":true,"music_file":"waiting.opus"}}`)
+	cfg, err := readConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trackPath := filepath.Join(filepath.Dir(path), "waiting.opus")
+	for _, name := range []string{cfg.LocalProgress.MusicFile, trackPath} {
+		progress := progressConfig{Enabled: true, MusicFile: name}
+		track, err := progress.loadMusic(path)
+		if !os.IsNotExist(err) || track != nil {
+			t.Fatalf("missing track %q: track=%v error=%v", name, track, err)
+		}
+		if pathErr, ok := err.(*os.PathError); !ok || pathErr.Path != trackPath {
+			t.Fatalf("track %q resolved incorrectly: %v", name, err)
+		}
+	}
+	if err := os.WriteFile(trackPath, []byte("invalid audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if track, err := cfg.LocalProgress.loadMusic(path); err == nil || track != nil {
+		t.Fatalf("invalid track: track=%v error=%v", track, err)
+	}
+	for _, progress := range []progressConfig{{Enabled: true}, {MusicFile: trackPath}} {
+		if track, err := progress.loadMusic(path); err != nil || track != nil {
+			t.Fatalf("disabled music: track=%v error=%v", track, err)
+		}
+	}
+}
+
 func TestDialogueContextDefaultsAndValidation(t *testing.T) {
 	cfg, err := readConfig(configFile(t, `{"mode":"observe"}`))
 	if err != nil {

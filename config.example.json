@@ -301,7 +301,8 @@
   "local_progress": {
     "enabled": true,
     "after_ms": 2000,
-    "interval_ms": 4000
+    "interval_ms": 4000,
+    "music_file": ""
   },
   "dialogue_context": {
     "enabled": true,

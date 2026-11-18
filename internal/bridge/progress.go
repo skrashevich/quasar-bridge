@@ -19,7 +19,7 @@ import (
 
 // progress starts only after the executor is known. Stop joins the pump so no
 // partial can race with the final answer or continue after cancellation.
-func (n *Native) progress(p *nativeRequest) func() {
+func (n *Native) progress(p *nativeRequest, playMusic bool) func() {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	n.wg.Go(func() {
@@ -40,6 +40,9 @@ func (n *Native) progress(p *nativeRequest) func() {
 		}
 		p.local = true
 		p.streaming = true
+		if playMusic {
+			p.waitMusic.track = n.WaitMusic
+		}
 		p.responseID = newID()
 		p.ttsID = newID()
 		p.progressTTS = p.ttsID
@@ -170,11 +173,16 @@ func (n *Native) finishDeferred(p *nativeRequest, text, speech string) error {
 func (n *Native) finishSilentAudio(p *nativeRequest) error {
 	n.mu.Lock()
 	p.audioWaiting = false
-	end := p.audio.finishSilence()
+	var end []byte
+	if len(p.audio.head) != 0 {
+		end = p.audio.finishSilence()
+	}
 	streamID := p.audioStream
 	n.mu.Unlock()
-	if err := n.down(p.ctx, websocket.MessageBinary, append(binary.BigEndian.AppendUint32(nil, streamID), end...)); err != nil {
-		return err
+	if len(end) > 0 {
+		if err := n.down(p.ctx, websocket.MessageBinary, append(binary.BigEndian.AppendUint32(nil, streamID), end...)); err != nil {
+			return err
+		}
 	}
 	m := &server.TServerMessage{Message: &server.TServerMessage_StreamControl{StreamControl: &stream.TStreamControl{MessageId: p.id, StreamId: int64(streamID), Action: &stream.TStreamControl_Close{Close: &stream.TStreamControl_TActionClose{}}}}}
 	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
@@ -185,7 +193,7 @@ func (n *Native) finishSilentAudio(p *nativeRequest) error {
 }
 
 // Called under n.mu after the first synthesized segment closes. Keep the audio
-// alive through final TTS synthesis, until its TtsSpeak starts the next segment.
+// alive through final TTS synthesis. Music stops when the first speech bytes arrive.
 func (n *Native) waitAudio(p *nativeRequest) {
 	n.wg.Go(func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
@@ -200,8 +208,12 @@ func (n *Native) waitAudio(p *nativeRequest) {
 					n.mu.Unlock()
 					return
 				}
-				b := append(binary.BigEndian.AppendUint32(nil, p.audioStream), p.audio.silence()...)
-				err := n.down(p.ctx, websocket.MessageBinary, b)
+				audio := p.waitMusic.chunk(&p.audio, time.Now())
+				var err error
+				if len(audio) > 0 {
+					b := append(binary.BigEndian.AppendUint32(nil, p.audioStream), audio...)
+					err = n.down(p.ctx, websocket.MessageBinary, b)
+				}
 				n.mu.Unlock()
 				if err != nil {
 					p.cancel()

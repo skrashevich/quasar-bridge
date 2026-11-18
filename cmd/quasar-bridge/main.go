@@ -315,6 +315,10 @@ func main() {
 	defer logs.Close()
 	proxy.Journal = logs
 	if cfg.Mode == "hybrid" {
+		waitMusic, err := cfg.LocalProgress.loadMusic(*path)
+		if err != nil {
+			slog.Warn("wait music disabled", "error", err)
+		}
 		if hc != nil && cfg.HomeWarmArea != "" {
 			warmCtx, warmCancel := context.WithCancel(context.Background())
 			defer warmCancel()
@@ -340,6 +344,7 @@ func main() {
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond
+				n.WaitMusic = waitMusic
 			}
 
 			return n
