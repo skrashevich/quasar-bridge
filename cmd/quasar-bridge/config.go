@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -19,9 +20,21 @@ import (
 )
 
 type progressConfig struct {
-	Enabled    bool `json:"enabled"`
-	AfterMS    int  `json:"after_ms"`
-	IntervalMS int  `json:"interval_ms"`
+	Enabled    bool   `json:"enabled"`
+	AfterMS    int    `json:"after_ms"`
+	IntervalMS int    `json:"interval_ms"`
+	MusicFile  string `json:"music_file,omitempty"`
+}
+
+func (p progressConfig) loadMusic(configPath string) (*bridge.WaitMusic, error) {
+	if !p.Enabled || p.MusicFile == "" {
+		return nil, nil
+	}
+	path := p.MusicFile
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(filepath.Dir(configPath), path)
+	}
+	return bridge.LoadWaitMusic(path)
 }
 
 type config struct {

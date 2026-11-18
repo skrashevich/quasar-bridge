@@ -76,6 +76,7 @@ type nativeRequest struct {
 	audioStarted                    bool
 	audioStream                     uint32
 	audioWaiting                    bool
+	waitMusic                       waitMusicPlayback
 	progressAudioDone               chan struct{}
 	soundRequest                    *sound.Request
 	soundDirective                  *soundDirective
@@ -100,6 +101,7 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+	WaitMusic        *WaitMusic
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -292,6 +294,9 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			if p != nil && (p.streaming || p.markedTTS) && !drop {
 				out, err := p.audio.feed(data[4:])
 				if err == nil && len(out) > 0 {
+					if !p.audioIsProgress {
+						p.audioWaiting = false
+					}
 					err = n.down(ctx, k, append(binary.BigEndian.AppendUint32(nil, p.audioStream), out...))
 				}
 				if err != nil {
@@ -310,7 +315,9 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 	if sc := f.Server.GetStreamControl(); sc != nil {
 		n.mu.Lock()
 		if n.blocked[uint32(sc.GetStreamId())] != nil {
-			delete(n.blocked, uint32(sc.GetStreamId()))
+			if sc.GetClose() != nil {
+				delete(n.blocked, uint32(sc.GetStreamId()))
+			}
 			n.mu.Unlock()
 			return nil
 		}
@@ -341,6 +348,9 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 						}
 					}
 					if !p.audioWaiting {
+						if !plainOpusHeader(p.audio.head) {
+							p.waitMusic.track = nil
+						}
 						p.audioWaiting = true
 						n.waitAudio(p)
 						close(p.progressAudioDone)
@@ -348,6 +358,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 					n.mu.Unlock()
 					return nil
 				}
+				p.audioWaiting = false
 				end := p.audio.finish()
 				if err := n.down(ctx, k, append(binary.BigEndian.AppendUint32(nil, p.audioStream), end...)); err != nil {
 					n.mu.Unlock()
@@ -399,8 +410,11 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		return n.down(ctx, k, data)
 	}
 	if isTTS {
+		defer n.mu.Unlock()
 		if p.canceled {
-			n.mu.Unlock()
+			if e.GetTtsSpeak() != nil {
+				n.blocked[uint32(e.GetHeader().GetStreamId())] = p
+			}
 			return nil
 		}
 		e.Header.RefMessageId = p.id
@@ -413,15 +427,15 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			if p.streaming || p.markedTTS {
 				if e.GetTtsSpeak().GetFormat() != "audio/opus" {
 					p.cancel()
-					n.mu.Unlock()
 					return errors.New("joining speech segments requires Opus")
 				}
 				p.audioIsProgress = p.ttsID == p.progressTTS
 				p.audio.next()
 				p.audio.source.discardAudio = p.audioIsProgress
 				if p.audioStarted {
-					p.audioWaiting = false
-					n.mu.Unlock()
+					if p.waitMusic.track == nil {
+						p.audioWaiting = false
+					}
 					return nil
 				}
 				p.audioStream = uint32(e.Header.GetStreamId())
@@ -429,7 +443,6 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 			}
 			slog.Info("native_tts_ready", "request", requestTag(p.id), "format", e.GetTtsSpeak().GetFormat(), "stream", e.Header.GetStreamId())
 		}
-		n.mu.Unlock()
 		out, err := f.Marshal()
 		if err != nil {
 			return err
@@ -564,7 +577,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
 				stop := func() {}
 				if decision.Route != "yandex" && n.ProgressAfter > 0 {
-					stop = n.progress(p)
+					stop = n.progress(p, decision.Route == "llm" && decision.Source != "dialogue_reset")
 				}
 				result, err = routed.ResolveDecision(p.ctx, text, decision)
 				stop()
@@ -746,8 +759,26 @@ func (n *Native) isRefusal(text string) bool {
 
 func (n *Native) discardStale(p *nativeRequest) {
 	n.mu.Lock()
+	if p.canceled {
+		n.mu.Unlock()
+		return
+	}
 	p.canceled = true
-	p.cancel()
+	streaming, started := p.streaming, p.audioStarted
 	n.mu.Unlock()
+
+	// Close the waiting player before canceling its context. A superseded turn has no reply.
+	if streaming {
+		n.discardSound(p)
+		reply.SuppressListening(p.ctx)
+		var err error
+		if started {
+			err = n.finishSilentAudio(p)
+		}
+		if err = errors.Join(err, n.deferredPart(p, "", true)); err != nil {
+			slog.Debug("native_stale_progress_close_failed", "request", requestTag(p.id), "error", err)
+		}
+	}
+	p.cancel()
 	_ = n.sendCancel(n.ctx, p.id)
 }

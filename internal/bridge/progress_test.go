@@ -186,12 +186,17 @@ func speechPacketFixture(serial uint32, packet []byte) []byte {
 	b = append(b, o.page(tags, 0, 0)...)
 	return append(b, o.page(packet, 4, 960)...)
 }
-func feedSpeech(t *testing.T, n *Native, id string, streamID uint32, omitID bool, packet ...[]byte) {
+func startSpeech(t *testing.T, n *Native, id string, streamID uint32) {
 	t.Helper()
 	speak := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: id, StreamId: new(int64(streamID))}, Event: &server.TServerMessage_TEvent_TtsSpeak{TtsSpeak: &tts.TTtsSpeak{Format: "audio/opus"}}}}}
 	if err := n.Server(t.Context(), websocket.MessageBinary, aa(speak)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func feedSpeech(t *testing.T, n *Native, id string, streamID uint32, omitID bool, packet ...[]byte) {
+	t.Helper()
+	startSpeech(t, n, id, streamID)
 	source := speechFixture(streamID)
 	if len(packet) > 0 {
 		source = nil
@@ -199,13 +204,23 @@ func feedSpeech(t *testing.T, n *Native, id string, streamID uint32, omitID bool
 			source = append(source, speechPacketFixture(streamID+uint32(i), p)...)
 		}
 	}
+	sendSpeechPackets(t, n, streamID, source)
+	if omitID {
+		id = ""
+	}
+	closeSpeech(t, n, id, streamID)
+}
+
+func sendSpeechPackets(t *testing.T, n *Native, streamID uint32, source []byte) {
+	t.Helper()
 	audio := append(binary.BigEndian.AppendUint32(nil, streamID), source...)
 	if err := n.Server(t.Context(), websocket.MessageBinary, audio); err != nil {
 		t.Fatal(err)
 	}
-	if omitID {
-		id = ""
-	}
+}
+
+func closeSpeech(t *testing.T, n *Native, id string, streamID uint32) {
+	t.Helper()
 	closeStream := &server.TServerMessage{Message: &server.TServerMessage_StreamControl{StreamControl: &stream.TStreamControl{MessageId: id, StreamId: int64(streamID), Action: &stream.TStreamControl_Close{Close: &stream.TStreamControl_TActionClose{}}}}}
 	if err := n.Server(t.Context(), websocket.MessageBinary, aa(closeStream)); err != nil {
 		t.Fatal(err)
@@ -267,6 +282,7 @@ func TestFastLocalAndYandexRequestsDoNotStartProgress(t *testing.T) {
 				return nil
 			}, r)
 			n.ProgressAfter = time.Hour
+			n.WaitMusic = &WaitMusic{packets: []waitMusicPacket{{[]byte{0xf8, 0x12, 0x34}, 960}}}
 			input := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "fast-test"}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new("вопрос")}}}}}}}
 			if err := n.Client(t.Context(), websocket.MessageBinary, aa(input)); err != nil {
 				t.Fatal(err)
@@ -297,4 +313,83 @@ func (r immediateRoute) Resolve(ctx context.Context, s string) (Resolution, erro
 }
 func (r immediateRoute) ResolveDecision(context.Context, string, RouteDecision) (Resolution, error) {
 	return Resolution{Route: r.route, Answer: "Быстрый ответ"}, nil
+}
+
+type supersededRoute struct{ delayedRoute }
+
+func (r supersededRoute) ResolveDecision(ctx context.Context, _ string, _ RouteDecision) (Resolution, error) {
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+	}
+	return Resolution{Route: "llm"}, context.Canceled
+}
+
+func TestSupersededRequestClosesDeferredPlayback(t *testing.T) {
+	for _, phase := range []string{"before setup", "during setup", "while music plays"} {
+		t.Run(phase, func(t *testing.T) { testSupersededProgress(t, phase) })
+	}
+}
+
+func testSupersededProgress(t *testing.T, phase string) {
+	t.Helper()
+	release := make(chan struct{})
+	n, up, down := soundSession(t, supersededRoute{delayedRoute{release}})
+	n.ProgressAfter = time.Millisecond
+	n.ProgressInterval = time.Hour
+	music := []byte{0xf8, 0x12, 0x34, 0x67}
+	n.WaitMusic = &WaitMusic{packets: []waitMusicPacket{{music, 960}}}
+	if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("superseded")); err != nil {
+		t.Fatal(err)
+	}
+	setup := nextSoundFrame(t, up).Client.GetEvent()
+	if setup.GetTtsGenerate() == nil {
+		t.Fatal("missing setup synthesis")
+	}
+	id := setup.GetHeader().GetMessageId()
+	if phase == "during setup" {
+		startSpeech(t, n, id, 72)
+	}
+	if phase == "while music plays" {
+		feedSpeech(t, n, id, 72, false)
+		for {
+			frame := nextSoundFrame(t, down)
+			if frame.Kind() == "opaque" && bytes.Contains(frame.Raw, music) {
+				break
+			}
+		}
+	}
+	close(release)
+	var ended, closed, finalized bool
+	for (phase == "while music plays" && !ended) || (phase != "before setup" && !closed) || !finalized {
+		f := nextSoundFrame(t, down)
+		if f.Kind() == "opaque" && len(f.Raw) > 9 && f.Raw[9]&4 != 0 {
+			if phase != "while music plays" {
+				t.Fatal("sent Ogg EOS without an Opus header")
+			}
+			ended = true
+		}
+		if sc := f.Server.GetStreamControl(); sc.GetClose() != nil {
+			if sc.GetStreamId() != 72 || sc.GetMessageId() != "superseded" {
+				t.Fatal("closed a different stream")
+			}
+			closed = true
+		}
+		if result := f.Server.GetEvent().GetDeferredAliceResponse(); result.GetIsLast() {
+			if result.GetBaseResponse().GetShouldListen() || result.GetBaseResponse().GetText() != "" {
+				t.Fatal("superseded request spoke or reopened listening")
+			}
+			finalized = true
+		}
+	}
+
+	if phase == "before setup" {
+		// UniProxy may finish synthesizing after the request was superseded.
+		feedSpeech(t, n, id, 72, false)
+		select {
+		case f := <-down:
+			t.Fatalf("late TTS escaped cancellation: %s", f.Kind())
+		default:
+		}
+	}
 }

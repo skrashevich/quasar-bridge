@@ -18,6 +18,7 @@ type oggSpeech struct {
 	head             []byte
 	source           *oggSource
 	trim             uint64
+	onPacket         func([]byte, uint64) error
 }
 type oggSource struct {
 	discardAudio   bool
@@ -108,6 +109,11 @@ func (o *oggSpeech) feed(b []byte) ([]byte, error) {
 				samples, err := opusSamples(packet)
 				if err != nil {
 					return nil, err
+				}
+				if o.onPacket != nil {
+					if err := o.onPacket(packet, samples); err != nil {
+						return nil, err
+					}
 				}
 				if !s.discardAudio {
 					s.samples += samples
