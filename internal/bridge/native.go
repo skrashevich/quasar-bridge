@@ -746,8 +746,26 @@ func (n *Native) isRefusal(text string) bool {
 
 func (n *Native) discardStale(p *nativeRequest) {
 	n.mu.Lock()
+	if p.canceled {
+		n.mu.Unlock()
+		return
+	}
 	p.canceled = true
-	p.cancel()
+	streaming, waiting := p.streaming, p.audioWaiting
 	n.mu.Unlock()
+
+	// Close the waiting player before canceling its context. A superseded turn has no reply.
+	if streaming {
+		n.discardSound(p)
+		reply.SuppressListening(p.ctx)
+		var err error
+		if waiting {
+			err = n.finishSilentAudio(p)
+		}
+		if err = errors.Join(err, n.deferredPart(p, "", true)); err != nil {
+			slog.Debug("native_stale_progress_close_failed", "request", requestTag(p.id), "error", err)
+		}
+	}
+	p.cancel()
 	_ = n.sendCancel(n.ctx, p.id)
 }

@@ -298,3 +298,48 @@ func (r immediateRoute) Resolve(ctx context.Context, s string) (Resolution, erro
 func (r immediateRoute) ResolveDecision(context.Context, string, RouteDecision) (Resolution, error) {
 	return Resolution{Route: r.route, Answer: "Быстрый ответ"}, nil
 }
+
+type supersededRoute struct{ delayedRoute }
+
+func (r supersededRoute) ResolveDecision(ctx context.Context, _ string, _ RouteDecision) (Resolution, error) {
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+	}
+	return Resolution{Route: "llm"}, context.Canceled
+}
+
+func TestSupersededRequestClosesDeferredPlayback(t *testing.T) {
+	release := make(chan struct{})
+	n, up, down := soundSession(t, supersededRoute{delayedRoute{release}})
+	n.ProgressAfter = time.Millisecond
+	n.ProgressInterval = time.Hour
+	if err := n.Client(t.Context(), websocket.MessageBinary, soundInput("superseded")); err != nil {
+		t.Fatal(err)
+	}
+	setup := nextSoundFrame(t, up).Client.GetEvent()
+	if setup.GetTtsGenerate() == nil {
+		t.Fatal("missing setup synthesis")
+	}
+	feedSpeech(t, n, setup.GetHeader().GetMessageId(), 72, false)
+	close(release)
+	var ended, closed, finalized bool
+	for !ended || !closed || !finalized {
+		f := nextSoundFrame(t, down)
+		if f.Kind() == "opaque" && len(f.Raw) > 9 && f.Raw[9]&4 != 0 {
+			ended = true
+		}
+		if sc := f.Server.GetStreamControl(); sc.GetClose() != nil {
+			if sc.GetStreamId() != 72 || sc.GetMessageId() != "superseded" {
+				t.Fatal("closed a different stream")
+			}
+			closed = true
+		}
+		if result := f.Server.GetEvent().GetDeferredAliceResponse(); result.GetIsLast() {
+			if result.GetBaseResponse().GetShouldListen() || result.GetBaseResponse().GetText() != "" {
+				t.Fatal("superseded request spoke or reopened listening")
+			}
+			finalized = true
+		}
+	}
+}
