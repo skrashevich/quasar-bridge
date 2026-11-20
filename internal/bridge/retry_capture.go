@@ -18,13 +18,24 @@ func (n *Native) captureDelivered(p *nativeRequest, text string, final, action, 
 		return
 	}
 	n.mu.Lock()
-	if p.canceled || p.ctx.Err() != nil || p.local != local {
+	if p.local != local {
 		n.mu.Unlock()
 		return
 	}
+	canceled := p.canceled || p.ctx.Err() != nil
 	question, ctx := p.text, p.ctx
 	action = action || (p.route != "" && p.route != "llm" && p.route != "yandex")
 	n.mu.Unlock()
+	if canceled {
+		// The user interrupted playback: the answer never finished, but the turn did
+		// happen. Record what was delivered as non-final, so a follow-up keeps the
+		// topic while the retry command still refuses to replay a partial answer.
+		if text == "" {
+			return
+		}
+		final = false
+		ctx = context.WithoutCancel(ctx)
+	}
 	recorder.RecordDelivered(ctx, question, text, final, action)
 }
 func cloudResponseText(r *response.TAliceResponseProto) string {
