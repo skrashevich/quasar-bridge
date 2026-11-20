@@ -52,12 +52,17 @@ func (m *MusicPlayback) Start(ctx context.Context, tracks []WebLink) error {
 	}
 	queued := mediaExtension(tracks[0].URL) == ".mp3"
 	stream := tracks[0].URL
+	isolatedQueue, isolated := ctx.Value(isolatedMusicQueueKey{}).(*MusicQueue)
 	if queued {
-		if m.queue == nil {
+		queue := m.queue
+		if isolated {
+			queue = isolatedQueue
+		}
+		if queue == nil {
 			return errors.New("music queue is unavailable")
 		}
 		var err error
-		stream, err = m.queue.Register(tracks)
+		stream, err = queue.Register(tracks)
 		if err != nil {
 			return err
 		}
@@ -72,6 +77,9 @@ func (m *MusicPlayback) Start(ctx context.Context, tracks []WebLink) error {
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if isolated {
+		return nil
 	}
 	m.pruneLocked()
 	e := m.entries[key]

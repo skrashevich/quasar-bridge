@@ -145,7 +145,7 @@ func (c *conversation) server(data []byte, delivered bool) {
 		if d.GetIsLast() {
 			name = "response"
 		}
-		c.emit(id, journal.Event{Event: name, Kind: f.Kind(), Text: d.GetBaseResponse().GetText(), Delivered: delivered})
+		c.emit(id, journal.Event{Event: name, Kind: f.Kind(), Text: d.GetBaseResponse().GetText(), Speech: deferredResponseSpeech(d.GetBaseResponse()), Delivered: delivered})
 	}
 	if r := e.GetAliceResponse(); r != nil {
 		if id == "" {

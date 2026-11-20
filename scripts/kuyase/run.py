@@ -112,7 +112,8 @@ def main():
                 "mode": "hybrid", "llm_base_url": "http://127.0.0.1:18444/v1",
                 "llm_model": "kuyase-fixture",
                 "routing": {"default_route": "yandex", "classifier": {"enabled": False}}, "assistant_tools": {"enabled": False},
-                "dialogue_context": {"enabled": True}, "conversation_log": {"enabled": False},
+                "dialogue_context": {"enabled": True},
+                "conversation_log": {"enabled": True, "path": f"{GUEST}/conversations-{arch}.jsonl"},
                 "local_progress": {"enabled": False}, "listen_after_reply": False,
                 "airplay": {"interface": "eth0", "listen_address": ":7000",
                             "data_dir": f"{GUEST}/state-{arch}", "device": "default"},
@@ -140,7 +141,7 @@ def main():
             if before["airplay"]["state"] != "stopped":
                 raise RuntimeError(f"unexpected initial AirPlay state: {before}")
             report.check(arch, "health", health)
-            for action in ("weather", "music", "timer", "llm", "text", "dialogue",
+            for action in ("weather", "music", "timer", "llm", "llm_urls", "text", "dialogue",
                            "isolation", "reset", "home", "failure", "start", "stop"):
                 def check_action():
                     output = shell(f"{GUEST}/control -action {action} -timeout 90s", timeout=100)
@@ -160,6 +161,7 @@ def main():
             if not report.check(arch, "shutdown", check_shutdown):
                 raise RuntimeError("Bridge did not shut down; cannot reuse VM")
             (out / f"{arch}-bridge.log").write_text(shell(f"cat {GUEST}/bridge.log"))
+            (out / f"{arch}-conversations.jsonl").write_text(shell(f"cat {GUEST}/conversations-{arch}.jsonl"))
             mock_log = shell(f"cat {GUEST}/mock.log")
             (out / f"{arch}-mock.log").write_text(mock_log)
             if "UNEXPECTED" in mock_log or "FAIL" in mock_log:

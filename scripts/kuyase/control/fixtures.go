@@ -24,9 +24,16 @@ type counters struct {
 }
 
 type fixture struct {
-	mu     sync.Mutex
-	counts counters
-	light  string
+	mu        sync.Mutex
+	counts    counters
+	light     string
+	synthesis []synthesis
+}
+
+type synthesis struct {
+	RequestID string `json:"request_id"`
+	SourceID  string `json:"source_id"`
+	Text      string `json:"text"`
 }
 
 func mockUpstream() http.Handler { return &fixture{light: "off"} }
@@ -48,6 +55,8 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method + " " + r.URL.Path {
 	case "GET /stats":
 		_ = json.MarshalWrite(w, f.counts)
+	case "GET /synthesis":
+		_ = json.MarshalWrite(w, f.synthesis)
 	case "POST /v1/chat/completions":
 		f.completion(w, r)
 	case "POST /mcp":
@@ -88,6 +97,12 @@ func (f *fixture) completion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		answer = "Первый ответ модели."
+	case last == "когда Бавария играет с Кёльном":
+		if len(body.Messages) != 2 {
+			f.fail(w, "unexpected history on URL question")
+			return
+		}
+		answer = llmURLsAnswer
 	case last == "а вчера?":
 		if len(body.Messages) != 4 || body.Messages[1].Content != "первый вопрос" || body.Messages[2].Role != "assistant" || body.Messages[2].Content != "Первый ответ модели." {
 			f.fail(w, "dialogue context lost or contaminated")
@@ -185,6 +200,7 @@ func (f *fixture) voice(w http.ResponseWriter, r *http.Request) {
 	defer ws.CloseNow()
 	ws.SetReadLimit(1 << 20)
 	pending := map[string]string{}
+	voiceID := ""
 	for {
 		_, data, err := ws.Read(r.Context())
 		if err != nil {
@@ -197,6 +213,7 @@ func (f *fixture) voice(w http.ResponseWriter, r *http.Request) {
 		switch frame.Kind() {
 		case "VoiceInput":
 			f.counts.Voice++
+			voiceID = id
 			name := strings.Split(id, "-")
 			var phrase string
 			if len(name) >= 3 {
@@ -238,6 +255,7 @@ func (f *fixture) voice(w http.ResponseWriter, r *http.Request) {
 				log.Print("FAIL invalid synthesis request")
 			}
 			f.counts.TTS++
+			f.synthesis = append(f.synthesis, synthesis{RequestID: id, SourceID: voiceID, Text: tts.GetText()})
 			f.mu.Unlock()
 		case "CancelRequest":
 			delete(pending, event.GetCancelRequest().GetRequestMessageId())

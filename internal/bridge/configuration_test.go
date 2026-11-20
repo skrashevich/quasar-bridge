@@ -8,7 +8,7 @@ import (
 )
 
 func TestConfigurationRequestsReachAssistant(t *testing.T) {
-	for _, text := range []string{"измени настройки квазар бридж", "какая модель в quasar bridge", "перезапусти квазар бридж", "включи журнал диалогов quasar-bridge", "Расскажи о конфигурации qwazar bridge", "Какие у тебя есть утилиты для управления qwazar bridge", "настройки квазар блич"} {
+	for _, text := range []string{"измени настройки квазар бридж", "какая модель в quasar bridge", "перезапусти квазар бридж", "включи журнал диалогов quasar-bridge", "Расскажи о конфигурации qwazar bridge", "Какие у тебя есть утилиты для управления qwazar bridge", "настройки квазар блич", "Включи сетевой доступ к веб-панели quasar bridge", "Отключи сетевой доступ к диагностике квазар бридж"} {
 		e := &Engine{Configuration: true}
 		if got := e.Decide(t.Context(), text); got.Route != "llm" {
 			t.Errorf("%q: got %+v", text, got)

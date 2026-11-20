@@ -22,6 +22,7 @@ func applyReload(next, initial config, engine *bridge.Engine, logs ...*journal.W
 	a, b := initial, next
 	a.Routing = bridge.RoutingConfig{}
 	b.Routing = bridge.RoutingConfig{}
+	a.Diagnostics.NetworkAccess, b.Diagnostics.NetworkAccess = false, false
 	if len(logs) > 0 {
 		a.ConversationLog = journal.Config{}
 		b.ConversationLog = journal.Config{}

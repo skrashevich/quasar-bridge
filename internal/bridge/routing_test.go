@@ -65,6 +65,7 @@ func TestRoutingValidationAndCallerMutation(t *testing.T) {
 		func(c *RoutingConfig) { c.Rules[0].Route = "bad" },
 		func(c *RoutingConfig) { c.Rules[0].Match = RoutingMatch{Regex: "["} },
 		func(c *RoutingConfig) { c.Rules[0].Match = RoutingMatch{} },
+		func(c *RoutingConfig) { c.Rules[0].Match = RoutingMatch{WakeWords: []string{" "}} },
 		func(c *RoutingConfig) { c.Rules[0].Match = RoutingMatch{ContainsAllGroups: [][]string{{}}} },
 		func(c *RoutingConfig) { c.Rules[1].Name = c.Rules[0].Name },
 		func(c *RoutingConfig) { c.DefaultRoute = "bad" },
@@ -285,7 +286,7 @@ func TestDefaultTTSRuleLeavesOtherRequestsToExistingRoutes(t *testing.T) {
 		{"Включи музыку", "yandex"},
 		{"Включи свет", "home"},
 	} {
-		d := builtInRouting.Preview(tc.text)
+		d := builtInRouting.Preview(tc.text, "")
 		if d.Route != tc.route || d.Rule == "tts_markup" {
 			t.Errorf("%q: %+v, want route %s", tc.text, d, tc.route)
 		}
@@ -308,7 +309,7 @@ func TestSpeakerPlaybackControlSkipsClassifier(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, text := range []string{"Объясни слово хватит", "Не останавливай музыку", "Хватит ли памяти для модели", "Поставь таймер на паузу", "Включи свет", "Поставь музыку с сайта audio.example/music"} {
-		if d, ok := p.match(text); ok && d.Rule == "speaker_playback" {
+		if d, ok := p.match(text, ""); ok && d.Rule == "speaker_playback" {
 			t.Errorf("false speaker control: %q", text)
 		}
 	}

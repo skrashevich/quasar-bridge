@@ -7,8 +7,13 @@ import (
 	"fmt"
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/update"
+	"quasarbridge/internal/webaddress"
+	"reflect"
 	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 type RoutingConfig struct {
@@ -24,6 +29,7 @@ type RoutingRule struct {
 	Match    RoutingMatch `json:"match"`
 }
 type RoutingMatch struct {
+	WakeWords         []string   `json:"wake_words,omitempty"`
 	ContainsAny       []string   `json:"contains_any,omitempty"`
 	ContainsAllGroups [][]string `json:"contains_all_groups,omitempty"`
 	ContainsNone      []string   `json:"contains_none,omitempty"`
@@ -50,10 +56,21 @@ type RouteDecision struct {
 	Source   string `json:"source"`
 }
 type compiledRule struct {
+	musicFromSite     bool // Only the unchanged shipped rule uses semantic music negation.
 	name, route       string
+	wakewordTags      []string
 	any, none, prefix []string
 	groups            [][]string
 	regex             *regexp.Regexp
+}
+
+type wakewordTagKey struct{}
+
+// station-wakeword derives EventSource.Id from this namespace and the exact word ID.
+var stationWakewordNamespace = uuid.MustParse("95fb5d06-1707-4f93-a956-0c306fe57e1b")
+
+func stationWakewordTag(word string) string {
+	return uuid.NewSHA1(stationWakewordNamespace, []byte(word)).String()
 }
 
 // RoutingPolicy owns normalized copies. Once compiled it is immutable and safe
@@ -97,6 +114,17 @@ const ttsNativeWhisperPattern = `^[\s\p{Z}]*(?:алиса[\s\p{Z},:]+)?(?:пож
 	`(?:скажи[\s\p{Z}]+(?:ш[её]потом(?:[\s\p{Z}]+привет)?|что[-\s\p{Z}]+нибудь[\s\p{Z}]+ш[её]потом)|говори[\s\p{Z}]+ш[её]потом)` +
 	`(?:[\s\p{Z},]+пожалуйста)?[\s\p{Z},.!?]*$`
 
+func defaultMusicFromSiteRule() RoutingRule {
+	return RoutingRule{Name: "music_from_site", Route: "llm", Match: RoutingMatch{
+		ContainsAllGroups: [][]string{
+			{"включи", "проиграй", "воспроизведи", "поставь", "запусти", "сыграй"},
+			{"музык", "аудио", "песн", "трек", "радио", "звук"},
+		},
+		ContainsNone: []string{"не включ", "не проигр", "не воспроиз", "не став", "не постав", "не запус", "не сыгр", "не надо", "не нужно", "не хочу", "как включить", "как проиграть", "как воспроизвести"},
+		Regex:        `https?://|сайт|страниц|[\p{L}\p{N}-]+\.[\p{L}]{2,}|\s(?:точка|dot)\s`,
+	}}
+}
+
 func DefaultRoutingConfig() RoutingConfig {
 	ttsHowTo := []string{
 		"скажи как ", "скажи, как ", "скажите как ", "скажите, как ",
@@ -107,14 +135,7 @@ func DefaultRoutingConfig() RoutingConfig {
 		Rules: []RoutingRule{
 			{Name: "bridge_updates", Route: "llm", Match: RoutingMatch{Regex: update.RequestPattern}},
 			{Name: "speaker_playback", Route: "yandex", Match: RoutingMatch{Regex: `^\s*(?:алиса[,\s]+)?(?:пожалуйста[,\s]+)?(?:хватит|стоп|пауза|останови(?:те)?|(?:останови(?:те)?|выключи(?:те)?|прекрати(?:те)?) (?:музыку|воспроизведение|песню|песни|трек|радио)|поставь(?:те)? на паузу|(?:продолжи(?:те)?|возобнови(?:те)?) (?:музыку|воспроизведение|песню|трек))[,\s]*(?:пожалуйста)?[.!?]*\s*$`}},
-			{Name: "music_from_site", Route: "llm", Match: RoutingMatch{
-				ContainsAllGroups: [][]string{
-					{"включи", "проиграй", "воспроизведи", "поставь", "запусти", "сыграй"},
-					{"музык", "аудио", "песн", "трек", "радио", "звук"},
-				},
-				ContainsNone: []string{"не включ", "не проигр", "не воспроиз", "не став", "не постав", "не запус", "не сыгр", "не надо", "не нужно", "не хочу", "как включить", "как проиграть", "как воспроизвести"},
-				Regex:        `https?://|сайт|страниц|[\p{L}\p{N}-]+\.[\p{L}]{2,}|\s(?:точка|dot)\s`,
-			}},
+			defaultMusicFromSiteRule(),
 			{Name: "assistant_readonly", Route: "llm", Match: RoutingMatch{ContainsAny: []string{"о чем мы", "о чём мы", "что мы обсуждали", "в истории", "истории сообщени", "истории диалога", "найди в истории", "что я спрашивал", "когда я спрашивал", "что я просил", "когда я просил", "что ты отвечал", "что ты ответил", "истории запросов", "историю запросов", "прочитай страницу", "открой страницу", "прочитай веб-страницу", "открой веб-страницу", "посмотри сайт", "открой сайт", "http://", "https://"}}},
 			{Name: "tts_whisper", Route: "yandex", Match: RoutingMatch{Regex: ttsNativeWhisperPattern}},
 			{Name: "tts_markup", Route: "llm", Match: RoutingMatch{
@@ -177,6 +198,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	}
 	p := &RoutingPolicy{defaultRoute: cfg.DefaultDestination(), classifier: cfg.Classifier, classifierEnabled: cfg.ClassifierEnabled(), refusalEnabled: cfg.Refusal.Enabled}
 	names := map[string]bool{}
+	defaultMusic := defaultMusicFromSiteRule()
 	for i, rule := range cfg.Rules {
 		fail := func(reason string) (*RoutingPolicy, error) { return nil, fmt.Errorf("routing rule %d: %s", i, reason) }
 		if strings.TrimSpace(rule.Name) == "" || names[rule.Name] {
@@ -187,10 +209,16 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 			return fail("invalid route")
 		}
 		m := rule.Match
-		if len(m.ContainsAny) == 0 && len(m.ContainsAllGroups) == 0 && len(m.StartsWithAny) == 0 && m.Regex == "" {
+		if len(m.WakeWords) == 0 && len(m.ContainsAny) == 0 && len(m.ContainsAllGroups) == 0 && len(m.StartsWithAny) == 0 && m.Regex == "" {
 			return fail("at least one positive condition is required")
 		}
 		r := compiledRule{name: rule.Name, route: rule.Route}
+		for _, word := range m.WakeWords {
+			if strings.TrimSpace(word) == "" {
+				return fail("wake_words has an empty ID")
+			}
+			r.wakewordTags = append(r.wakewordTags, stationWakewordTag(word))
+		}
 		var err error
 		if r.any, err = foldTerms(m.ContainsAny, false); err != nil {
 			return fail("contains_any has an empty term")
@@ -217,6 +245,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 				return fail("invalid regex")
 			}
 		}
+		r.musicFromSite = reflect.DeepEqual(rule, defaultMusic)
 		if !rule.Disabled {
 			p.rules = append(p.rules, r)
 		}
@@ -239,13 +268,20 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	p.revision = fmt.Sprintf("%x", hash[:8])
 	return p, nil
 }
-func (p *RoutingPolicy) match(text string) (RouteDecision, bool) {
+func (p *RoutingPolicy) match(text, wakewordTag string) (RouteDecision, bool) {
 	lower := strings.ToLower(text)
 	for _, r := range p.rules {
+		if len(r.wakewordTags) > 0 && !slices.Contains(r.wakewordTags, wakewordTag) {
+			continue
+		}
 		if len(r.any) > 0 && !containsOne(lower, r.any) {
 			continue
 		}
-		if containsOne(lower, r.none) {
+		if r.musicFromSite {
+			if !webaddress.MusicRequest(text) {
+				continue
+			}
+		} else if containsOne(lower, r.none) {
 			continue
 		}
 		matched := true
@@ -283,8 +319,12 @@ func (p *RoutingPolicy) Revision() string { return p.revision }
 // Preview evaluates only static rules and the configured default. It never
 // calls a classifier, touches dialogue state or executes the selected handler.
 // Route=classify means that a real request would still need classification.
-func (p *RoutingPolicy) Preview(text string) RouteDecision {
-	if decision, ok := p.match(text); ok {
+func (p *RoutingPolicy) Preview(text, wakeWord string) RouteDecision {
+	var tag string
+	if wakeWord != "" {
+		tag = stationWakewordTag(wakeWord)
+	}
+	if decision, ok := p.match(text, tag); ok {
 		return decision
 	}
 	if p.classifierEnabled {

@@ -72,6 +72,20 @@ func TestPlayMusicRequiresSpeakerBeforeFetching(t *testing.T) {
 	}
 }
 
+func TestPlayMusicRPFMAnchorHandsHLSToCurrentSpeaker(t *testing.T) {
+	tools := musicTools(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "https://rpfm.ru" {
+			t.Fatalf("fetch=%s", r.URL)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader(`<a href="https://hls.rpfm.ru/rpfm/aac_hifi.m3u8">...</a>`)), Request: r}, nil
+	})
+	var played sound.Request
+	ctx := sound.WithPlayer(dialogue.WithSpeaker(t.Context(), "test-speaker"), func(_ context.Context, req sound.Request) error { played = req; return nil })
+	if _, err := tools.Call(ctx, "play_music", `{"source":"rpfm точка ru"}`); err != nil || played.URL != "https://hls.rpfm.ru/rpfm/aac_hifi.m3u8" {
+		t.Fatalf("played=%+v err=%v", played, err)
+	}
+}
+
 func TestPlayMusicDirectAndInvalidSources(t *testing.T) {
 	tools := musicTools(t, func(*http.Request) (*http.Response, error) { t.Fatal("unexpected fetch"); return nil, nil })
 	var played sound.Request

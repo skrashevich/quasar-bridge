@@ -2,11 +2,63 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/llm"
 )
+
+func TestExplicitRouteOverridesHomeFollowup(t *testing.T) {
+	for _, text := range []string{"Какая погода сегодня", "спроси нейросеть: новый вопрос", "начни новый разговор"} {
+		t.Run(text, func(t *testing.T) {
+			e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) {
+				return "Включить только доступные?", nil
+			}), LLM: completionFunc(func(_ context.Context, messages []llm.Message, structured bool) (string, error) {
+				if structured {
+					return `{"route":"yandex"}`, nil
+				}
+				if len(messages) != 2 {
+					t.Errorf("new LLM topic inherited home conversation: %+v", messages)
+				}
+				return "Новый ответ", nil
+			})}
+			if _, err := e.Resolve(t.Context(), "Включи свет в кабинете"); err != nil {
+				t.Fatal(err)
+			}
+			if result, err := e.Resolve(t.Context(), text); err != nil || result.Route == "home" {
+				t.Fatalf("explicit route retained home: %+v %v", result, err)
+			}
+			if got := e.Decide(t.Context(), "да"); got.Route == "home" {
+				t.Fatal("obsolete home confirmation remained active", got)
+			}
+		})
+	}
+}
+
+func TestSupersededHomeAnswerDoesNotReplaceNewTopic(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) {
+		close(entered)
+		<-release
+		return "Включить только доступные?", nil
+	}), LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) { return "Новый ответ", nil })}
+	ctx := dialogue.WithSpeaker(t.Context(), "same-speaker")
+	done := make(chan error, 1)
+	go func() { _, err := e.Resolve(ctx, "Включи свет в кабинете"); done <- err }()
+	<-entered
+	if _, err := e.Resolve(ctx, "спроси нейросеть: новый вопрос"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("superseded home reply was accepted: %v", err)
+	}
+	if snapshot := e.dialogue().View(ctx); snapshot.Route != "llm" || len(snapshot.Messages) != 2 || snapshot.Messages[1].Content != "Новый ответ" {
+		t.Fatalf("old home reply replaced newer context: %+v", snapshot)
+	}
+}
 
 func TestFollowupKeepsPreviousQuestionAndAnswer(t *testing.T) {
 	calls := 0
