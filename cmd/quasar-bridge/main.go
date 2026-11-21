@@ -197,6 +197,10 @@ func main() {
 					attrs = append(attrs, "json_keys", keys)
 				}
 			}
+			if name != "opaque" {
+				// Zero denotes a frame larger than the entire detail buffer.
+				attrs = append(attrs, "packet_id", diagnosticLogs.packets.add(data, d))
+			}
 			slog.Info("frame", attrs...)
 		}
 	}}

@@ -13,7 +13,7 @@ function saveQueryDialog(id) {
     else sessionStorage.removeItem("quasarBridge.queryDialog");
   } catch (_) { /* The current tab still keeps its in-memory context. */ }
 }
-const logState = { cursor: 0, run: "", text: "", paused: false, busy: false };
+const logState = { cursor: 0, run: "", rows: [], paused: false, busy: false };
 const settingLabels = {
   mode: "Режим Bridge", listen: "Адрес HTTP-сервера", upstream: "Сервер Алисы", allowed_ips: "Разрешённые адреса",
   llm_base_url: "Адрес сервера модели", llm_model: "Модель", llm_api: "Формат API", llm_reasoning_effort: "Усилие рассуждения", llm_max_output_tokens: "Максимум токенов ответа", llm_hosted_tools: "Серверные инструменты", llm_chat_parameters: "Параметры генерации", llm_strip_prefixes: "Обращения к модели", llm_tts_markup: "Голоса и звуковые эффекты", home_warm_area: "Область Home Assistant", listen_after_reply: "Слушать после ответа",
@@ -590,34 +590,109 @@ async function loadHistory(event) {
   } catch (error) { message("history-message", error.message, true); if (!byId("history-items").querySelector("article")) byId("history-items").replaceChildren(element("p", "empty-state", "История недоступна. Повторите поиск после восстановления связи.")); }
   finally { state.historyBusy = false; byId("search-history").disabled = false; }
 }
-function readableLogs(raw) {
-  const query = byId("log-search").value.trim().toLocaleLowerCase("ru-RU");
-  const levelFilter = byId("log-level").value;
-  return raw.split("\n").filter(Boolean).map(line => {
+function packetRow(text, id, run) {
+  const row = element("details", "log-packet");
+  const body = element("pre", "packet-body");
+  row.append(element("summary", "", text), body);
+  if (id === 0) {
+    body.textContent = "Пакет больше 1 МиБ. Доступна только краткая запись.";
+    return row;
+  }
+  let loading = false;
+  row.addEventListener("toggle", async () => {
+    if (!row.open) { body.textContent = ""; return; }
+    if (loading) return;
+    loading = true;
+    body.textContent = "Загружаем пакет…";
     try {
-      const { time, level, msg, ...fields } = JSON.parse(line);
-      const details = Object.entries(fields).map(([key, value]) => key + "=" + JSON.stringify(value));
-      return { level: String(level || "").toUpperCase(), text: [time ? new Date(time).toLocaleTimeString("ru-RU") : "", level, msg, ...details].filter(value => value !== undefined).join(" ") };
-    } catch (_) { return { level: "", text: line }; }
-  }).filter(line => (!levelFilter || line.level === levelFilter) && (!query || line.text.toLocaleLowerCase("ru-RU").includes(query))).map(line => line.text).join("\n");
+      const packet = await request("logs/" + id + "?" + new URLSearchParams({ run }), {}, 5000);
+      if (row.open) body.textContent = JSON.stringify(packet, null, 2);
+    } catch (error) {
+      if (row.open) body.textContent = error.message;
+    } finally { loading = false; }
+  });
+  return row;
 }
-function renderLogs() {
+
+const frameDirections = new Map([["client", "↑ От колонки"], ["server", "↓ От Яндекса"]]);
+
+function logRow(line, run) {
+  let text = line, level = "", direction, id;
+  try {
+    const { time, level: severity, msg, packet_id, ...fields } = JSON.parse(line);
+    if (msg === "frame" && frameDirections.has(fields.direction)) {
+      direction = fields.direction;
+      delete fields.direction;
+    }
+    const values = Object.entries(fields).map(([key, value]) => key + "=" + JSON.stringify(value));
+    text = [time ? new Date(time).toLocaleTimeString("ru-RU") : "", severity, msg, ...values].filter(v => v !== undefined).join(" ");
+    level = String(severity || "").toUpperCase();
+    if (msg === "frame" && Number.isSafeInteger(packet_id) && packet_id >= 0) id = packet_id;
+  } catch (_) { /* Plain text log records are still searchable. */ }
+  const node = id === undefined ? element("div", "log-line", text) : packetRow(text, id, run);
+  if (direction) {
+    const label = frameDirections.get(direction);
+    node.dataset.direction = direction;
+    const heading = id === undefined ? node : node.querySelector("summary");
+    heading.prepend(element("span", "log-direction", label), " ");
+    text += ` ${label} direction="${direction}"`;
+  }
+  return { node, level, search: text.toLocaleLowerCase("ru-RU") };
+}
+
+function filterLogs() {
+  const query = byId("log-search").value.trim().toLocaleLowerCase("ru-RU");
+  const level = byId("log-level").value;
+  let visible = false;
+  for (const row of logState.rows) {
+    row.node.hidden = Boolean((level && row.level !== level) || (query && !row.search.includes(query)));
+    if (!row.node.hidden) visible = true;
+  }
+  const empty = byId("log-empty");
+  empty.hidden = visible;
+  empty.textContent = logState.rows.length ? "По выбранным фильтрам событий нет." : "Событий пока нет. Повторите действие на колонке.";
+}
+
+const logEncoder = new TextEncoder();
+function appendLogs(data) {
   const log = byId("log");
-  const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
-  const readable = readableLogs(logState.text);
-  log.textContent = readable || (logState.text ? "По выбранным фильтрам событий нет." : "Событий пока нет. Повторите действие на колонке.");
+  const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 48 && !log.querySelector("details[open]:not([hidden])");
+  const reset = data.reset || logState.run !== data.run;
+  if (reset) {
+    log.replaceChildren(byId("log-empty"));
+    logState.rows = [];
+  }
+  logState.run = data.run;
+  logState.cursor = data.cursor;
+  if (!reset && !data.text) return;
+  const fragment = document.createDocumentFragment();
+  const raw = data.text || "";
+  let start = data.cursor - logEncoder.encode(raw).length;
+  for (const line of raw.split("\n")) {
+    if (!line) { start++; continue; }
+    const row = logRow(line, data.run);
+    row.start = start;
+    start += logEncoder.encode(line).length + 1;
+    logState.rows.push(row);
+    fragment.append(row.node);
+  }
+  let expired = 0;
+  while (expired < logState.rows.length && logState.rows[expired].start < data.cursor - 1048576) {
+    logState.rows[expired++].node.remove();
+  }
+  if (expired) logState.rows.splice(0, expired);
+  log.append(fragment);
+  filterLogs();
   if (atEnd) log.scrollTop = log.scrollHeight;
 }
+
 async function loadLogs() {
   if (logState.paused || logState.busy || document.hidden || state.page !== "logs") return;
   logState.busy = true;
   try {
     const data = await request("logs?" + new URLSearchParams({ after: String(logState.cursor), run: logState.run }), {}, 5000);
     if (logState.paused) return;
-    if (data.reset || logState.run !== data.run) logState.text = "";
-    logState.run = data.run; logState.cursor = data.cursor; logState.text += data.text || "";
-    if (logState.text.length > 1048576) { logState.text = logState.text.slice(-1048576); logState.text = logState.text.slice(logState.text.indexOf("\n") + 1); }
-    renderLogs();
+    appendLogs(data);
     if (data.version) byId("version").textContent = "Версия " + data.version;
     byId("limit").textContent = data.truncated ? "Начало журнала уже вышло за лимит 1 МиБ. Скачайте файл сейчас; полный сервисный журнал остаётся на колонке." : "Доступны события с запуска Bridge, до 1 МиБ. Файл содержит журнал, версию и текущее состояние AirPlay.";
     byId("connection").classList.remove("error");
@@ -674,8 +749,8 @@ byId("volume-level").addEventListener("input", () => { byId("volume-value").valu
 byId("set-volume").addEventListener("click", () => airPlayAction("volume:" + byId("volume-level").value));
 byId("history-form").addEventListener("submit", loadHistory);
 byId("pause").addEventListener("click", () => { logState.paused = !logState.paused; byId("pause").textContent = logState.paused ? "Продолжить обновление" : "Приостановить обновление"; byId("pause").setAttribute("aria-pressed", String(logState.paused)); if (logState.paused) byId("connection").textContent = "Обновление страницы приостановлено. Bridge продолжает записывать события."; else loadLogs(); });
-byId("log-search").addEventListener("input", renderLogs);
-byId("log-level").addEventListener("change", renderLogs);
+byId("log-search").addEventListener("input", filterLogs);
+byId("log-level").addEventListener("change", filterLogs);
 document.querySelectorAll("[data-settings-filter]").forEach(link => link.addEventListener("click", () => { byId("settings-search").value = link.dataset.settingsFilter; filterSettings(); }));
 window.addEventListener("hashchange", navigate);
 window.addEventListener("beforeunload", event => { if (dirtySettings().length) { event.preventDefault(); event.returnValue = ""; } });
