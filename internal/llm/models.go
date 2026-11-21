@@ -83,7 +83,7 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 			}
 			return nil, err
 		}
-		return nil, fmt.Errorf("LLM model catalog returned HTTP %d", resp.StatusCode)
+		return nil, llmHTTPError(resp)
 	}
 	const maxCatalogBytes = 2 << 20
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCatalogBytes+1))

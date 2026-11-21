@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// Provider state is opaque and belongs only to this request's tool loop.
+	ExtraContent jsontext.Value `json:"extra_content,omitempty"`
 	// Preserve reasoning and other Responses items only for this tool loop.
 	// They are deliberately absent from the Chat Completions wire format.
 	responseOutput []jsontext.Value
@@ -27,6 +30,9 @@ type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
+	// In particular, Gemini requires extra_content.google.thought_signature
+	// on the same call where it was received, without interpreting its value.
+	ExtraContent jsontext.Value `json:"extra_content,omitempty"`
 }
 type FunctionCall struct {
 	Name      string `json:"name"`
@@ -93,6 +99,25 @@ func (c *Client) Complete(ctx context.Context, messages []Message, structured bo
 func (c *Client) Chat(ctx context.Context, messages []Message, tools []Tool) (Message, error) {
 	return c.chat(ctx, messages, false, tools)
 }
+
+// AllowsToolPrefetch disables unsigned, client-invented function calls for
+// Gemini. Let the model request tools and return its own signed calls instead.
+// Ordinary Chat Completions and Responses clients keep their existing prefetch.
+func (c *Client) AllowsToolPrefetch() bool {
+	if c.API != "" && c.API != "chat_completions" {
+		return true
+	}
+	model := strings.ToLower(strings.TrimSpace(c.Model))
+	if _, last, ok := strings.CutLast(model, "/"); ok {
+		model = last
+	}
+	if strings.HasPrefix(model, "gemini-") {
+		return false
+	}
+	endpoint, err := url.Parse(c.BaseURL)
+	return err != nil || !strings.EqualFold(endpoint.Hostname(), "generativelanguage.googleapis.com")
+}
+
 func (c *Client) chat(ctx context.Context, messages []Message, structured bool, tools []Tool) (Message, error) {
 	if err := ValidateChatParameters(c.ChatParameters); err != nil {
 		return Message{}, err
@@ -229,7 +254,7 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 		if c.API == "chatgpt" {
 			return nil, chatGPTHTTPError(resp)
 		}
-		return nil, fmt.Errorf("LLM returned HTTP %d", resp.StatusCode)
+		return nil, llmHTTPError(resp)
 	}
 	if c.API == "chatgpt" {
 		data, err := readResponseStream(resp.Body)

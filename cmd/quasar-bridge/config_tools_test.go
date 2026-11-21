@@ -277,3 +277,42 @@ func TestConfigurationRestartSuppressesListeningOnlyWhenScheduled(t *testing.T) 
 	}
 	close(done)
 }
+
+func TestConfigurationModeChangeRequiresRestart(t *testing.T) {
+	c := configurationFixture(t, `{"llm_base_url":"https://llm.example.invalid/v1","llm_model":"test-model"}`)
+	tools := &assistant.Tools{Config: assistant.DefaultConfig(), Configuration: c}
+	if _, err := tools.Call(t.Context(), "set_quasar_bridge_config", `{"changes":{"mode":"invalid"}}`); err == nil {
+		t.Fatal("invalid mode accepted")
+	}
+	value, err := tools.Call(t.Context(), "set_quasar_bridge_config", `{"changes":{"mode":"hybrid"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := value.(configurationResult)
+	if !result.RestartRequired || len(result.Pending) != 1 || result.Pending[0] != "mode" {
+		t.Fatalf("mode change should require restart: %+v", result)
+	}
+	if _, err := tools.Call(t.Context(), "apply_quasar_bridge_config", `{"action":"reload"}`); err == nil {
+		t.Fatal("mode change was falsely reported as live")
+	}
+	if c.active.Mode != "observe" {
+		t.Fatal("mode changed before restart")
+	}
+	value, err = tools.Call(t.Context(), "get_quasar_bridge_config", `{"section":"mode"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(value)
+	if !bytes.Contains(raw, []byte(`"active":"observe"`)) || !bytes.Contains(raw, []byte(`"saved":"hybrid"`)) {
+		t.Fatalf("saved mode presented as active: %s", raw)
+	}
+}
+
+func TestConfigurationModeEnvironmentOverrideIsReadOnly(t *testing.T) {
+	t.Setenv("QUASAR_MODE", "observe")
+	c := configurationFixture(t, `{"llm_base_url":"https://llm.example.invalid/v1","llm_model":"test-model"}`)
+	tools := &assistant.Tools{Config: assistant.DefaultConfig(), Configuration: c}
+	if _, err := tools.Call(t.Context(), "set_quasar_bridge_config", `{"changes":{"mode":"hybrid"}}`); err == nil || !strings.Contains(err.Error(), "QUASAR_MODE") {
+		t.Fatalf("mode environment override bypassed: %v", err)
+	}
+}

@@ -194,7 +194,10 @@ func feedSpeech(t *testing.T, n *Native, id string, streamID uint32, omitID bool
 	}
 	source := speechFixture(streamID)
 	if len(packet) > 0 {
-		source = speechPacketFixture(streamID, packet[0])
+		source = nil
+		for i, p := range packet {
+			source = append(source, speechPacketFixture(streamID+uint32(i), p)...)
+		}
 	}
 	audio := append(binary.BigEndian.AppendUint32(nil, streamID), source...)
 	if err := n.Server(t.Context(), websocket.MessageBinary, audio); err != nil {

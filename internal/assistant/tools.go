@@ -29,6 +29,7 @@ type Tools struct {
 	Playback      *MusicPlayback
 	AirPlay       AirPlayController
 	Configuration BridgeConfiguration
+	TTSMarkup     bool
 	Now           func() time.Time
 }
 
@@ -37,6 +38,14 @@ func definition(name, description string, properties map[string]any, required []
 }
 func (t *Tools) Definitions() []llm.Tool {
 	var tools []llm.Tool
+	if t.TTSMarkup {
+		tools = append(tools, definition("search_tts_catalog",
+			"Найти точный ID голоса или звука для TTS-разметки. kind — voice для <speaker voice> или audio для <speaker audio>. query — короткое название или ID, например «Захар» или «мяуканье». Возвращает до 8 совпадений из встроенного каталога.",
+			map[string]any{
+				"kind":  map[string]any{"type": "string", "enum": []string{"voice", "audio"}},
+				"query": map[string]string{"type": "string"},
+			}, []string{"kind", "query"}))
+	}
 	if t.Config.Configuration && t.Configuration != nil {
 		tools = append(tools, configurationDefinitions()...)
 		if _, ok := t.Configuration.(BridgeRouting); ok {
@@ -76,6 +85,8 @@ func (t *Tools) Call(ctx context.Context, name, args string) (any, error) {
 		return nil, errors.New("tool arguments exceed limit")
 	}
 	switch {
+	case name == "search_tts_catalog" && t.TTSMarkup:
+		return searchTTSCatalog(args)
 	case (name == "get_quasar_bridge_routing" || name == "set_quasar_bridge_routing_rule" || name == "control_quasar_bridge_routing_rule" || name == "test_quasar_bridge_routing" || name == "configure_quasar_bridge_routing") && t.Config.Configuration && t.Configuration != nil:
 		return t.callRouting(ctx, name, args)
 	case (name == "get_quasar_bridge_config" || name == "set_quasar_bridge_config" || name == "apply_quasar_bridge_config") && t.Config.Configuration && t.Configuration != nil:

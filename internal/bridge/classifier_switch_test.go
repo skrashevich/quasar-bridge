@@ -49,7 +49,7 @@ func TestClassifierSwitchAndIndependentDefault(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			preview := policy.Preview("совершенно новый вопрос")
+			preview := policy.Preview("совершенно новый вопрос", "")
 			wantPreview := tc.route
 			if tc.calls > 0 {
 				wantPreview = "classify"

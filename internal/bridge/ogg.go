@@ -21,6 +21,7 @@ type oggSpeech struct {
 }
 type oggSource struct {
 	discardAudio   bool
+	ended          bool
 	buffer, packet []byte
 	headers        int
 	samples        uint64
@@ -56,6 +57,16 @@ func (o *oggSpeech) feed(b []byte) ([]byte, error) {
 		page := p[:size]
 		if oggChecksum(page) != binary.LittleEndian.Uint32(page[22:26]) {
 			return nil, errors.New("invalid Ogg checksum")
+		}
+		// UniProxy can return a chain of logical Opus streams for one
+		// TtsGenerate, for example a sound followed by spoken text.
+		if page[5]&2 != 0 && s.headers > 0 {
+			if !s.ended || len(s.packet) != 0 {
+				return nil, errors.New("new Opus segment before previous EOS")
+			}
+			s.headers = 0
+			s.samples = 0
+			o.trim = 0
 		}
 		if len(o.head) == 0 {
 			o.serial = binary.LittleEndian.Uint32(page[14:18])
@@ -107,7 +118,8 @@ func (o *oggSpeech) feed(b []byte) ([]byte, error) {
 			}
 			s.headers++
 		}
-		if page[5]&4 != 0 && !s.discardAudio {
+		s.ended = page[5]&4 != 0
+		if s.ended && !s.discardAudio {
 			end := binary.LittleEndian.Uint64(page[6:14])
 			if end <= s.samples {
 				o.trim = s.samples - end

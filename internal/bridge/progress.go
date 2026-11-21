@@ -75,7 +75,7 @@ func (n *Native) progress(p *nativeRequest) func() {
 			case <-p.ctx.Done():
 				return
 			case <-ticker.C:
-				if err := n.deferredPart(p, "", false); err != nil {
+				if err := n.deferredPart(p, "", "", false); err != nil {
 					p.cancel()
 					return
 				}
@@ -103,19 +103,18 @@ func (n *Native) beginDeferred(p *nativeRequest) error {
 	if err := n.down(p.ctx, websocket.MessageBinary, b); err != nil {
 		return err
 	}
-	if err := n.deferredPart(p, "", false); err != nil {
+	if err := n.deferredPart(p, "", "", false); err != nil {
 		return err
 	}
 	// Obtain the provider's actual Opus headers; its speech payload is discarded.
 	return n.synthesize(p, "а")
 }
-func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
+func (n *Native) deferredPart(p *nativeRequest, text, voice string, last bool) error {
 	if err := p.ctx.Err(); err != nil {
 		return err
 	}
 	p.partial++
 	base := &deferred.TDeferedAliceResponseProto_TBaseResponse{}
-	voice := text
 	if last {
 		silentPlayback := n.hasSilentPlayback(p)
 		base.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
@@ -144,7 +143,7 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	n.captureDelivered(p, text, last, len(base.Directives) > 0, true)
 	return nil
 }
-func (n *Native) finishDeferred(p *nativeRequest, text string) error {
+func (n *Native) finishDeferred(p *nativeRequest, text, voice, speech string) error {
 	select {
 	case <-p.ctx.Done():
 		return p.ctx.Err()
@@ -154,16 +153,16 @@ func (n *Native) finishDeferred(p *nativeRequest, text string) error {
 		if err := n.finishSilentAudio(p); err != nil {
 			return err
 		}
-		return n.deferredPart(p, text, true)
+		return n.deferredPart(p, text, voice, true)
 	}
 	n.mu.Lock()
 	p.ttsID = newID()
 	n.tts[p.ttsID] = p
 	n.mu.Unlock()
-	if err := n.deferredPart(p, text, true); err != nil {
+	if err := n.deferredPart(p, text, voice, true); err != nil {
 		return err
 	}
-	return n.synthesize(p, text)
+	return n.synthesize(p, speech)
 }
 
 // Content audio must start after the silent Dialog player releases its focus.
