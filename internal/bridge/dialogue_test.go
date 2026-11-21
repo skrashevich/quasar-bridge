@@ -10,6 +10,44 @@ import (
 	"quasarbridge/internal/llm"
 )
 
+func TestHomeQuestionRoutesOneFreeFormReply(t *testing.T) {
+	const question = "Выключить весь свет во всём доме или только в спальне?"
+	var replies []string
+	e := &Engine{
+		Home: homeFunc(func(_ context.Context, text string) (string, error) {
+			replies = append(replies, text)
+			if len(replies) == 1 {
+				return question, nil
+			}
+			return "Готово.", nil
+		}),
+		LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+			return `{"route":"yandex"}`, nil
+		}),
+	}
+	ctx := dialogue.WithSpeaker(t.Context(), "street")
+	if got, err := e.Resolve(ctx, "Выключи свет"); err != nil || got.Answer != question {
+		t.Fatal(got, err)
+	}
+	const reply = "Во всей квартире"
+	other := dialogue.WithSpeaker(t.Context(), "another-speaker")
+	if got := e.Decide(other, reply); got.Route != "yandex" {
+		t.Fatal("another speaker inherited the question", got)
+	}
+	// Voice requests reserve their ticket before the recognizer supplies text.
+	prepared := e.Prepare(ctx)
+	decision := e.Decide(prepared, reply)
+	if decision.Route != "home" || decision.Source != "dialogue" {
+		t.Fatal("free-form reply went to the classifier", decision)
+	}
+	if _, err := e.ResolveDecision(prepared, reply, decision); err != nil || len(replies) != 2 || replies[1] != reply {
+		t.Fatal(replies, err)
+	}
+	if got := e.Decide(ctx, reply); got.Route != "yandex" {
+		t.Fatal("completed home action captured a new request", got)
+	}
+}
+
 func TestExplicitRouteOverridesHomeFollowup(t *testing.T) {
 	for _, text := range []string{"Какая погода сегодня", "спроси нейросеть: новый вопрос", "начни новый разговор"} {
 		t.Run(text, func(t *testing.T) {
