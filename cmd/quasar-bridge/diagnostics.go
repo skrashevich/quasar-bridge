@@ -31,6 +31,7 @@ type diagnosticLog struct {
 	cursor  int64
 	run     string
 	partial bool
+	packets diagnosticPackets
 }
 
 func newDiagnosticLog(limit int) *diagnosticLog {
@@ -130,6 +131,7 @@ func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() 
 		body, _ := json.Marshal(snapshot)
 		_, _ = w.Write(body)
 	}))
+	mux.HandleFunc("GET /diagnostics/logs/{id}", guard(logs.packetDetails))
 	mux.HandleFunc("GET /diagnostics/download", guard(func(w http.ResponseWriter, r *http.Request) {
 		snapshot := logs.snapshot(0)
 		state, _ := json.Marshal(status())
