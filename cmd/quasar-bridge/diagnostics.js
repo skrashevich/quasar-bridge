@@ -614,16 +614,29 @@ function packetRow(text, id, run) {
   return row;
 }
 
+const frameDirections = new Map([["client", "↑ От колонки"], ["server", "↓ От Яндекса"]]);
+
 function logRow(line, run) {
-  let text = line, level = "", id;
+  let text = line, level = "", direction, id;
   try {
     const { time, level: severity, msg, packet_id, ...fields } = JSON.parse(line);
+    if (msg === "frame" && frameDirections.has(fields.direction)) {
+      direction = fields.direction;
+      delete fields.direction;
+    }
     const values = Object.entries(fields).map(([key, value]) => key + "=" + JSON.stringify(value));
     text = [time ? new Date(time).toLocaleTimeString("ru-RU") : "", severity, msg, ...values].filter(v => v !== undefined).join(" ");
     level = String(severity || "").toUpperCase();
     if (msg === "frame" && Number.isSafeInteger(packet_id) && packet_id >= 0) id = packet_id;
   } catch (_) { /* Plain text log records are still searchable. */ }
   const node = id === undefined ? element("div", "log-line", text) : packetRow(text, id, run);
+  if (direction) {
+    const label = frameDirections.get(direction);
+    node.dataset.direction = direction;
+    const heading = id === undefined ? node : node.querySelector("summary");
+    heading.prepend(element("span", "log-direction", label), " ");
+    text += ` ${label} direction="${direction}"`;
+  }
   return { node, level, search: text.toLocaleLowerCase("ru-RU") };
 }
 

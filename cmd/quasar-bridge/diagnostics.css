@@ -186,11 +186,14 @@ dd { margin:4px 0 0; font-size:17px; font-weight:600; overflow-wrap:anywhere; }
 .empty-state { color:var(--muted); padding:32px 0; text-align:center; border-block:1px solid var(--line); }
 .log-tools { align-items:end; }
 .log-line { padding-left:1.2em; }
+#log [data-direction="client"] { --packet-color:#8bddd2; --packet-tint:#284d51; }
+#log [data-direction="server"] { --packet-color:#ffd69a; --packet-tint:#4e4438; }
+.log-direction { display:inline-block; padding:0 .5em; border-radius:3px; background:var(--packet-tint); color:var(--packet-color); font-weight:700; white-space:nowrap; }
 .log-packet>summary { cursor:pointer; }
-.log-packet>summary::marker { color:#89d2d5; }
+.log-packet>summary::marker { color:var(--packet-color,#89d2d5); }
 .log-packet>summary:hover,.log-packet[open]>summary { background:#ffffff12; }
 .log-packet>summary:focus-visible { outline-color:#89d2d5; outline-offset:0; }
-.packet-body { margin:4px 0 8px .35em; padding:6px 0 6px 1em; border-left:2px solid #89d2d5; font:inherit; white-space:pre-wrap; overflow-wrap:anywhere; }
+.packet-body { margin:4px 0 8px .35em; padding:6px 0 6px 1em; border-left:2px solid var(--packet-color,#89d2d5); font:inherit; white-space:pre-wrap; overflow-wrap:anywhere; }
 .level-field { min-width:180px; }
 #connection { min-height:20px; margin:0 0 8px; }
 #connection.error { color:var(--danger); }
