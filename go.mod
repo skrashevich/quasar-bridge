@@ -8,7 +8,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/skrashevich/go-opus v0.1.1
 	github.com/skrashevich/quasar-go-genproto v0.3.0
-	github.com/skrashevich/station-airplay v0.2.2
+	github.com/skrashevich/station-airplay v0.3.0
 	golang.org/x/net v0.62.0
 	google.golang.org/protobuf v1.36.12
 )
