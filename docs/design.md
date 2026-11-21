@@ -49,7 +49,10 @@ A nonempty invalid URL is rejected; configured HA failures never retry in Yandex
 Ruling: HA calls use the configured local MCP capability URL in runtime.env,
 not a new HA token. Honor Assist exposure; inventory states are fresh, exposure
 is briefly cached for discovery and rechecked before actions. Batch validation
-prevents duplicate/group-overlapping targets. A home failure never retries in
+rejects duplicate and group-overlapping targets. A single climate device can
+receive `turn_on` followed by `set_temperature` with a numeric setpoint.
+An explicit heating or cooling mode fits in one `set_temperature` call.
+A home failure never retries in
 Yandex because the service might already have acted.
 
 Ruling: refuse fallback substitution if cloud audio has already started or

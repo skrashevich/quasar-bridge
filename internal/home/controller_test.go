@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -104,12 +105,14 @@ func TestExplicitRoomsOverridePreviousRoom(t *testing.T) {
 		}
 		return `{"answer":"Уточните действие.","actions":[]}`, nil
 	})}
-	_, err := c.HandleDialogue(t.Context(), "Включи свет в кабинете и спальне", []llm.Message{
-		{Role: "user", Content: "Горит ли свет в кабинете?"},
-		{Role: "assistant", Content: "В кабинете свет выключен."},
-	})
-	if err != nil {
-		t.Fatal(err)
+	for _, text := range []string{"Включи свет в кабинете и спальне", "Во всей квартире.", "Во всём доме"} {
+		_, err := c.HandleDialogue(t.Context(), text, []llm.Message{
+			{Role: "user", Content: "Выключи свет в кабинете"},
+			{Role: "assistant", Content: "Во всём доме или только в кабинете?"},
+		})
+		if err != nil {
+			t.Fatal(text, err)
+		}
 	}
 }
 
@@ -304,6 +307,68 @@ func TestHomeRejectsDuplicateAndGroupMemberActions(t *testing.T) {
 			})}
 			if _, err := c.Handle(t.Context(), "Включи свет"); err == nil || actions != 0 {
 				t.Fatalf("err=%v actions=%d", err, actions)
+			}
+		})
+	}
+}
+
+func TestClimateStartAndTemperaturePlan(t *testing.T) {
+	const id = "climate.bedroom"
+	on := Action{Domain: "climate", Service: "turn_on", EntityID: id, Data: map[string]any{}}
+	temp := Action{Domain: "climate", Service: "set_temperature", EntityID: id, Data: map[string]any{"temperature": 22.0}}
+	groupOn := Action{Domain: "climate", Service: "turn_on", EntityID: "climate.group"}
+	groupTemp := temp
+	groupTemp.EntityID = groupOn.EntityID
+	cool := temp
+	cool.Data = map[string]any{"temperature": 22.0, "hvac_mode": "cool"}
+	off := Action{Domain: "climate", Service: "turn_off", EntityID: id}
+	for _, tc := range []struct {
+		name  string
+		plan  []Action
+		allow bool
+	}{
+		{"start_then_temperature", []Action{on, temp}, true},
+		{"explicit_mode_single_service", []Action{cool}, true},
+		{"reversed", []Action{temp, on}, false},
+		{"duplicate_temperature", []Action{on, temp, temp}, false},
+		{"conflicting_power", []Action{on, off}, false},
+		{"group_then_member", []Action{groupOn, temp}, false},
+		{"same_group", []Action{groupOn, groupTemp}, false},
+		{"missing_temperature", []Action{on, {Domain: "climate", Service: "set_temperature", EntityID: id}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []Action
+			c := Controller{Domains: []string{"climate"}, Tools: toolFunc(func(_ context.Context, name string, args map[string]any) (jsontext.Value, error) {
+				switch name {
+				case "ha_get_skill_guide":
+					return jsontext.Value(`{"success":true}`), nil
+				case "ha_search":
+					return json.Marshal(map[string]any{"entities": []Entity{
+						{ID: id, Name: "Кондиционер", State: "off", Area: "Спальня"},
+						{ID: "climate.group", Name: "Группа", State: "off", Area: "Спальня", Members: []string{id}},
+					}})
+				case "ha_get_entity_exposure":
+					return jsontext.Value(`{"exposed_to":{"conversation":true}}`), nil
+				case "ha_call_service":
+					calls = append(calls, Action{Domain: args["domain"].(string), Service: args["service"].(string), EntityID: args["entity_id"].(string), Data: args["data"].(map[string]any)})
+					return jsontext.Value(`{"success":true}`), nil
+				case "ha_get_state":
+					return jsontext.Value(`{"data":{"state":"cool"}}`), nil
+				default:
+					t.Fatalf("unexpected tool %q", name)
+					return nil, nil
+				}
+			}), Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+				raw, err := json.Marshal(Plan{Actions: tc.plan})
+				return string(raw), err
+			})}
+			answer, err := c.Handle(t.Context(), "Включи кондиционер в спальне на 22")
+			if tc.allow {
+				if err != nil || answer != "Команда отправлена: Кондиционер." || !reflect.DeepEqual(calls, tc.plan) {
+					t.Fatalf("answer=%q calls=%+v err=%v", answer, calls, err)
+				}
+			} else if err == nil || len(calls) != 0 {
+				t.Fatalf("invalid plan reached device: calls=%v err=%v", calls, err)
 			}
 		})
 	}

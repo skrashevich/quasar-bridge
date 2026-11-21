@@ -296,6 +296,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.ticket = ticket
 		decision.prepared = true
 	}()
+	awaitingHomeReply := snapshot.Route == "home" && e.dialogue().TakeHomeQuestion(ctx, ticket)
 	p := e.policy()
 	if configvoice.RecoveryAction(text) != "" {
 		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
@@ -328,7 +329,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		}
 		return d
 	}
-	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
+	if len(snapshot.Messages) > 0 && (awaitingHomeReply || dialogue.IsFollowup(text)) {
 		return RouteDecision{Route: snapshot.Route, Source: "dialogue"}
 	}
 	if !p.classifierEnabled {
