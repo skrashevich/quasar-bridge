@@ -23,7 +23,7 @@ import (
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	deferred "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
 	"google.golang.org/protobuf/encoding/protowire"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 type cloudGateResolver struct {
