@@ -95,7 +95,11 @@ type Assist struct {
 	turns  map[string]assistTurn
 
 	// dialMu is taken only around dial. It is never acquired while sessMu is held.
+	// writeMu covers id allocation and the socket write. Home Assistant closes
+	// the connection when a command id is not greater than the last id it saw,
+	// so those two steps cannot be split across ping, pipeline, and unsubscribe.
 	dialMu  sync.Mutex
+	writeMu sync.Mutex
 	sessMu  sync.Mutex
 	conn    *websocket.Conn
 	gen     uint64
@@ -133,17 +137,12 @@ func (a *Assist) Process(ctx context.Context, text string) (assistReply, error) 
 	if err != nil {
 		return assistReply{}, transportErr(ctx)
 	}
-	id := a.allocID()
 	events := make(chan pipelineMsg, 64)
-	if !a.bind(gen, id, events) {
-		return assistReply{}, transportErr(ctx)
-	}
 	seconds := a.Config.TimeoutMS / 1000
 	if seconds < 1 {
 		seconds = 1
 	}
 	cmd := map[string]any{
-		"id":          id,
 		"type":        "assist_pipeline/run",
 		"start_stage": "intent",
 		"end_stage":   "intent",
@@ -159,10 +158,14 @@ func (a *Assist) Process(ctx context.Context, text string) (assistReply, error) 
 	if conversation := a.current(ctx); conversation != "" {
 		cmd["conversation_id"] = conversation
 	}
-	if err := writeJSON(callCtx, conn, cmd); err != nil {
-		a.unbind(gen, id)
+	id, err := a.writeCommand(callCtx, conn, gen, cmd, events)
+	if err != nil {
+		if errors.Is(err, errAssistSocketGone) {
+			return assistReply{}, transportErr(ctx)
+		}
+		// The write may have reached Home Assistant.
 		a.retire(gen, conn)
-		return assistReply{}, transportErr(ctx)
+		return assistReply{}, errAssistUnknown
 	}
 	reply, conversationID, local, err := collectPipeline(callCtx, done, events)
 	a.unbind(gen, id)
@@ -178,7 +181,7 @@ func (a *Assist) Process(ctx context.Context, text string) (assistReply, error) 
 		switch reason {
 		case "rejected":
 			// The command was refused before it subscribed.
-		case "pipeline", "no-intent":
+		case "pipeline", "no-intent", "ambiguous":
 			a.unsubscribe(gen, conn, id)
 		default:
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -188,6 +191,9 @@ func (a *Assist) Process(ctx context.Context, text string) (assistReply, error) 
 			}
 		}
 		slog.Warn("home_assist_failed", "reason", reason)
+		if reason == "ambiguous" {
+			return assistReply{}, errAssistUnknown
+		}
 		return assistReply{}, transportErr(ctx)
 	}
 	// The run has finished. Unsubscribe drops that subscription.
@@ -249,6 +255,25 @@ func (a *Assist) currentSocket() (*websocket.Conn, uint64, <-chan struct{}, bool
 		return nil, 0, nil, false
 	}
 	return a.conn, a.gen, a.done, true
+}
+
+// writeCommand allocates the id and writes it before any other command can
+// take the next id. ch is bound first when the caller waits for the result.
+func (a *Assist) writeCommand(ctx context.Context, conn *websocket.Conn, gen uint64, payload map[string]any, ch chan pipelineMsg) (int64, error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	id := a.allocID()
+	if ch != nil && !a.bind(gen, id, ch) {
+		return 0, errAssistSocketGone
+	}
+	payload["id"] = id
+	if err := writeJSON(ctx, conn, payload); err != nil {
+		if ch != nil {
+			a.unbind(gen, id)
+		}
+		return id, err
+	}
+	return id, nil
 }
 
 func (a *Assist) allocID() int64 {
@@ -341,11 +366,10 @@ func (a *Assist) unsubscribe(gen uint64, conn *websocket.Conn, runID int64) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := writeJSON(ctx, conn, map[string]any{
-		"id":           a.allocID(),
+	_, err := a.writeCommand(ctx, conn, gen, map[string]any{
 		"type":         "unsubscribe_events",
 		"subscription": runID,
-	})
+	}, nil)
 	if err != nil {
 		a.retire(gen, conn)
 	}
@@ -368,17 +392,14 @@ func (a *Assist) keepAlive(gen uint64, conn *websocket.Conn, done <-chan struct{
 }
 
 func (a *Assist) ping(gen uint64, conn *websocket.Conn, done <-chan struct{}) bool {
-	id := a.allocID()
 	ch := make(chan pipelineMsg, 1)
-	if !a.bind(gen, id, ch) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	id, err := a.writeCommand(ctx, conn, gen, map[string]any{"type": "ping"}, ch)
+	if err != nil {
 		return false
 	}
 	defer a.unbind(gen, id)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := writeJSON(ctx, conn, map[string]any{"id": id, "type": "ping"}); err != nil {
-		return false
-	}
 	select {
 	case <-done:
 		return false
@@ -439,6 +460,7 @@ type assistRun struct {
 	conversationID string
 	local          *bool
 	sawIntent      bool
+	accepted       bool
 }
 
 func collectPipeline(ctx context.Context, done <-chan struct{}, events <-chan pipelineMsg) (assistReply, string, *bool, error) {
@@ -452,6 +474,9 @@ func collectPipeline(ctx context.Context, done <-chan struct{}, events <-chan pi
 			if run.sawIntent {
 				return run.reply, run.conversationID, run.local, nil
 			}
+			if run.accepted {
+				return assistReply{}, "", nil, assistFailure{"ambiguous"}
+			}
 			return assistReply{}, "", nil, ctx.Err()
 		case <-done:
 			if err := drainPipeline(events, &run); err != nil {
@@ -460,11 +485,17 @@ func collectPipeline(ctx context.Context, done <-chan struct{}, events <-chan pi
 			if run.sawIntent {
 				return run.reply, run.conversationID, run.local, nil
 			}
+			if run.accepted {
+				return assistReply{}, "", nil, assistFailure{"ambiguous"}
+			}
 			return assistReply{}, "", nil, assistFailure{"transport"}
 		case msg, ok := <-events:
 			if !ok {
 				if run.sawIntent {
 					return run.reply, run.conversationID, run.local, nil
+				}
+				if run.accepted {
+					return assistReply{}, "", nil, assistFailure{"ambiguous"}
 				}
 				return assistReply{}, "", nil, assistFailure{"transport"}
 			}
@@ -502,6 +533,7 @@ func applyPipeline(msg pipelineMsg, run *assistRun) (bool, error) {
 		if !msg.Success {
 			return true, assistFailure{"rejected"}
 		}
+		run.accepted = true
 	case "event":
 		switch msg.Event.Type {
 		case "run-start":
@@ -564,6 +596,13 @@ func transportErr(ctx context.Context) error {
 	}
 	return errors.New("Home Assistant transport failed")
 }
+
+// errAssistUnknown means the pipeline was accepted, or the command write may
+// have arrived, and the outcome was not observed. A planner retry could run
+// the same action twice.
+var errAssistUnknown = errors.New("home assistant result is unknown")
+
+var errAssistSocketGone = errors.New("home assistant socket is gone")
 
 func (a *Assist) Ping(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.Config.URL+"/api/", nil)
@@ -645,9 +684,10 @@ func refuseRedirect(*http.Request, []*http.Request) error {
 	return errors.New("redirect")
 }
 
-// Gateway asks the configured Home Assistant assistant first. A transport
-// failure or an assistant error falls back to the device planner when one is
-// configured. A successful assistant turn is not planned again.
+// Gateway asks the configured Home Assistant assistant first. An assistant
+// error, a refusal, or a failure before Home Assistant accepts the run falls
+// back to the device planner. Once the run is accepted, a dropped socket or a
+// timeout is not planned again: the pipeline may already have changed a device.
 type Gateway struct {
 	Assist  *Assist
 	Devices interface {
@@ -670,7 +710,7 @@ func (g *Gateway) Turn(ctx context.Context, text string) (string, *bool, error) 
 			listen := g.keepListening(reply)
 			return spokenAssist(reply), &listen, nil
 		}
-		if err != nil && ctx.Err() != nil {
+		if err != nil && (ctx.Err() != nil || errors.Is(err, errAssistUnknown)) {
 			return "", nil, err
 		}
 		if g.Devices == nil {

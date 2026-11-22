@@ -355,10 +355,21 @@ func timerControl(s string) bool {
 	return false
 }
 
-// IsStop reports a phrase that contains «алиса хватит».
+// IsStop reports a phrase that contains the command «алиса хватит».
+// «хватит ли» is a sufficiency question, not that command.
 // Decide still lets a whole playback command through; this check stays broad.
 func IsStop(text string) bool {
-	return strings.Contains(foldedText(stripPunct(text)), "алиса хватит")
+	fields := strings.Fields(foldedText(stripPunct(text)))
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] != "алиса" || fields[i+1] != "хватит" {
+			continue
+		}
+		if i+2 < len(fields) && fields[i+2] == "ли" {
+			continue
+		}
+		return true
+	}
+	return false
 }
 func stripPunct(text string) string {
 	return strings.Map(func(r rune) rune {

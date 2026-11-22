@@ -1,6 +1,7 @@
 package home
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -559,31 +560,55 @@ func resolveActions(actions []Action, known map[string]Entity) ([]Action, error)
 	slices.SortStableFunc(ordered, func(a, b Action) int {
 		return len(coverIDs(b.EntityID, known)) - len(coverIDs(a.EntityID, known))
 	})
-	claimed := map[string]bool{}
+	claimed := map[string]actionClaim{}
 	var out []Action
 	for _, action := range ordered {
 		ids := coverIDs(action.EntityID, known)
-		conflict := false
-		covered := true
+		missing := false
+		seen := false
+		mismatch := false
 		for id := range ids {
-			if !claimed[id] {
-				covered = false
-			} else {
-				conflict = true
+			prior, ok := claimed[id]
+			if !ok {
+				missing = true
+				continue
+			}
+			seen = true
+			if prior.domain != action.Domain || prior.service != action.Service || !sameData(prior.data, action.Data) {
+				mismatch = true
 			}
 		}
-		if covered {
+		// A member action that repeats the group command is redundant.
+		// A different service or payload would change the outcome, and a
+		// partial overlap would hit the same device twice.
+		if !missing && !mismatch {
 			continue
 		}
-		if conflict {
+		if seen {
 			return nil, errors.New("home actions overlap")
 		}
+		claim := actionClaim{domain: action.Domain, service: action.Service, data: action.Data}
 		for id := range ids {
-			claimed[id] = true
+			claimed[id] = claim
 		}
 		out = append(out, action)
 	}
 	return out, nil
+}
+
+type actionClaim struct {
+	domain  string
+	service string
+	data    map[string]any
+}
+
+func sameData(a, b map[string]any) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	left, errA := json.Marshal(a)
+	right, errB := json.Marshal(b)
+	return errA == nil && errB == nil && bytes.Equal(left, right)
 }
 
 func coverIDs(id string, known map[string]Entity) map[string]bool {

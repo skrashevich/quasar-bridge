@@ -611,8 +611,11 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				}
 				result, err = routed.ResolveDecision(p.ctx, text, decision)
 				stop()
-				if n.lostElection(p) {
-					n.drop(p)
+				route := decision.Route
+				if result.Route != "" {
+					route = result.Route
+				}
+				if n.finishLostElection(p, route) {
 					return
 				}
 			} else {
@@ -761,7 +764,7 @@ func (n *Native) finishSilent(p *nativeRequest) error {
 // route keeps Yandex's own election, and a drop never starts work.
 func waitsForSpotter(route string) bool {
 	switch route {
-	case "home", "llm", "music", "playback", "recovery":
+	case "home", "llm", "music", "playback", "recovery", "airplay":
 		return true
 	default:
 		return false
@@ -854,10 +857,25 @@ func spotterReadyChoice(p *nativeRequest) (spotterChoice, bool) {
 	return spotterLose, true
 }
 
-func (n *Native) lostElection(p *nativeRequest) bool {
+// finishLostElection drops a local route that has already lost the spotter
+// election. The loss check and the commit to answering share one lock, so a
+// verdict cannot arrive between them and leave the dialog unfinished.
+// Yandex is not a local route: its verdict is forwarded to the speaker.
+func (n *Native) finishLostElection(p *nativeRequest, route string) bool {
+	if !waitsForSpotter(route) {
+		return false
+	}
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	return p.spotterReady && !p.spotterOK
+	lost := p.spotterReady && !p.spotterOK
+	if !lost && !p.canceled && p.ctx.Err() == nil {
+		p.local = true
+	}
+	n.mu.Unlock()
+	if !lost {
+		return false
+	}
+	n.drop(p)
+	return true
 }
 
 // live is the context for the closing cloud and speaker messages. A lost

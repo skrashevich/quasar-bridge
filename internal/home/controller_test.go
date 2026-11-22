@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -223,6 +224,68 @@ func TestHomeKeepsGroupWhenPlanAlsoListsItsMember(t *testing.T) {
 				t.Fatalf("answer=%q err=%v actions=%d", answer, err, actions)
 			}
 		})
+	}
+}
+
+func TestHomeRejectsContradictoryCoveredAction(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		second Action
+	}{
+		{name: "member off", second: Action{Domain: "light", Service: "turn_off", EntityID: "light.member"}},
+		{name: "different brightness", second: Action{Domain: "light", Service: "turn_on", EntityID: "light.member", Data: map[string]any{"brightness_pct": 10}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actions := 0
+			tools := toolFunc(func(_ context.Context, name string, args map[string]any) (jsontext.Value, error) {
+				var v any = map[string]any{"success": true}
+				switch name {
+				case "ha_search":
+					v = map[string]any{"entities": []Entity{{ID: "light.office", Name: "Фонарики", State: "off", Members: []string{"light.member"}}, {ID: "light.member", Name: "Lamp", State: "off"}}}
+				case "ha_get_entity_exposure":
+					v = map[string]any{"exposed_to": map[string]any{"conversation": true}}
+				case "ha_call_service":
+					actions++
+					t.Errorf("action ran despite overlap: %v", args["entity_id"])
+				}
+				b, _ := json.Marshal(v)
+				return b, nil
+			})
+			c := Controller{Tools: tools, Domains: []string{"light"}, Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+				b, _ := json.Marshal(Plan{Actions: []Action{{Domain: "light", Service: "turn_on", EntityID: "light.office"}, tc.second}})
+				return string(b), nil
+			})}
+			answer, err := c.Handle(t.Context(), "Включи фонарики")
+			if err == nil || !strings.Contains(err.Error(), "overlap") || answer != "" || actions != 0 {
+				t.Fatalf("answer=%q err=%v actions=%d", answer, err, actions)
+			}
+		})
+	}
+}
+
+func TestHomeRejectsOversizedInventoryBeforePlanning(t *testing.T) {
+	const count = 40
+	entities := make([]Entity, count)
+	long := strings.Repeat("название ", 80)
+	for i := range entities {
+		entities[i] = Entity{ID: fmt.Sprintf("sensor.room_%02d", i), Name: long, State: "1", Area: "Кабинет"}
+	}
+	plans := 0
+	tools := toolFunc(func(_ context.Context, name string, _ map[string]any) (jsontext.Value, error) {
+		var v any = map[string]any{"success": true, "exposed_to": map[string]any{"conversation": true}}
+		if name == "ha_search" {
+			v = map[string]any{"entities": entities}
+		}
+		b, _ := json.Marshal(v)
+		return b, nil
+	})
+	c := Controller{Tools: tools, Domains: []string{"sensor"}, Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		plans++
+		return "не должен вызываться", nil
+	})}
+	answer, err := c.Handle(t.Context(), "Какая температура в кабинете?")
+	if err != nil || plans != 0 || !strings.Contains(answer, "слишком много устройств") {
+		t.Fatalf("answer=%q err=%v plans=%d", answer, err, plans)
 	}
 }
 

@@ -434,10 +434,13 @@ func TestStopPhraseDropsTheWholeUtterance(t *testing.T) {
 	if homeCalls != 0 || llmCalls != 0 {
 		t.Fatalf("handlers called: home=%d llm=%d", homeCalls, llmCalls)
 	}
-	for _, text := range []string{"хватит", "алисахватит", "включи свет"} {
+	for _, text := range []string{"хватит", "алисахватит", "включи свет", "Алиса, хватит ли времени", "алиса хватит ли молока"} {
 		if IsStop(text) {
 			t.Errorf("IsStop(%q) = true", text)
 		}
+	}
+	if IsStop("алиса хватит лишней музыки") != true {
+		t.Fatal("stop command with a word after хватит was treated as a question")
 	}
 	if got := e.Decide(t.Context(), "хватит"); got.Route == "drop" {
 		t.Fatal(got)

@@ -233,6 +233,11 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Commit(ctx, ticket, text, r.Answer, private) {
 		return Resolution{Route: r.Route}, context.Canceled
 	}
+	// The model now owns the conversation. A later elliptical follow-up must
+	// not resume an older Assist thread.
+	if reset, ok := e.Home.(interface{ Reset(context.Context) }); ok {
+		reset.Reset(ctx)
+	}
 	return r, nil
 }
 func containsOne(text string, needles []string) bool {

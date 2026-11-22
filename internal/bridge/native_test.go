@@ -1106,6 +1106,84 @@ func TestNativeSpotterElection(t *testing.T) {
 			t.Fatal("closing messages used a canceled context")
 		}
 	})
+
+	t.Run("yandex forwards rejection", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		defer cancel()
+		up := make(chan []byte, 4)
+		down := make(chan []byte, 4)
+		n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, &electionResolver{route: "yandex"})
+		defer n.Close()
+		n.SpotterWait = time.Second
+		frame := spotterFrame("cloud-reject", rejected, &multi)
+		if err := n.Client(ctx, websocket.MessageBinary, voiceRequest("cloud-reject")); err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Server(ctx, websocket.MessageBinary, frame); err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Server(ctx, websocket.MessageBinary, asrFinal("cloud-reject", "какая погода")); err != nil {
+			t.Fatal(err)
+		}
+		continued := false
+		forwarded := false
+		deadline := time.After(time.Second)
+		for !continued || !forwarded {
+			select {
+			case b := <-up:
+				f := wire.Decode(b, wire.ClientToServer)
+				if f.Kind() == "CancelRequest" && f.Client.GetEvent().GetCancelRequest().GetUserStop() != nil {
+					t.Fatal("yandex rejection was dropped as a lost local election")
+				}
+				if f.Kind() == "ContinueRequest" {
+					continued = true
+				}
+			case b := <-down:
+				f := wire.Decode(b, wire.ServerToClient)
+				if f.Kind() == "AliceResponse" && !f.Server.GetEvent().GetAliceResponse().GetVoiceResponse().GetHasVoiceResponse() {
+					t.Fatal("yandex rejection finished locally")
+				}
+				if bytes.Equal(b, frame) {
+					forwarded = true
+				}
+			case <-deadline:
+				t.Fatalf("yandex rejection continued=%v forwarded=%v", continued, forwarded)
+			}
+		}
+	})
+
+	t.Run("airplay rejection does not start", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		defer cancel()
+		called := make(chan struct{}, 1)
+		down := make(chan []byte, 4)
+		n := NewNative(ctx, func(context.Context, websocket.MessageType, []byte) error { return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, &electionResolver{route: "airplay", answer: "AirPlay включён.", called: called})
+		defer n.Close()
+		n.SpotterWait = time.Second
+		if err := n.Client(ctx, websocket.MessageBinary, voiceRequest("air")); err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Server(ctx, websocket.MessageBinary, spotterFrame("air", rejected, nil)); err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Server(ctx, websocket.MessageBinary, asrFinal("air", "включи airplay")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case b := <-down:
+			voice := wire.Decode(b, wire.ServerToClient).Server.GetEvent().GetAliceResponse().GetVoiceResponse()
+			if voice.GetHasVoiceResponse() || voice.GetOutputSpeech().GetText() != "" {
+				t.Fatalf("rejected airplay spoke %q", voice.GetOutputSpeech().GetText())
+			}
+		case <-ctx.Done():
+			t.Fatal("rejected airplay did not finish")
+		}
+		select {
+		case <-called:
+			t.Fatal("rejected airplay ran the controller")
+		default:
+		}
+	})
 }
 
 func readUpstream(ctx context.Context, up <-chan []byte) ([]byte, error) {

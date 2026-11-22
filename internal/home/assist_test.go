@@ -3,6 +3,7 @@ package home
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -253,6 +254,22 @@ func TestGatewaySpeaksAssistantAndFallsBackOnlyOnFailure(t *testing.T) {
 	answer, err = g.Handle(t.Context(), "включи")
 	if err != nil || answer != "из планировщика" || planner.n != 2 {
 		t.Fatalf("transport fallback=%q err=%v calls=%d", answer, err, planner.n)
+	}
+}
+
+func TestGatewayDoesNotRepeatAnAcceptedAssistRun(t *testing.T) {
+	token := "token"
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		acceptAssist(t, w, r, token, func(map[string]any) []any {
+			return []any{map[string]any{"type": "result", "success": true}}
+		}, func() bool { return true })
+	}))
+	defer s.Close()
+	planner := &plannerCalls{}
+	g := &Gateway{Assist: &Assist{Config: AssistConfig{URL: s.URL, Language: "ru", TimeoutMS: 20000, TTLSeconds: 300}, Token: token}, Devices: planner}
+	answer, err := g.Handle(t.Context(), "включи свет")
+	if answer != "" || !errors.Is(err, errAssistUnknown) || planner.n != 0 {
+		t.Fatalf("answer=%q err=%v calls=%d", answer, err, planner.n)
 	}
 }
 

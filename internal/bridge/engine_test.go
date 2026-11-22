@@ -246,6 +246,26 @@ func TestHomeAssistantFollowupAndReset(t *testing.T) {
 	}
 }
 
+func TestLLMTurnClearsStaleHomeFollowup(t *testing.T) {
+	home := &sessionHome{active: true}
+	e := &Engine{Home: home, LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		return "Потому что рассеивается синий свет.", nil
+	})}
+	text := "спроси модель почему небо голубое"
+	decision := e.Decide(t.Context(), text)
+	if decision.Route != "llm" {
+		t.Fatalf("explicit model request: %+v", decision)
+	}
+	result, err := e.ResolveDecision(t.Context(), text, decision)
+	if err != nil || result.Route != "llm" || home.active || home.resets != 1 {
+		t.Fatalf("result=%+v err=%v home=%+v", result, err, home)
+	}
+	follow := e.Decide(t.Context(), "а почему?")
+	if follow.Route != "llm" || follow.Source != "dialogue" {
+		t.Fatalf("follow-up returned to assist: %+v", follow)
+	}
+}
+
 func TestHistoryQuestionNeverExecutesQuotedHomeCommand(t *testing.T) {
 	e := &Engine{LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
 		return "сохранённый ответ", nil
