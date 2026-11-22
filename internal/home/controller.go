@@ -147,12 +147,6 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	if err := c.guides(ctx); err != nil {
 		return "", err
 	}
-	if c.DelayScript != "" && cancelDelayed(text) && len(controlDomains(text)) == 0 {
-		if _, err := c.Tools.Call(ctx, "ha_call_service", map[string]any{"domain": "script", "service": "turn_off", "entity_id": c.DelayScript, "wait": false}); err != nil {
-			return "", fmt.Errorf("home action failed; no cloud retry: %w", err)
-		}
-		return "Отложенные команды отменены.", nil
-	}
 	inventory := Controller{Tools: c.Tools, Planner: c.Planner, Domains: c.Domains}
 	if len(inventory.Domains) == 0 {
 		inventory.Domains = controlDomains(text)
@@ -165,6 +159,14 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	entities, err := inventory.Entities(ctx)
 	if err != nil {
 		return "", err
+	}
+	// Every pending run is cancelled only when nothing narrows the request;
+	// a device or a room goes to the planner for a targeted cancel.
+	if c.DelayScript != "" && cancelDelayed(text) && len(controlDomains(text)) == 0 && !mentionsArea(text, entities) {
+		if _, err := c.Tools.Call(ctx, "ha_call_service", map[string]any{"domain": "script", "service": "turn_off", "entity_id": c.DelayScript, "wait": false}); err != nil {
+			return "", fmt.Errorf("home action failed; no cloud retry: %w", err)
+		}
+		return "Отложенные команды отменены.", nil
 	}
 	scoped, roomSpecified := scopeRoomEntities(text, entities)
 	// Prefer a room in the current request; otherwise retain the latest user-specified room.
@@ -432,15 +434,45 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 }
 
 // cancelDelayed reports a request to cancel pending deferred actions:
-// "отмени отложенные команды", "сбрось отложенное выключение".
+// "отмени отложенные команды", "сбрось отложенное выключение". A negated
+// request ("не отменяй отложенные") is not one.
 func cancelDelayed(text string) bool {
 	s := strings.ToLower(text)
 	if !strings.Contains(s, "отложенн") {
 		return false
 	}
+	words := strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) })
+	if slices.Contains(words, "не") || slices.Contains(words, "нельзя") {
+		return false
+	}
 	for _, verb := range []string{"отмен", "сбрось", "удали"} {
 		if strings.Contains(s, verb) {
 			return true
+		}
+	}
+	return false
+}
+
+// mentionsArea reports whether the text names an HA area of the entities:
+// "в спальне", "на кухне". Unlike scopeRoomEntities it also drops the ending
+// of short names, since a false match only costs a planner call.
+func mentionsArea(text string, entities []Entity) bool {
+	text = strings.ToLower(text)
+	for _, e := range entities {
+		for _, word := range strings.FieldsFunc(strings.ToLower(e.Area), func(r rune) bool { return !unicode.IsLetter(r) }) {
+			runes := []rune(word)
+			if word == "этаж" || word == "floor" || len(runes) < 3 {
+				continue
+			}
+			switch {
+			case len(runes) >= 6:
+				runes = runes[:len(runes)-2]
+			case len(runes) >= 4:
+				runes = runes[:len(runes)-1]
+			}
+			if strings.Contains(text, string(runes)) {
+				return true
+			}
 		}
 	}
 	return false

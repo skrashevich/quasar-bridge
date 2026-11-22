@@ -440,7 +440,7 @@ func (f *delayFixture) Call(_ context.Context, name string, args map[string]any)
 	var v any = map[string]any{"success": true}
 	switch name {
 	case "ha_search":
-		v = map[string]any{"entities": []Entity{{ID: "light.office", Name: "Свет", State: f.state["light.office"]}, {ID: "media_player.tv", Name: "Телевизор", State: f.state["media_player.tv"]}}}
+		v = map[string]any{"entities": []Entity{{ID: "light.office", Name: "Свет", Area: "Спальня", State: f.state["light.office"]}, {ID: "media_player.tv", Name: "Телевизор", Area: "Кухня", State: f.state["media_player.tv"]}}}
 	case "ha_get_entity_exposure":
 		v = map[string]any{"exposed_to": map[string]any{"conversation": true}}
 	case "ha_get_state":
@@ -595,6 +595,38 @@ func TestCancelDelayedStopsScriptWithoutPlanner(t *testing.T) {
 	})}
 	if _, err := c.Handle(t.Context(), "Отмени отложенные команды"); err != nil || !planned {
 		t.Fatalf("without a delay script the request must reach the planner: err=%v", err)
+	}
+}
+
+func TestCancelDelayedNegatedOrNarrowedSkipsGlobalCancel(t *testing.T) {
+	for _, text := range []string{
+		"Не отменяй отложенные команды",
+		"Не надо отменять отложенные",
+		"Не сбрасывай отложенные",
+		"Нельзя отменять отложенные команды",
+		"Отмени отложенные команды в спальне",
+		"Отмени отложенные команды на кухне",
+	} {
+		f := newDelayFixture()
+		planned := false
+		c := Controller{Tools: f, Domains: []string{"light", "media_player"}, DelayScript: "script.delayed_action", Planner: plannerFunc(func(context.Context, []llm.Message, bool) (string, error) {
+			planned = true
+			return `{"answer":"Хорошо.","actions":[]}`, nil
+		})}
+		if _, err := c.Handle(t.Context(), text); err != nil || !planned || len(f.calls) != 0 {
+			t.Fatalf("%q: planned=%v err=%v calls=%v", text, planned, err, f.calls)
+		}
+	}
+}
+
+func TestCancelDelayedInRoomCancelsOnlyThatRoom(t *testing.T) {
+	f := newDelayFixture()
+	c := Controller{Tools: f, Domains: []string{"light", "media_player"}, DelayScript: "script.delayed_action", Planner: planOf(
+		Action{Domain: "light", Service: "turn_off", EntityID: "light.office", Cancel: true},
+	)}
+	answer, err := c.Handle(t.Context(), "Отмени отложенные команды в спальне")
+	if err != nil || answer != "Отменяю отложенное: Свет." || len(f.calls) != 1 || f.calls[0]["service"] != "turn_on" {
+		t.Fatalf("answer=%q err=%v calls=%v", answer, err, f.calls)
 	}
 }
 
