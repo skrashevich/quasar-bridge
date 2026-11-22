@@ -243,8 +243,7 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 .channel-head,.channel-meters { display:flex; justify-content:space-between; align-items:baseline; gap:16px; }
 .channel-head h2 { font-size:16px; font-weight:600; color:#e1f4f8; }
 .channel-head>span { color:#b5d9e3; font-size:13px; }
-.channel-status { font-size:clamp(23px,3.2vw,38px); font-weight:600; letter-spacing:-.035em; line-height:1.2; margin:18px 0 22px; text-wrap:balance; }
-.channel-meters { border-top:1px solid #497181; padding-top:15px; }
+.channel-meters { border-top:1px solid #497181; margin-top:16px; padding-top:15px; }
 .channel-meters>div { flex:1; }
 .channel-meters span,.channel-meters strong { display:block; }
 .channel-meters span { color:#c6dfe6; font-size:12px; }

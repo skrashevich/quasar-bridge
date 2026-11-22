@@ -109,8 +109,6 @@ function renderStatus(data) {
   if (data.version) byId("version").textContent = "Версия " + data.version;
   byId("overview-mode").textContent = ({ hybrid: "Гибридный режим", observe: "Наблюдение", proxy: "Прокси" })[data.mode] || data.mode || "Работает";
   byId("routing-observe").hidden = data.mode !== "observe";
-  const sessions = data.speaker_subscriptions?.length;
-  byId("station-state").textContent = sessions === undefined ? "Сведения о подключении недоступны" : sessions ? "Активных соединений с колонками: " + sessions : "Ожидание подключения колонки";
   byId("frames-up").textContent = data.client_frames?.toLocaleString("ru-RU") ?? "—";
   byId("frames-down").textContent = data.server_frames?.toLocaleString("ru-RU") ?? "—";
   byId("channel-uptime").textContent = uptimeText(data.uptime_seconds);
