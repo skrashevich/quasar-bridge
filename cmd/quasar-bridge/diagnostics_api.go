@@ -110,6 +110,30 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 		value, err := control.Configuration.GetRouting(r.Context())
 		writeDiagnosticResult(w, value, err)
 	})
+	register("POST /diagnostics/api/routing/preview", func(w http.ResponseWriter, r *http.Request) {
+		var draft struct {
+			Rule     bridge.RoutingRule `json:"rule"`
+			Text     string             `json:"text"`
+			WakeWord string             `json:"wake_word"`
+		}
+		if !readDiagnosticJSON(w, r, &draft) || !validDiagnosticText(w, draft.Text) {
+			return
+		}
+		// Evaluate the conditions even while the rule is unnamed or switched off.
+		if strings.TrimSpace(draft.Rule.Name) == "" {
+			draft.Rule.Name = "preview"
+		}
+		draft.Rule.Disabled = false
+		cfg := bridge.DefaultRoutingConfig()
+		cfg.Rules = []bridge.RoutingRule{draft.Rule}
+		policy, err := bridge.CompileRouting(cfg)
+		if err != nil {
+			writeDiagnosticResult(w, nil, err)
+			return
+		}
+		decision := policy.Preview(draft.Text, draft.WakeWord)
+		writeDiagnosticJSON(w, http.StatusOK, map[string]bool{"matched": decision.Source == "rule"})
+	})
 	register("POST /diagnostics/api/routing/rule", func(w http.ResponseWriter, r *http.Request) {
 		var mutation assistant.RoutingMutation
 		if !readDiagnosticJSON(w, r, &mutation) {

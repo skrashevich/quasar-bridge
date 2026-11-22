@@ -276,10 +276,13 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 .rule-off .rule-copy strong,.rule-off .rule-target { color:var(--muted); }
 #routing-options fieldset { border:0; margin:0; padding:0; max-width:480px; }
 #classifier-help { margin:10px 0 16px; }
-#rule-dialog { padding:0; border:1px solid var(--line); border-radius:12px; background:var(--surface); color:var(--ink); width:min(680px,94vw); max-height:92dvh; }
+#rule-dialog { padding:22px 24px; border:1px solid var(--line); border-radius:12px; background:var(--surface); color:var(--ink); width:min(680px,94vw); max-height:92dvh; }
 #rule-dialog::backdrop { background:rgba(15,40,53,.55); }
-#rule-editor { padding:22px 24px; }
-#rule-editor .section-heading { margin-bottom:16px; }
+#rule-dialog .section-heading { margin-bottom:16px; }
+#rule-preview { margin-top:18px; padding:14px; border:1px solid var(--notice-line); border-radius:8px; background:var(--tint); }
+#rule-preview h3 { margin:0; }
+#rule-preview .small { margin:4px 0 12px; }
+#rule-preview .notice { margin:12px 0 0; background:var(--surface); }
 .rule-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; align-items:start; margin-bottom:16px; }
 .rule-grid .switch-label { align-self:center; }
 .group-editor h3,#rule-editor>h3 { margin-bottom:4px; }
@@ -311,7 +314,7 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
   .rule-row button { grid-column:3; grid-row:2; font-size:12px; padding:6px 10px; }
   .rule-target { grid-column:3; grid-row:1; }
   .rule-order { grid-column:1; grid-row:1/3; }
-  #rule-editor { padding:16px; }
+  #rule-dialog { padding:16px; }
   .rule-group-row { align-items:start; flex-direction:column; }
   .rule-group-row label { width:100%; }
 }

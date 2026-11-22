@@ -1,6 +1,6 @@
 "use strict";
 
-const routingView = { data: null, busy: false, editing: null, revision: "", testVersion: 0 };
+const routingView = { data: null, busy: false, editing: null, revision: "", testVersion: 0, previewVersion: 0 };
 const defaultRuleLabels = new Map([
   ["bridge_updates", "Обновления Bridge"], ["speaker_playback", "Управление плеером"],
   ["music_from_site", "Музыка с сайта"], ["assistant_readonly", "Справка и история диалога"],
@@ -154,7 +154,7 @@ function addRuleGroup(values = []) {
   label.append(input);
   const remove = element("button", "quiet", "Удалить группу");
   remove.type = "button";
-  remove.addEventListener("click", () => row.remove());
+  remove.addEventListener("click", () => { row.remove(); resetRulePreview(); });
   row.append(label, remove);
   byId("rule-groups").append(row);
   return input;
@@ -183,6 +183,8 @@ function openRule(rule) {
   byId("rule-groups").replaceChildren();
   (rule?.match.contains_all_groups || []).forEach(addRuleGroup);
   byId("rule-delete").hidden = !rule;
+  byId("rule-preview").reset();
+  resetRulePreview();
   message("rule-error");
   byId("rule-dialog").showModal();
   byId(rule ? "rule-route" : "rule-name").focus();
@@ -192,14 +194,9 @@ function readTerms(input, original = []) {
   return input.value === input.initialText ? original : input.value.split("\n").filter(term => term.trim());
 }
 
-function saveRule(event) {
-  event.preventDefault();
+function readRuleDraft() {
   const original = routingView.editing;
   const name = original?.name ?? byId("rule-name").value.trim();
-  if (!name) { message("rule-error", "Введите название правила.", true); return; }
-  if (!original && routingView.data.saved.rules.some(rule => rule.name === name)) {
-    message("rule-error", "Такое название уже есть. Укажите другое название.", true); return;
-  }
   const match = {};
   for (const [key] of ruleFields) {
     const input = byId("condition-" + key);
@@ -207,14 +204,52 @@ function saveRule(event) {
     if (value.length) match[key] = value;
   }
   const groups = [...byId("rule-groups").querySelectorAll("textarea")].map(input => readTerms(input, input.originalTerms));
-  if (groups.some(group => !group.length)) { message("rule-error", "Заполните пустую группу фраз или удалите её.", true); return; }
+  if (groups.some(group => !group.length)) throw new Error("Заполните пустую группу фраз или удалите её.");
   if (groups.length) match.contains_all_groups = groups;
   if (!Object.keys(match).some(key => key !== "contains_none")) {
-    message("rule-error", "Добавьте фразу, начало фразы, группу, слово активации или регулярное выражение.", true); return;
+    throw new Error("Добавьте фразу, начало фразы, группу, слово активации или регулярное выражение.");
+  }
+  return { name, route: byId("rule-route").value, disabled: !byId("rule-enabled").checked, match };
+}
+
+function resetRulePreview() {
+  routingView.previewVersion++;
+  message("rule-preview-result");
+}
+
+async function previewRule(event) {
+  event.preventDefault();
+  const version = ++routingView.previewVersion;
+  try {
+    const rule = readRuleDraft();
+    const text = byId("rule-phrase").value.trim();
+    if (!text) throw new Error("Введите пробную фразу.");
+    message("rule-preview-result", "Проверяем условия…");
+    const { matched } = await post("api/routing/preview", { rule, text, wake_word: byId("rule-wake").value.trim() });
+    if (version !== routingView.previewVersion) return;
+    let result = matched ? "Условия совпали. Обработчик — " + routeName(rule.route) + "." : "Фраза не подходит под условия правила.";
+    if (rule.disabled) result += " Правило выключено и пропускается при маршрутизации.";
+    message("rule-preview-result", result);
+  } catch (error) {
+    if (version === routingView.previewVersion) message("rule-preview-result", ruleErrorText(error), true);
+  }
+}
+
+function ruleErrorText(error) {
+  return error.message.includes("invalid regex") ? "Проверьте синтаксис регулярного выражения Go." : error.message;
+}
+
+function saveRule(event) {
+  event.preventDefault();
+  let rule;
+  try { rule = readRuleDraft(); }
+  catch (error) { message("rule-error", error.message, true); return; }
+  if (!rule.name) { message("rule-error", "Введите название правила.", true); return; }
+  if (!routingView.editing && routingView.data.saved.rules.some(item => item.name === rule.name)) {
+    message("rule-error", "Такое название уже есть. Укажите другое название.", true); return;
   }
   changeRouting("rule", {
-    expected_revision: routingView.revision, action: "upsert", before: byId("rule-before").value,
-    rule: { name, route: byId("rule-route").value, disabled: !byId("rule-enabled").checked, match }
+    expected_revision: routingView.revision, action: "upsert", before: byId("rule-before").value, rule
   });
 }
 
@@ -222,7 +257,7 @@ async function changeRouting(endpoint, body) {
   if (routingView.busy) return;
   const dialog = byId("rule-dialog");
   routingView.busy = true;
-  const form = dialog.open ? byId("rule-editor") : byId("routing-options");
+  const form = dialog.open ? dialog : byId("routing-options");
   form.inert = true;
   byId("refresh-routing").disabled = true;
   byId("rule-new").disabled = true;
@@ -241,7 +276,7 @@ async function changeRouting(endpoint, body) {
     loadConfig(false);
     loadStatus();
   } catch (error) {
-    const text = error.status === 409 ? "Настройки изменились. Закройте редактор, обновите список и проверьте изменения перед повторным сохранением." : error.message.includes("invalid regex") ? "Проверьте синтаксис регулярного выражения Go." : error.message;
+    const text = error.status === 409 ? "Настройки изменились. Закройте редактор, обновите список и проверьте изменения перед повторным сохранением." : ruleErrorText(error);
     if (applied) routingView.data = null;
     message(applied ? "routing-message" : errorId, applied ? "Изменения применены. Обновите список, чтобы получить текущее состояние." : text, true);
   } finally {
@@ -266,9 +301,12 @@ function setupRouting() {
   byId("refresh-routing").addEventListener("click", loadRouting);
   byId("rule-new").addEventListener("click", () => openRule(null));
   byId("rule-editor").addEventListener("submit", saveRule);
+  byId("rule-dialog").addEventListener("input", resetRulePreview);
+  byId("rule-dialog").addEventListener("close", resetRulePreview);
+  byId("rule-preview").addEventListener("submit", previewRule);
   byId("rule-close").addEventListener("click", () => byId("rule-dialog").close());
   byId("rule-dialog").addEventListener("cancel", event => { if (routingView.busy) event.preventDefault(); });
-  byId("group-add").addEventListener("click", () => addRuleGroup().focus());
+  byId("group-add").addEventListener("click", () => { addRuleGroup().focus(); resetRulePreview(); });
   byId("rule-delete").addEventListener("click", () => {
     const name = routingView.editing.name;
     if (window.confirm("Удалить правило «" + name + "»? Изменение сразу вступит в силу.")) {

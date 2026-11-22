@@ -72,8 +72,9 @@
       <ol id="rule-list" class="rules"></ol>
       <form id="routing-options" class="surface"><h2>Если правила не подошли</h2><fieldset disabled><label class="switch-label"><input id="classifier-enabled" type="checkbox"> Поручить выбор обработчика модели</label>
         <label>Маршрут при выключенном классификаторе<select id="default-route"></select></label><p id="classifier-help" class="muted small"></p><button type="submit">Применить настройки маршрута</button></fieldset></form>
-      <dialog id="rule-dialog" aria-labelledby="rule-dialog-title"><form id="rule-editor">
+      <dialog id="rule-dialog" aria-labelledby="rule-dialog-title">
         <header class="section-heading"><h2 id="rule-dialog-title">Новое правило</h2><button type="button" class="quiet" id="rule-close" aria-label="Закрыть редактор">Закрыть</button></header>
+        <form id="rule-editor">
         <div class="rule-grid"><label>Название<input id="rule-name" required></label><label>Обработчик<select id="rule-route"></select></label></div>
         <div class="rule-grid"><label>Место в списке<select id="rule-before"></select></label><label class="switch-label"><input type="checkbox" id="rule-enabled" checked> Правило включено</label></div>
         <h3>Условия совпадения</h3><p class="muted small">Заполните хотя бы одно условие для совпадения. Разные условия должны выполняться одновременно. В списках пишите каждую фразу с новой строки.</p>
@@ -81,9 +82,16 @@
         <details id="rule-extra" class="technical-details"><summary>Исключения, слова активации, регулярное выражение и группы</summary>
         <div id="extra-conditions" class="rule-grid"></div>
         <div class="group-editor"><h3>Группы фраз</h3><p class="muted small">В запросе должна встретиться хотя бы одна фраза из каждой группы.</p><div id="rule-groups"></div><button type="button" id="group-add" class="quiet">Добавить группу</button></div></details>
+        </form>
+        <form id="rule-preview" aria-labelledby="rule-preview-title">
+          <h3 id="rule-preview-title">Проверить это правило</h3>
+          <p class="muted small">Проверяются условия из редактора. Остальные правила и их порядок здесь не учитываются.</p>
+          <div class="test-inputs"><label>Пробная фраза<input id="rule-phrase" placeholder="Например, включи свет на кухне" required maxlength="8000"></label><label>ID слова активации <span class="optional">(необязательно)</span><input id="rule-wake" placeholder="Например, alice"></label><button type="submit">Проверить</button></div>
+          <p id="rule-preview-result" class="notice" role="status" hidden></p>
+        </form>
         <p id="rule-error" class="notice error" role="alert" hidden></p>
-        <div class="dialog-actions"><button id="rule-delete" type="button" class="quiet delete-button" hidden>Удалить правило…</button><button id="rule-save" type="submit" class="primary">Сохранить и применить</button></div>
-      </form></dialog>
+        <div class="dialog-actions"><button id="rule-delete" type="button" class="quiet delete-button" hidden>Удалить правило…</button><button id="rule-save" form="rule-editor" type="submit" class="primary">Сохранить и применить</button></div>
+      </dialog>
     </section>
     <section id="account" class="page" aria-label="Подписка ChatGPT" hidden>
       <section class="surface account-surface"><h2>Аккаунт ChatGPT</h2><p class="muted">Войдите в аккаунт, чтобы Bridge мог обращаться к модели по вашей подписке ChatGPT.</p>
