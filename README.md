@@ -390,8 +390,8 @@ sh /data/opt/quasar-bridge/app/uninstall.sh
 - [Пример настроек](config.example.json) и
   [пример с дополнительными MCP-серверами](config.mcp.example.json).
 - [Как устроен проект](docs/design.md) и [результаты проверок](docs/validation.md).
-- [Проверка в эмуляторе kuyase](scripts/kuyase/README.md): GitHub Actions для
-  Mini 1 и Станции 2, сборки ARM64/ARMv7, локальный ASR и управление AirPlay.
+- [E2E-проверки в КУЯСЭ](scripts/kuyase/README.md) охватывают голосовые сценарии и веб-панель
+  в Chromium. На pull request проверяются пять профилей колонок с пакетами ARM64 и ARMv7.
 - [Панель управления в браузере](https://github.com/skrashevich/quasar-bridge/wiki/Веб-панель#панель-управления-в-браузере):
   настройки, проверка запросов, AirPlay, история и журнал; сетевой доступ
   включается в конфиге или голосом, по умолчанию доступен только локалхост.

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
+import { declineAccountLogin } from "./account.mjs";
 
 const HOST = "127.0.0.1";
 const MODEL = "demo-model";
@@ -146,17 +147,7 @@ async function checkRouting(page, output) {
 async function checkAccount(page, output) {
   await page.getByRole("link", { name: "ChatGPT", exact: true }).click();
   await page.getByText("Вход не выполнен", { exact: true }).waitFor();
-  // Exercise the real cross-site navigation without contacting a provider.
-  await page.route("https://auth.openai.com/**", async route => {
-    const q = new URL(route.request().url()).searchParams;
-    const callback = new URL(q.get("redirect_uri"));
-    callback.search = new URLSearchParams({ state: q.get("state"), error: "access_denied" });
-    await route.fulfill({ contentType: "text/html", body: '<a href="' + callback.href.replaceAll("&", "&amp;") + '">Decline</a>' });
-  });
-  await page.getByRole("button", { name: "Войти через ChatGPT" }).click();
-  await page.getByRole("link", { name: "Decline" }).click();
-  await page.locator("#result").filter({ hasText: "Вход отменён" }).waitFor();
-  assert.equal(new URL(page.url()).search, "");
+  await declineAccountLogin(page);
   assert.equal(await page.locator("html").evaluate(root => getComputedStyle(root).colorScheme), "dark");
   await page.getByRole("link", { name: "Вернуться в панель" }).click();
   await page.getByText("Вход не выполнен", { exact: true }).waitFor();

@@ -103,6 +103,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-arm ipxe-qemu adb
           python3 -m venv "$RUNNER_TEMP/kuyase-venv"
           "$RUNNER_TEMP/kuyase-venv/bin/pip" install ubi-reader==0.8.16
+      - name: Install browser for web panel E2E
+        working-directory: scripts/web-screenshots
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          ./node_modules/.bin/playwright install --with-deps chromium
       - name: Download Ubuntu-built kuyase
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -119,7 +124,7 @@ jobs:
           "$RUNNER_TEMP/kuyase-venv/bin/python" scripts/kuyase/prepare.py \
             --board "$BOARD" --emulator-dir "$RUNNER_TEMP/kuyase" \
             --output "$RUNNER_TEMP/kuyase-input"
-      - name: Run core function E2E scenarios in station VM
+      - name: Run core and web panel E2E scenarios in station VM
         env:
           BOARD: ${{ matrix.board }}
           PACKAGE_ARCH: ${{ matrix.arch }}
