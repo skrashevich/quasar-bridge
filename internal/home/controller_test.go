@@ -518,11 +518,11 @@ func TestNamedRoomOverridesDefaultArea(t *testing.T) {
 
 func TestDefaultAreaKeepsOtherRoomsUnlessInventoryTooLarge(t *testing.T) {
 	small := []Entity{{ID: "vacuum.robot", Area: "Коридор"}, {ID: "light.bedroom", Area: "Спальня"}}
-	got, hint := markDefaultArea("Спальня", small)
+	got, hint := markDefaultArea("Спальня", "", small)
 	if len(got) != 2 || got[0].Here || !got[1].Here || hint == "" {
 		t.Fatalf("devices of other rooms must stay available: %+v hint=%q", got, hint)
 	}
-	if got, hint := markDefaultArea("Детская", []Entity{{ID: "light.bedroom", Area: "Спальня"}}); len(got) != 1 || got[0].Here || hint != "" {
+	if got, hint := markDefaultArea("Детская", "", []Entity{{ID: "light.bedroom", Area: "Спальня"}}); len(got) != 1 || got[0].Here || hint != "" {
 		t.Fatalf("an area without devices must not change the request: %+v hint=%q", got, hint)
 	}
 	large := make([]Entity, 0, 82)
@@ -530,7 +530,7 @@ func TestDefaultAreaKeepsOtherRoomsUnlessInventoryTooLarge(t *testing.T) {
 		large = append(large, Entity{ID: "light.other_" + string(rune('a'+i%26)) + string(rune('a'+i/26)), Area: "Гостиная"})
 	}
 	large = append(large, Entity{ID: "light.bedroom", Area: "Спальня"}, Entity{ID: "switch.bedroom", Area: "Спальня"})
-	if got, _ := markDefaultArea("Спальня", large); len(got) != 2 || !got[0].Here || !got[1].Here {
+	if got, _ := markDefaultArea("Спальня", "включи свет", large); len(got) != 2 || !got[0].Here || !got[1].Here {
 		t.Fatalf("oversized inventory must narrow to the speaker area: %d devices", len(got))
 	}
 }
@@ -568,6 +568,33 @@ func TestRoomStemsRecognizeDeclinedAreaNames(t *testing.T) {
 	}
 	if stems := roomStems("включи свет", []Entity{{Area: "Кухня"}, {Area: "Спальня"}}); len(stems) != 0 {
 		t.Errorf("request without a room named %v", stems)
+	}
+}
+
+// User story: the speaker stands in the bedroom, and the home has a hall
+// ("Зал"). "Включи свет, как я сказал" names no room: the short stem "зал"
+// inside "сказал" must not scope the request to the hall.
+func TestRoomStemsMatchFromWordStart(t *testing.T) {
+	if stems := roomStems("Включи свет, как я сказал", []Entity{{Area: "Зал"}}); len(stems) != 0 {
+		t.Errorf("stem inside a word named a room: %v", stems)
+	}
+	entities := []Entity{{ID: "light.hall", Name: "Свет", Area: "Зал"}, {ID: "light.garland", Name: "Гирлянда Вокзал", Area: "Детская"}}
+	scoped, named := scopeRoomEntities("свет в зале", entities)
+	if !named || len(scoped) != 1 || scoped[0].ID != "light.hall" {
+		t.Errorf("hall request must keep only the hall, got named=%v %+v", named, scoped)
+	}
+}
+
+func TestWholeHomeMatchesWords(t *testing.T) {
+	for _, q := range []string{"какая температура дома?", "выключи свет во всей квартире", "выключи свет по всем комнатам", "открой шторы повсюду"} {
+		if !wholeHome(q) {
+			t.Errorf("%q is about the whole home", q)
+		}
+	}
+	for _, q := range []string{"включи домашний кинотеатр", "включи свет"} {
+		if wholeHome(q) {
+			t.Errorf("%q is not about the whole home", q)
+		}
 	}
 }
 
@@ -618,5 +645,72 @@ func TestDefaultAreaKeepsNamedKitchenAndEveryRoom(t *testing.T) {
 				t.Fatalf("oversized every room request must ask to clarify, got %q planned=%d", answer, len(planned))
 			}
 		})
+	}
+}
+
+// User story: the speaker stands in the bedroom and the home has more devices
+// than the planner limit. "Включи торшер" names a floor lamp in the living
+// room: narrowing to the bedroom must keep it, while "включи свет" still means
+// the bedroom "Свет" and not the living-room device with the same name.
+func namedLampTools() ToolCaller {
+	entities := []Entity{
+		{ID: "light.bedroom", Name: "Свет", State: "off", Area: "Спальня"},
+		{ID: "light.floor_lamp", Name: "Торшер", State: "off", Area: "Гостиная"},
+		{ID: "light.living", Name: "Свет", State: "off", Area: "Гостиная"},
+	}
+	for i := range 78 {
+		entities = append(entities, Entity{ID: fmt.Sprintf("light.office_%d", i), Name: fmt.Sprintf("Лампа %d", i), State: "off", Area: "Кабинет"})
+	}
+	return toolFunc(func(_ context.Context, name string, _ map[string]any) (jsontext.Value, error) {
+		var v any = map[string]any{"success": true}
+		switch name {
+		case "ha_search":
+			v = map[string]any{"entities": entities}
+		case "ha_get_entity_exposure":
+			v = map[string]any{"exposed_to": map[string]any{"conversation": true}}
+		}
+		b, _ := json.Marshal(v)
+		return b, nil
+	})
+}
+
+func TestDefaultAreaNarrowingKeepsNamedDevice(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  []string
+	}{
+		{"Включи торшер", []string{"light.bedroom", "light.floor_lamp"}},
+		{"Включи свет", []string{"light.bedroom"}},
+	} {
+		var planned []string
+		c := Controller{Tools: namedLampTools(), Domains: []string{"light"}, DefaultArea: "Спальня", Planner: plannerFunc(func(_ context.Context, m []llm.Message, _ bool) (string, error) {
+			for _, d := range plannedDevices(t, m) {
+				planned = append(planned, d.ID)
+			}
+			return `{"answer":"Уточните","actions":[]}`, nil
+		})}
+		if _, err := c.Handle(t.Context(), tc.query); err != nil || !slices.Equal(planned, tc.want) {
+			t.Errorf("%q: err=%v planned=%v, want %v", tc.query, err, planned, tc.want)
+		}
+	}
+}
+
+func TestDefaultAreaNarrowingMatchesDeclinedNameAndAlias(t *testing.T) {
+	entities := make([]Entity, 0, 83)
+	for i := range 80 {
+		entities = append(entities, Entity{ID: fmt.Sprintf("light.office_%d", i), Name: "Свет", Area: "Кабинет"})
+	}
+	entities = append(entities,
+		Entity{ID: "light.bedroom", Name: "Свет", Area: "Спальня"},
+		Entity{ID: "light.sofa", Name: "Лампа у дивана", Area: "Гостиная"},
+		Entity{ID: "light.garland", Name: "Гирлянда", Aliases: []string{"Ёлка"}, Area: "Гостиная"},
+	)
+	got, _ := markDefaultArea("Спальня", "включи лампу у дивана и ёлку", entities)
+	var ids []string
+	for _, e := range got {
+		ids = append(ids, e.ID)
+	}
+	if !slices.Equal(ids, []string{"light.bedroom", "light.sofa", "light.garland"}) {
+		t.Fatalf("named devices must survive narrowing, got %v", ids)
 	}
 }
