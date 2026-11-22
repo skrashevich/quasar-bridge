@@ -27,8 +27,9 @@ var phrases = map[string]string{
 	"start": "включи эйрплей", "stop": "выключи эйрплей",
 	"weather": "какая завтра погода", "music": "включи музыку", "timer": "поставь таймер на пять минут",
 	"llm": "спроси нейросеть: первый вопрос", "followup": "а вчера?",
-	"llm_urls": "спроси нейросеть: когда Бавария играет с Кёльном",
-	"reset":    "начни новый разговор", "clean": "спроси нейросеть: проверка после сброса",
+	"llm_urls":     "спроси нейросеть: когда Бавария играет с Кёльном",
+	"command_rule": "Запиши заметку купить кофе", "command_classifier": "Добавь в блокнот купить кофе",
+	"reset": "начни новый разговор", "clean": "спроси нейросеть: проверка после сброса",
 	"isolation": "спроси нейросеть: проверка другой колонки",
 	"home":      "Включи свет в кабинете", "state": "Горит ли свет в кабинете?",
 	"failure": "спроси нейросеть: ошибка провайдера",
@@ -43,7 +44,7 @@ type turn struct {
 	want                 counters
 }
 
-func scenario(ctx context.Context, base, fixtures, name string) error {
+func scenario(ctx context.Context, base, fixtures, name, notesPath string) error {
 	for _, endpoint := range []string{base, fixtures} {
 		u, err := url.Parse(endpoint)
 		if err != nil {
@@ -66,6 +67,8 @@ func scenario(ctx context.Context, base, fixtures, name string) error {
 		turns = []turn{{"llm", "voice-llm", first.answer, false, local}}
 	case "llm_urls":
 		turns = []turn{{"llm_urls", "voice-urls", llmURLsAnswer, false, local}}
+	case "command_rule", "command_classifier":
+		return voiceNoteScenario(ctx, base, fixtures, name, notesPath)
 	case "text":
 		turns = []turn{{"llm", "text-llm", first.answer, true, counters{LLM: 1, TTS: 1}}}
 	case "dialogue":
@@ -84,7 +87,7 @@ func scenario(ctx context.Context, base, fixtures, name string) error {
 	// Each scenario uses distinct speaker IDs, even when the mock lives across cases.
 	for i, input := range turns {
 		input.device = name + "-" + input.device
-		if err := exchange(ctx, base, fixtures, input); err != nil {
+		if err := exchange(ctx, base, fixtures, input, requestID(input.name)); err != nil {
 			return fmt.Errorf("%s turn %d: %w", name, i+1, err)
 		}
 	}
@@ -92,7 +95,11 @@ func scenario(ctx context.Context, base, fixtures, name string) error {
 	return nil
 }
 
-func exchange(ctx context.Context, base, fixtures string, input turn) error {
+func requestID(name string) string {
+	return fmt.Sprintf("kuyase-%s-%d", name, time.Now().UnixNano())
+}
+
+func exchange(ctx context.Context, base, fixtures string, input turn, id string) error {
 	started := time.Now()
 	wantSpeech := input.answer
 	if input.name == "llm_urls" {
@@ -114,7 +121,6 @@ func exchange(ctx context.Context, base, fixtures string, input turn) error {
 		return err
 	}
 	defer ws.CloseNow()
-	id := fmt.Sprintf("kuyase-%s-%d", input.name, time.Now().UnixNano())
 	body := &request.TAliceRequestProto{
 		Application: &app.TClientInfoProto{DeviceId: new(input.device)},
 		Request:     &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: common.EEventType_voice_input.Enum()}}, Format: new("audio/opus"),

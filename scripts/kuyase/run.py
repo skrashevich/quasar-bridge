@@ -19,6 +19,7 @@ from report import Report
 
 ADB = ["adb", "-s", "127.0.0.1:15555"]
 GUEST = "/data/bridge-ci"
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def shell(command, timeout=60):
@@ -199,7 +200,9 @@ def main():
         (out / "guest.txt").write_text(shell("uname -a; cat /tmp/quasar-emu-hw.json"))
         shell(f"mkdir -p {GUEST}")
         push(build / "kuyase-control", GUEST + "/control")
-        shell(f"chmod 755 {GUEST}/control")
+        push(ROOT / "docs/examples/voice-note", GUEST + "/voice-note")
+        shell(f"chmod 755 {GUEST}/control {GUEST}/voice-note")
+        default_rules = json.loads((ROOT / "config.example.json").read_text())["routing"]["rules"]
         # Keep ADB shell transports open: legacy adbd kills detached children.
         for arch in ([args.arch] if args.arch else ("arm64", "armv7")):
             mock = launch(ADB + ["shell", f"echo $$ >{GUEST}/mock.pid; exec {GUEST}/control -mode upstream >{GUEST}/mock.log 2>&1"], f"{arch}-mock-transport.log")
@@ -208,11 +211,19 @@ def main():
                 binary.write_bytes(archive.extractfile("bin/quasar-bridge").read())
             push(binary, GUEST + "/quasar-bridge")
             binary.unlink()
+            notes = f"{GUEST}/notes-{arch}.jsonl"
             config = {
                 "listen": "127.0.0.1:8443", "upstream": "ws://127.0.0.1:18444/uni.ws",
                 "mode": "hybrid", "llm_base_url": "http://127.0.0.1:18444/v1",
                 "llm_model": "kuyase-fixture", "llm_chatgpt_auth_file": f"{GUEST}/account-{arch}.json",
-                "routing": {"default_route": "yandex", "classifier": {"enabled": False}}, "assistant_tools": {"enabled": False},
+                "routing": {
+                    "default_route": "yandex",
+                    "commands": {"voice_note": {"path": f"{GUEST}/voice-note", "args": [notes], "timeout_ms": 5000}},
+                    "rules": [{"name": "notes", "route": "command", "command": "voice_note",
+                               "match": {"starts_with_any": ["запиши заметку"]}}, *default_rules],
+                    "classifier": {"enabled": True, "commands": {"voice_note": "Сохранить голосовую заметку в блокнот"}},
+                },
+                "assistant_tools": {"enabled": False},
                 "dialogue_context": {"enabled": True},
                 "conversation_log": {"enabled": True, "path": f"{GUEST}/conversations-{arch}.jsonl"},
                 "local_progress": {"enabled": False}, "listen_after_reply": False,
@@ -234,16 +245,23 @@ def main():
             if before["airplay"]["state"] != "stopped":
                 raise RuntimeError(f"unexpected initial AirPlay state: {before}")
             report.check(arch, "health", health)
-            for action in ("weather", "music", "timer", "llm", "llm_urls", "text", "dialogue",
+            for action in ("weather", "music", "timer", "llm", "llm_urls", "command_rule", "command_classifier", "text", "dialogue",
                            "isolation", "reset", "home", "failure", "start", "stop"):
                 def check_action():
-                    output = shell(f"{GUEST}/control -action {action} -timeout 90s", timeout=100)
+                    output = shell(f"{GUEST}/control -action {action} -notes {notes} -timeout 90s", timeout=100)
                     (out / f"{arch}-{action}.txt").write_text(output + "\n")
                 report.check(arch, action, check_action)
 
             with forward_panel(2704) as panel:
+                def check_routing_panel():
+                    before = shell(f"cat {notes}")
+                    browser_case("routing", panel, out, arch)
+                    if shell(f"cat {notes}") != before:
+                        raise RuntimeError("routing preview executed the voice-note command")
+
                 for name in ("overview", "routing", "settings", "chat", "history", "airplay", "logs", "account", "access"):
-                    report.check(arch, "web-" + name, lambda: browser_case(name, panel, out, arch))
+                    report.check(arch, "web-" + name, check_routing_panel if name == "routing"
+                                 else lambda: browser_case(name, panel, out, arch))
 
             report.check(arch, "web-models", lambda: check_model_picker(arch, out, launch))
 

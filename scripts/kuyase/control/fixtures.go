@@ -68,8 +68,11 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f *fixture) completion(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Model    string        `json:"model"`
-		Messages []llm.Message `json:"messages"`
+		Model          string        `json:"model"`
+		Messages       []llm.Message `json:"messages"`
+		ResponseFormat struct {
+			Type string `json:"type"`
+		} `json:"response_format"`
 	}
 	if json.UnmarshalRead(http.MaxBytesReader(w, r.Body, 1<<20), &body) != nil || body.Model != "kuyase-fixture" || len(body.Messages) < 2 {
 		f.fail(w, "invalid completion request")
@@ -79,6 +82,13 @@ func (f *fixture) completion(w http.ResponseWriter, r *http.Request) {
 	last := body.Messages[len(body.Messages)-1].Content
 	answer := ""
 	switch {
+	case last == phrases["command_classifier"]:
+		if len(body.Messages) != 2 || body.Messages[0].Role != "system" || body.ResponseFormat.Type != "json_object" ||
+			!strings.Contains(body.Messages[0].Content, "voice_note") || !strings.Contains(body.Messages[0].Content, voiceNoteDescription) {
+			f.fail(w, "classifier did not offer the voice_note command and its description")
+			return
+		}
+		answer = `{"route":"command","command":"voice_note"}`
 	case strings.Contains(last, "Вопрос: Горит ли свет в кабинете?"):
 		if !strings.Contains(last, `"state":"on"`) {
 			f.fail(w, "home planner lacks fresh state")

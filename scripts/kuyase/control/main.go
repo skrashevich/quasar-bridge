@@ -31,6 +31,7 @@ func main() {
 	bridge := flag.String("bridge", "http://127.0.0.1:8443", "Loopback Bridge HTTP URL")
 	action := flag.String("action", "start", "start, stop, or an E2E scenario")
 	fixtureURL := flag.String("fixtures", "http://127.0.0.1:18444", "Loopback fixtures URL")
+	notes := flag.String("notes", "", "JSONL file written by the voice-note example")
 	timeout := flag.Duration("timeout", 45*time.Second, "Command deadline")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -75,7 +76,7 @@ func main() {
 		if *action == "start" || *action == "stop" {
 			err = command(ctx, *bridge, *action)
 		} else {
-			err = scenario(ctx, *bridge, *fixtureURL, *action)
+			err = scenario(ctx, *bridge, *fixtureURL, *action, *notes)
 		}
 	default:
 		err = fmt.Errorf("unknown mode %q", *mode)
@@ -153,7 +154,7 @@ func command(ctx context.Context, base, action string) error {
 		return err
 	}
 	defer ws.CloseNow()
-	id := fmt.Sprintf("kuyase-%s-%d", action, time.Now().UnixNano())
+	id := requestID(action)
 	message := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{
 		Header: &header.TEventHeader{MessageId: id, StreamId: new(int64(1))},
 		Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{

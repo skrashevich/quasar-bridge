@@ -73,9 +73,9 @@ func TestLoopbackControlRejectsExternalHosts(t *testing.T) {
 }
 
 type coreHarness struct {
-	base, upstream string
-	engine         *bridge.Engine
-	policy         bridge.RoutingConfig
+	base, upstream, notes string
+	engine                *bridge.Engine
+	policy                bridge.RoutingConfig
 }
 
 func newCoreHarness(t *testing.T, fault string) coreHarness {
@@ -86,7 +86,16 @@ func newCoreHarness(t *testing.T, fault string) coreHarness {
 	engine := &bridge.Engine{LLM: model, StripPrefixes: bridge.DefaultStripPrefixes(), Home: &home.Controller{Tools: &home.MCP{URL: upstream.URL + "/mcp"}, Planner: model}}
 	policy := bridge.DefaultRoutingConfig()
 	policy.DefaultRoute = "yandex"
-	policy.Classifier.Enabled = new(false)
+	policy.Classifier.Enabled = new(true)
+	script, err := filepath.Abs("../../../docs/examples/voice-note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := filepath.Join(t.TempDir(), "voice notes.jsonl")
+	policy.Commands = map[string]bridge.RoutingCommand{"voice_note": {Path: script, Args: []string{notes}, TimeoutMS: 5000}}
+	policy.Classifier.Commands = map[string]string{"voice_note": voiceNoteDescription}
+	policy.Rules = append([]bridge.RoutingRule{{Name: "notes", Route: "command", Command: "voice_note",
+		Match: bridge.RoutingMatch{StartsWithAny: []string{"запиши заметку"}}}}, policy.Rules...)
 	if err := engine.SetRouting(policy); err != nil {
 		t.Fatal(err)
 	}
@@ -152,16 +161,16 @@ func newCoreHarness(t *testing.T, fault string) coreHarness {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return coreHarness{base: server.URL, upstream: upstream.URL, engine: engine, policy: policy}
+	return coreHarness{base: server.URL, upstream: upstream.URL, engine: engine, policy: policy, notes: notes}
 }
 
 func TestCoreScenariosThroughProxyAndHTTPBackends(t *testing.T) {
 	harness := newCoreHarness(t, "")
-	for _, name := range []string{"weather", "music", "timer", "llm", "llm_urls", "text", "dialogue", "isolation", "reset", "home", "failure"} {
+	for _, name := range []string{"weather", "music", "timer", "llm", "llm_urls", "command_rule", "command_classifier", "text", "dialogue", "isolation", "reset", "home", "failure"} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			if err := scenario(ctx, harness.base, harness.upstream, name); err != nil {
+			if err := scenario(ctx, harness.base, harness.upstream, name, harness.notes); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -173,12 +182,13 @@ func TestCoreScenariosThroughProxyAndHTTPBackends(t *testing.T) {
 		broken := harness.policy
 		broken.Rules = nil
 		broken.DefaultRoute = "llm"
+		broken.Classifier.Enabled = new(false)
 		if err := harness.engine.SetRouting(broken); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
-		if err := scenario(ctx, harness.base, harness.upstream, "weather"); err == nil {
+		if err := scenario(ctx, harness.base, harness.upstream, "weather", harness.notes); err == nil {
 			t.Fatal("accepted an incorrect backend route")
 		}
 		counts, err := readCounters(ctx, harness.upstream)
@@ -199,7 +209,7 @@ func TestLLMURLsScenarioRejectsBoundaryRegressions(t *testing.T) {
 			harness := newCoreHarness(t, tc.fault)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			if err := scenario(ctx, harness.base, harness.upstream, "llm_urls"); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if err := scenario(ctx, harness.base, harness.upstream, "llm_urls", harness.notes); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("boundary regression was not rejected at %s: %v", tc.fault, err)
 			}
 		})
