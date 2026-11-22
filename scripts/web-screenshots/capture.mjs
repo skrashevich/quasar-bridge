@@ -102,6 +102,17 @@ async function checkRouting(page, output) {
   assert.equal(await phrase.inputValue(), "");
   assert.ok(await result.isHidden());
   const savedRevision = await revision();
+  await editor.locator("#rule-extra summary").click();
+  await phrase.fill("Включи свет в мастерской");
+  await wake.fill("demo");
+  await preview.getByRole("button", { name: "Проверить" }).click();
+  await result.filter({ hasText: "Условия совпали. Обработчик — Умный дом." }).waitFor();
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: viewport.width, height: 1200 });
+  assert.ok(await editor.evaluate(dialog => dialog.scrollHeight <= dialog.clientHeight + 1), "rule editor screenshot would crop the preview or actions");
+  await editor.screenshot({ path: path.join(output, "web-panel-rule-editor.png"), animations: "disabled" });
+  await page.setViewportSize(viewport);
+  await editor.locator("#rule-extra summary").click();
   await editor.getByLabel("Правило включено").uncheck();
   await editor.getByLabel("Содержит любую из фраз").fill("вентилятор");
   await phrase.fill("Включи свет в мастерской");
@@ -132,7 +143,7 @@ async function checkRouting(page, output) {
   await page.getByRole("button", { name: "Изменить правило Свет в мастерской" }).waitFor({ state: "detached" });
 }
 
-async function checkAccount(page) {
+async function checkAccount(page, output) {
   await page.getByRole("link", { name: "ChatGPT", exact: true }).click();
   await page.getByText("Вход не выполнен", { exact: true }).waitFor();
   // Exercise the real cross-site navigation without contacting a provider.
@@ -164,6 +175,8 @@ async function checkAccount(page) {
   const authorization = new URL(await accountLink.getAttribute("href"));
   const callback = new URL(authorization.searchParams.get("redirect_uri"));
   assert.equal(callback.port, "1455");
+  assert.equal(await page.getByLabel("Адрес после входа").inputValue(), "");
+  await page.locator("#account .account-surface").first().screenshot({ path: path.join(output, "web-panel-chatgpt-login.png"), animations: "disabled" });
   callback.search = new URLSearchParams({ state: authorization.searchParams.get("state"), error: "access_denied" });
   await page.getByLabel("Адрес после входа").fill(callback.href);
   await page.getByRole("button", { name: "Завершить вход" }).click();
@@ -171,36 +184,42 @@ async function checkAccount(page) {
   assert.equal(await page.getByLabel("Адрес после входа").inputValue(), "");
 }
 
-async function checkModelPicker(page) {
-  let current = "previous-model";
+async function checkModelPicker(page, output) {
+  let current = MODEL;
   let loads = 0;
   let models = [];
-  await page.route("**/api/chatgpt", route => route.fulfill({ json: { signed_in: true, uses_chatgpt: true } }));
+  const subscriptionStatus = async route => {
+    const response = await route.fetch();
+    const status = await response.json();
+    await route.fulfill({ response, json: { ...status, llm_api: "chatgpt", llm_model: current } });
+  };
+  await page.route("**/diagnostics/api/status", subscriptionStatus);
+  await page.route("**/api/chatgpt", route => route.fulfill({ json: { signed_in: true, uses_chatgpt: true, email: "demo@example.invalid" } }));
   await page.route("**/api/chatgpt/models", route => {
     if (route.request().method() === "POST") {
       assert.deepEqual(route.request().postDataJSON(), {});
       loads++;
       if (loads === 2) return route.fulfill({ status: 502, json: { error: "Каталог временно недоступен" } });
-      models = [{ id: "provider-model", name: "Provider Model" }];
-      if (loads > 2) models.push({ id: "another-model", name: "Another Model" });
+      models = [{ id: "demo-fast", name: "Быстрая модель" }];
+      if (loads > 2) models.push({ id: "demo-reasoning", name: "Модель рассуждений" });
     } else {
       assert.equal(route.request().method(), "GET");
     }
     return route.fulfill({ json: { models, active: current, saved: current, writable: true } });
   });
   await page.route("**/api/chatgpt/model", route => {
-    assert.deepEqual(route.request().postDataJSON(), { model: "another-model", expected_model: current });
-    current = "another-model";
+    assert.deepEqual(route.request().postDataJSON(), { model: "demo-reasoning", expected_model: current });
+    current = "demo-reasoning";
     return route.fulfill({ json: { active: current, saved: current, writable: true } });
   });
-  await page.getByRole("button", { name: "Обновить", exact: true }).click();
+  await page.reload();
   const picker = page.getByRole("combobox", { name: "Модель подписки ChatGPT" });
   await page.getByText("Нажмите «Обновить список», чтобы получить модели ChatGPT.").waitFor();
   assert.equal(loads, 0);
   assert.ok(await picker.isDisabled());
   const refresh = page.getByRole("button", { name: "Обновить список" });
   await refresh.click();
-  await picker.getByRole("option", { name: "Provider Model (provider-model)" }).waitFor({ state: "attached" });
+  await picker.getByRole("option", { name: "Быстрая модель (demo-fast)" }).waitFor({ state: "attached" });
   assert.equal(await picker.inputValue(), "");
   const apply = page.getByRole("button", { name: "Применить модель" });
   assert.ok(await apply.isDisabled());
@@ -208,14 +227,18 @@ async function checkModelPicker(page) {
   await page.getByText("Каталог временно недоступен").waitFor();
   assert.ok(await picker.isDisabled());
   await refresh.click();
-  await picker.selectOption("another-model");
+  await picker.selectOption("demo-reasoning");
+  await page.locator("#account-provider").filter({ hasText: "Bridge использует ChatGPT. Выбранная модель — " + MODEL }).waitFor();
+  assert.ok(await apply.isEnabled());
+  await page.locator("#account").screenshot({ path: path.join(output, "web-panel-chatgpt-model.png"), animations: "disabled" });
   await apply.click();
-  await page.getByText("Для следующих запросов выбрана модель another-model.").waitFor();
+  await page.getByText("Для следующих запросов выбрана модель demo-reasoning.").waitFor();
   assert.ok(await apply.isDisabled());
   await page.getByRole("button", { name: "Обновить", exact: true }).click();
-  await picker.getByRole("option", { name: "Another Model (another-model)" }).waitFor({ state: "attached" });
-  assert.equal(await picker.inputValue(), "another-model");
+  await picker.getByRole("option", { name: "Модель рассуждений (demo-reasoning)" }).waitFor({ state: "attached" });
+  assert.equal(await picker.inputValue(), "demo-reasoning");
   assert.equal(loads, 3);
+  await page.unroute("**/diagnostics/api/status", subscriptionStatus);
 }
 
 async function seedHistory(file) {
@@ -365,9 +388,13 @@ async function capture(binary, output) {
 
     await checkTheme(page, output);
     await checkHistory(page, output);
+    await page.getByRole("link", { name: "Настройки", exact: true }).click();
+    await page.locator("#config-summary").filter({ hasText: /Доступно настроек: [1-9]/ }).waitFor();
+    await page.getByRole("link", { name: "Редактор правил маршрутизации" }).waitFor();
+    await page.screenshot({ path: path.join(output, "web-panel-settings.png"), animations: "disabled" });
     await checkRouting(page, output);
-    await checkAccount(page);
-    await checkModelPicker(page);
+    await checkAccount(page, output);
+    await checkModelPicker(page, output);
     await page.setViewportSize({ width: 390, height: 844 });
     for (const section of ["overview", "routing", "account", "history"]) {
       await page.goto(url + "#" + section);
@@ -383,7 +410,7 @@ async function capture(binary, output) {
         assert.equal(await filters.getAttribute("aria-expanded"), "false");
         const picker = page.getByRole("combobox", { name: "Тема", exact: true });
         await picker.selectOption("light");
-        await page.screenshot({ path: path.join(output, "web-panel-history-mobile.png"), animations: "disabled" });
+        await page.screenshot({ path: path.join(output, "web-panel-history-mobile.png"), fullPage: true, animations: "disabled" });
         await picker.selectOption("dark");
       }
       assert.equal(await page.getByRole("combobox", { name: "Тема", exact: true }).inputValue(), "dark");
