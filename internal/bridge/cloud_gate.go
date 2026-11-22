@@ -8,7 +8,7 @@ import (
 
 	"github.com/coder/websocket"
 	directive "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 const (
