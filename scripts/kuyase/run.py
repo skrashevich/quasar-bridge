@@ -238,21 +238,17 @@ def main():
             raise RuntimeError("connected to wrong station VM")
         (out / "guest.txt").write_text(shell("uname -a; cat /tmp/quasar-emu-hw.json"))
         shell(f"mkdir -p {GUEST}/commands && chmod 700 {GUEST} {GUEST}/commands")
-        # Only this verified VM replaces its local audio sink. The HTTP client
-        # must recover the number from the actual PCM written by Bridge.
         speaker = f"{GUEST}/test-speaker"
         shell(f"mkdir -p {speaker} && chmod 700 {speaker}")
-        player = out / "aplay"
-        player.write_text(f"#!/bin/sh\nset -eu\numask 077\ncat > {speaker}/prompt.part\nmv {speaker}/prompt.part {speaker}/prompt.pcm\n")
-        push(player, speaker + "/aplay")
-        shell(f"chmod 700 {speaker}/aplay")
+        # readSpeakerInfo also uses version_full next to the native config.
+        shell(f"if test -f /system/vendor/quasar/version_full; then cp /system/vendor/quasar/version_full {speaker}/version_full; fi")
         push(build / "kuyase-control", GUEST + "/control")
         push(ROOT / "docs/examples/voice-note", GUEST + "/commands/voice-note")
         shell(f"chmod 755 {GUEST}/control {GUEST}/commands/voice-note")
         default_rules = json.loads((ROOT / "config.example.json").read_text())["routing"]["rules"]
         # Keep ADB shell transports open: legacy adbd kills detached children.
         for arch in ([args.arch] if args.arch else ("arm64", "armv7")):
-            mock = launch(ADB + ["shell", f"echo $$ >{GUEST}/mock.pid; exec {GUEST}/control -mode upstream >{GUEST}/mock.log 2>&1"], f"{arch}-mock-transport.log")
+            mock = launch(ADB + ["shell", f"echo $$ >{GUEST}/mock.pid; exec {GUEST}/control -mode upstream -speaker-fixture {speaker} >{GUEST}/mock.log 2>&1"], f"{arch}-mock-transport.log")
             with tarfile.open(build / f"quasar-bridge-linux-{arch}.tar.gz") as archive:
                 binary = out / "quasar-bridge"
                 binary.write_bytes(archive.extractfile("bin/quasar-bridge").read())
@@ -287,9 +283,9 @@ def main():
                 shell(f"kill $(cat {GUEST}/mock.pid)")
                 mock.wait(timeout=15)
                 continue
-            command = (f"export PATH={speaker}:$PATH GOMAXPROCS=2 QUASAR_HOME_MCP_URL=http://127.0.0.1:18444/mcp; "
+            command = ("export GOMAXPROCS=2 QUASAR_HOME_MCP_URL=http://127.0.0.1:18444/mcp; "
                        f"echo $$ >{GUEST}/bridge.pid; exec {GUEST}/quasar-bridge "
-                       f"-config {GUEST}/config.json >{GUEST}/bridge.log 2>&1")
+                       f"-config {GUEST}/config.json -speaker-config {speaker}/speaker.cfg >{GUEST}/bridge.log 2>&1")
             bridge = launch(ADB + ["shell", command], f"{arch}-transport.log")
             before = wait_for_health(8443, [bridge], "Bridge; see failure-bridge.log")
             if before["airplay"]["state"] != "stopped":

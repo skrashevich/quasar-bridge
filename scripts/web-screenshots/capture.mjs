@@ -158,9 +158,23 @@ async function captureCommandEditor(page, output) {
   const viewport = page.viewportSize();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await dialog.evaluate(d => d.scrollWidth <= d.clientWidth + 1), "mobile command editor overflow");
-  await dialog.getByRole("button", { name: "Сохранить и применить" }).click();
-  await dialog.getByLabel("Код с колонки").waitFor();
-  assert.equal(await dialog.getByLabel("Код с колонки").inputValue(), "");
+  const requestCode = dialog.getByRole("button", { name: "Получить код", exact: true });
+  await requestCode.scrollIntoViewIfNeeded();
+  const notice = await dialog.locator("#command-code-notice").boundingBox();
+  const button = await requestCode.boundingBox();
+  assert.ok(notice && button && notice.y >= 0 && notice.y + notice.height <= button.y && button.y + button.height <= 844, "readable code notice above the mobile action");
+  // This off-device screenshot has no aliced; KUYASE exercises the native RPC.
+  const commandURL = "**/api/routing/command";
+  await page.route(commandURL, route => {
+    const edit = route.request().postDataJSON();
+    assert.equal(edit.action, "create");
+    assert.equal(edit.id, "voice_note");
+    return route.fulfill({ status: 202, json: { status: "confirmation_required", challenge_id: "demo-screenshot", expires_in: 90 } });
+  }, { times: 1 });
+  await requestCode.click();
+  const code = dialog.getByLabel("Код с колонки", { exact: true });
+  await code.waitFor();
+  assert.equal(await code.inputValue(), "");
   assert.ok(await dialog.evaluate(d => d.scrollWidth <= d.clientWidth + 1), "mobile confirmation overflow");
   await dialog.screenshot({ path: path.join(output, "web-panel-command-confirm.png"), animations: "disabled" });
   await dialog.getByRole("button", { name: "Закрыть редактор команды" }).click();
@@ -364,9 +378,7 @@ async function capture(binary, output) {
       conversation_log: { enabled: true, path: journal },
       routing: { default_route: "llm" },
     }), { mode: 0o600 });
-    // The screenshot fixture discards the local prompt. No code is entered or saved.
-    await writeFile(path.join(temp, "aplay"), "#!/bin/sh\ncat >/dev/null\n", { mode: 0o700 });
-    bridge = spawn(binary, ["-config", config, "-speaker-config", speakerConfig], { cwd: temp, env: { ...process.env, PATH: temp + path.delimiter + process.env.PATH, QUASAR_LLM_CHATGPT_AUTH_FILE: credentials }, stdio: ["ignore", "inherit", "inherit"] });
+    bridge = spawn(binary, ["-config", config, "-speaker-config", speakerConfig], { cwd: temp, env: { ...process.env, QUASAR_LLM_CHATGPT_AUTH_FILE: credentials }, stdio: ["ignore", "inherit", "inherit"] });
     const spawned = once(bridge, "spawn");
     await spawned;
 

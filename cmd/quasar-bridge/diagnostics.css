@@ -6,6 +6,8 @@
   --muted:#566e79;
   --accent:#176d79;
   --danger:#b34332;
+  --code-accent:#895600;
+  --code-bg:#fff3d6;
   --line:rgba(25,53,65,.15);
   --tint:rgba(23,109,121,.07);
   --notice-line:rgba(23,109,121,.3);
@@ -23,6 +25,8 @@
   --muted:#b0c2ca;
   --accent:#82d6d2;
   --danger:#ffab9c;
+  --code-accent:#f5c46e;
+  --code-bg:#3a3020;
   --line:#617b89;
   --tint:#233e48;
   --notice-line:#50878b;
@@ -312,6 +316,10 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 .command-arguments p,#command-editor>p { margin:4px 0 12px; }
 .command-arg { display:flex; gap:8px; align-items:center; margin:0 0 8px; }
 .command-arg textarea { flex:1; min-width:0; }
+.command-code-notice { margin:18px 0 0; padding:12px 16px; border-inline-start:4px solid var(--code-accent); border-radius:6px; background:var(--code-bg); color:var(--ink); }
+.command-code-notice strong { color:var(--code-accent); }
+.command-code-notice p { margin:3px 0 0; }
+.command-code-notice:not([hidden])+.dialog-actions { border:0; margin-top:0; }
 #command-confirm-invocation { display:block; white-space:pre-wrap; overflow-wrap:anywhere; padding:10px 12px; margin-bottom:16px; background:var(--tint); border-radius:6px; }
 #command-code { display:block; width:7ch; margin:8px 0 10px; font-size:22px; letter-spacing:.14em; font-variant-numeric:tabular-nums; }
 #command-timeout-help { display:block; margin-top:4px; font-weight:400; }

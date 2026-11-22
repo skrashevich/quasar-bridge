@@ -128,7 +128,7 @@ function heardCode() {
 }
 
 async function confirmCommand(dialog) {
-  const input = dialog.getByLabel("Код с колонки");
+  const input = dialog.getByLabel("Код с колонки", { exact: true });
   await input.waitFor();
   await input.fill(heardCode());
   await dialog.getByRole("button", { name: "Подтвердить", exact: true }).click();
@@ -137,6 +137,8 @@ async function commands(page) {
   await nav(page, "Маршрутизация");
   const example = (await api(page, "routing/command?id=voice_note")).command;
   const dialog = page.getByRole("dialog");
+  const requestCode = () => dialog.getByRole("button", { name: "Получить код", exact: true }).click();
+  const notice = dialog.getByText("Понадобится код с колонки", { exact: true });
   const save = () => dialog.getByRole("button", { name: "Сохранить и применить" }).click();
   const createID = "web_note";
   const editedID = "web_note_edited";
@@ -145,11 +147,13 @@ async function commands(page) {
   const description = "Добавить в <b>блокнот</b> из панели";
   await page.getByRole("button", { name: "Добавить команду" }).click();
   assert.equal(await dialog.locator('input[type="password"]').count(), 0);
+  await notice.waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Получить код" }).getAttribute("aria-describedby"), "command-code-notice");
   await dialog.getByLabel("ID команды").fill(createID);
   await dialog.getByLabel("Путь к программе").fill("/bin/date");
   await dialog.getByLabel("Когда выбирать эту команду", { exact: false }).fill(description);
-  await save();
-  await dialog.getByLabel("Код с колонки").waitFor();
+  await requestCode();
+  await dialog.getByLabel("Код с колонки", { exact: true }).waitFor();
   assert.ok(!(await api(page, "routing")).active.command_ids.includes(createID));
   await confirmCommand(dialog);
   await dialog.waitFor({ state: "hidden" });
@@ -166,14 +170,25 @@ async function commands(page) {
 
   await page.getByRole("button", { name: "Изменить команду " + createID }).click();
   await dialog.getByLabel("ID команды").fill(editedID);
-  await dialog.getByLabel("Путь к программе").fill(example.path);
+  assert.ok(await notice.isHidden(), "renaming keeps the same invocation");
+  const path = dialog.getByLabel("Путь к программе");
+  await path.fill(example.path);
+  await notice.waitFor();
+  await path.fill("/bin/date");
+  assert.ok(await notice.isHidden(), "restoring the original path clears the warning");
+  await dialog.getByRole("button", { name: "Добавить аргумент" }).click();
+  await notice.waitFor();
+  await dialog.getByRole("button", { name: "Убрать аргумент" }).click();
+  assert.ok(await notice.isHidden(), "removing the added argument clears the warning");
+  await dialog.getByRole("button", { name: "Сохранить и применить" }).waitFor();
+  await path.fill(example.path);
   await dialog.getByLabel("Тайм-аут", { exact: false }).fill("2.5");
   const args = [example.args[0], "аргумент с пробелами", ""];
   for (const arg of args) {
     await dialog.getByRole("button", { name: "Добавить аргумент" }).click();
     await dialog.getByRole("textbox", { name: "Аргумент программы" }).last().fill(arg);
   }
-  await save();
+  await requestCode();
   await confirmCommand(dialog);
   await dialog.waitFor({ state: "hidden" });
   await page.reload();

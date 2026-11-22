@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"context"
-	"github.com/skrashevich/quasar-bridge/internal/journal"
 	"net/http"
 	"net/url"
 	"strings"
@@ -10,6 +9,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 type Proxy struct {
@@ -71,6 +72,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
 	defer cancel()
 	var session Session
+	var private privatePrompts
 	var trace *conversation
 	downSend := Sender(down.Write)
 	if p.Journal != nil {
@@ -82,7 +84,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err := down.Write(ctx, k, data); err != nil {
 				return err
 			}
-			trace.server(data, true)
+			if !private.hidden(data, wire.ServerToClient) {
+				trace.server(data, true)
+			}
 			return nil
 		}
 	}
@@ -105,15 +109,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-			if trace != nil {
-				if direction == "client" {
-					trace.client(data)
-				} else {
-					trace.server(data, false)
-				}
+			d := wire.ClientToServer
+			if direction == "server" {
+				d = wire.ServerToClient
 			}
-			if p.Observer != nil {
-				p.Observer(direction, kind, data)
+			if !private.hidden(data, d) {
+				if trace != nil {
+					if d == wire.ClientToServer {
+						trace.client(data)
+					} else {
+						trace.server(data, false)
+					}
+				}
+				if p.Observer != nil {
+					p.Observer(direction, kind, data)
+				}
 			}
 			if session != nil {
 				if direction == "client" {

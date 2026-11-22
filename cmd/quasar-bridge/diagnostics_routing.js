@@ -297,8 +297,8 @@ async function changeRouting(endpoint, body) {
   let applied = false;
   try {
     if (endpoint === "command") {
-      if (body.command) {
-        byId("command-loading").textContent = "Проверяем команду. Если требуется код, его произнесёт колонка…";
+      if (body.command && !byId("command-code-notice").hidden) {
+        byId("command-loading").textContent = "Слушайте колонку. Алиса произнесёт код…";
         byId("command-loading").hidden = false;
       }
       const result = await commandRequest("", body);

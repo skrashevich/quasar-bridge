@@ -14,15 +14,13 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/skrashevich/quasar-bridge/internal/commandprompt"
 )
 
 const codeLifetime = 90 * time.Second
 const issueInterval = 30 * time.Second
 
 var errCommandApprovalRequired = errors.New("spoken approval required")
-var errAudioUnavailable = errors.New("Колонка не смогла произнести код. Проверьте локальный аудиовыход и попробуйте снова.")
+var errAudioUnavailable = errors.New("Алиса не подтвердила озвучивание кода. Проверьте связь колонки с Яндексом и попробуйте ещё раз.")
 var errLimitsUnavailable = errors.New("Не удалось прочитать или сохранить лимит попыток на колонке.")
 var errExpiredChallenge = errors.New("Подтверждение больше недоступно. Вернитесь к команде и запросите новый код.")
 var errWrongCode = errors.New("Код не совпал. Введите число, которое произнесла колонка.")
@@ -144,6 +142,9 @@ func (a *commandApprovals) reserve(path, session string, edit commandEdit) (p *c
 }
 
 func (a *commandApprovals) begin(ctx context.Context, path, session string, edit commandEdit) (commandTicket, error) {
+	if a.speak == nil {
+		return commandTicket{}, errAudioUnavailable
+	}
 	p, fresh, err := a.reserve(path, session, edit)
 	if err != nil {
 		return commandTicket{}, err
@@ -151,13 +152,9 @@ func (a *commandApprovals) begin(ctx context.Context, path, session string, edit
 	if !fresh {
 		return p.ticket(a.clock()), nil
 	}
-	speak := a.speak
-	if speak == nil {
-		speak = commandprompt.Play
-	}
-	playCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	playCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	err = speak(playCtx, p.number)
+	err = a.speak(playCtx, p.number)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err != nil || playCtx.Err() != nil || a.pending != p {

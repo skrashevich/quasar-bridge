@@ -33,6 +33,7 @@ func main() {
 	fixtureURL := flag.String("fixtures", "http://127.0.0.1:18444", "Loopback fixtures URL")
 	notes := flag.String("notes", "", "JSONL file written by the voice-note example")
 	timeout := flag.Duration("timeout", 45*time.Second, "Command deadline")
+	speakerFixture := flag.String("speaker-fixture", "", "Private guest directory for the native Alice test service")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -43,6 +44,9 @@ func main() {
 		host, _, err = net.SplitHostPort(*listen)
 		if err == nil {
 			err = loopback(host)
+		}
+		if err == nil && *speakerFixture != "" {
+			err = startSpeakerFixture(ctx, *speakerFixture)
 		}
 		if err == nil {
 			s := &http.Server{Addr: *listen, Handler: mockUpstream(), ReadHeaderTimeout: 5 * time.Second}

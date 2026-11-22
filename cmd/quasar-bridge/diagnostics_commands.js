@@ -1,6 +1,6 @@
 "use strict";
 
-const commandEditor = { id: "", revision: "", csrfToken: "", ticket: "", expiryTimer: 0, load: 0 };
+const commandEditor = { id: "", revision: "", csrfToken: "", original: null, ticket: "", expiryTimer: 0, load: 0 };
 
 function showCommandList(data, locked) {
   const list = byId("command-list");
@@ -33,7 +33,25 @@ function commandRequest(query, body) {
     options.headers = { "Content-Type": "application/json", "X-Quasar-CSRF": commandEditor.csrfToken };
     options.body = JSON.stringify(body);
   }
-  return request("api/routing/command" + query, options);
+  return request("api/routing/command" + query, options, body?.command ? 35000 : 15000);
+}
+
+function commandArgs() {
+  return Array.from(byId("command-args").querySelectorAll("textarea"),
+    field => field.value === field.initialText ? field.originalArgument : field.value);
+}
+
+function updateCommandNotice() {
+  const original = commandEditor.original;
+  const args = commandArgs();
+  const previous = original?.args || [];
+  const needsCode = !original || byId("command-path").value !== original.path ||
+    args.length !== previous.length || args.some((arg, index) => arg !== previous[index]);
+  byId("command-code-notice").hidden = !needsCode;
+  const save = byId("command-save");
+  save.textContent = needsCode ? "Получить код" : "Сохранить и применить";
+  if (needsCode) save.setAttribute("aria-describedby", "command-code-notice");
+  else save.removeAttribute("aria-describedby");
 }
 
 function addCommandArg(value = "") {
@@ -50,6 +68,7 @@ function addCommandArg(value = "") {
   remove.setAttribute("aria-label", "Убрать аргумент");
   remove.addEventListener("click", () => {
     row.remove();
+    updateCommandNotice();
     byId("command-arg-add").focus();
   });
   row.append(field, remove);
@@ -68,6 +87,7 @@ async function loadCommand() {
     if (load !== commandEditor.load) return;
     commandEditor.revision = view.revision;
     commandEditor.csrfToken = view.csrf_token;
+    commandEditor.original = view.command || null;
     byId("command-id").value = id;
     byId("command-path").value = view.command?.path || "";
     byId("command-programs").replaceChildren(...(view.programs || []).map(path => new Option(path, path)));
@@ -75,6 +95,7 @@ async function loadCommand() {
     byId("command-description").value = view.description || "";
     byId("command-args").replaceChildren();
     for (const arg of view.command?.args || []) addCommandArg(arg);
+    updateCommandNotice();
     byId("command-delete").hidden = !id;
     byId("command-editor").hidden = false;
     byId(id ? "command-path" : "command-id").focus();
@@ -153,12 +174,17 @@ function setupCommandEditor() {
       byId("command-path").focus();
     }
   });
-  byId("command-arg-add").addEventListener("click", () => addCommandArg().focus());
+  byId("command-path").addEventListener("input", updateCommandNotice);
+  byId("command-args").addEventListener("input", updateCommandNotice);
+  byId("command-arg-add").addEventListener("click", () => {
+    addCommandArg().focus();
+    updateCommandNotice();
+  });
   byId("command-editor").addEventListener("submit", event => {
     event.preventDefault();
     const command = { path: byId("command-path").value };
-    const fields = byId("command-args").querySelectorAll("textarea");
-    if (fields.length) command.args = Array.from(fields, f => f.value === f.initialText ? f.originalArgument : f.value);
+    const args = commandArgs();
+    if (args.length) command.args = args;
     const timeout = byId("command-timeout").valueAsNumber;
     if (Number.isFinite(timeout)) command.timeout_ms = Math.round(timeout * 1000);
     const edit = { action: commandEditor.id ? "update" : "create", id: byId("command-id").value,

@@ -24,6 +24,7 @@ import (
 	"github.com/skrashevich/quasar-bridge/internal/assistant"
 	"github.com/skrashevich/quasar-bridge/internal/bridge"
 	"github.com/skrashevich/quasar-bridge/internal/chatgpt"
+	"github.com/skrashevich/quasar-bridge/internal/commandprompt"
 	"github.com/skrashevich/quasar-bridge/internal/dialogue"
 	"github.com/skrashevich/quasar-bridge/internal/home"
 	"github.com/skrashevich/quasar-bridge/internal/journal"
@@ -220,6 +221,7 @@ func main() {
 		return "Аварийный откат запланирован после этого ответа. После успешного восстановления подключения к Яндексу колонка перезагрузится.", nil
 	}
 	configuration := &configurationControl{path: *path, active: cfg, engine: engine, logs: logs}
+	configuration.approvals.speak = func(ctx context.Context, n int) error { return commandprompt.Play(ctx, *speakerConfig, n) }
 	if cfg.LLMAPI == "chatgpt" {
 		lc.SubscriptionModel = configuration.activeModel
 	}

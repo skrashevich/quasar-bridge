@@ -116,15 +116,18 @@
             <label>ID команды<input id="command-id" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}" title="От 1 до 64 латинских букв, цифр, точек, дефисов и подчёркиваний. Первый символ — буква или цифра." placeholder="voice_note" spellcheck="false"></label>
             <label>Тайм-аут, секунды<input id="command-timeout" type="number" min="0.001" max="60" step="0.001" placeholder="10" aria-describedby="command-timeout-help"><small id="command-timeout-help" class="muted">По умолчанию 10, максимум 60.</small></label>
           </div>
-          <label>Путь к программе<input id="command-path" list="command-programs" required pattern="/.*" title="Укажите абсолютный путь на устройстве с Bridge." placeholder="/data/opt/quasar-bridge/commands/voice-note" aria-describedby="command-path-help" spellcheck="false" autocapitalize="none"></label>
+          <label>Путь к программе<input id="command-path" list="command-programs" required pattern="/.*" title="Укажите абсолютный путь на устройстве с Bridge." placeholder="/data/opt/quasar-bridge/commands/voice-note" spellcheck="false" autocapitalize="none"></label>
           <datalist id="command-programs"></datalist>
-          <p id="command-path-help" class="muted small">Укажите абсолютный путь на колонке. При добавлении команды и при смене пути или аргументов колонка произнесёт код подтверждения.</p>
           <fieldset class="command-arguments"><legend>Аргументы</legend><p class="muted small">Каждая строка передаётся программе как один аргумент. Пробелы внутри сохраняются.</p>
             <div id="command-args"></div><button id="command-arg-add" type="button" class="quiet">Добавить аргумент</button>
           </fieldset>
           <label>Когда выбирать эту команду <span class="optional">(необязательно)</span><textarea id="command-description" rows="2" placeholder="Например, пользователь просит записать заметку"></textarea></label>
           <p class="muted small">Это описание получает классификатор. Пустое поле оставляет команду доступной только для правил.</p>
-          <div class="dialog-actions"><button id="command-delete" type="button" class="quiet delete-button" hidden>Удалить команду…</button><button type="submit" class="primary">Сохранить и применить</button></div>
+          <aside id="command-code-notice" class="command-code-notice" aria-labelledby="command-code-notice-title" hidden>
+            <strong id="command-code-notice-title">Понадобится код с колонки</strong>
+            <p>После нажатия «Получить код» Алиса дважды произнесёт трёхзначное число. Введите его в этой форме в течение 90 секунд, чтобы сохранить команду.</p>
+          </aside>
+          <div class="dialog-actions"><button id="command-delete" type="button" class="quiet delete-button" hidden>Удалить команду…</button><button id="command-save" type="submit" class="primary">Сохранить и применить</button></div>
         </form>
         <form id="command-confirm" hidden>
           <p>Введите трёхзначное число, которое произнесла колонка, чтобы разрешить запуск команды <strong id="command-confirm-id"></strong>.</p>
