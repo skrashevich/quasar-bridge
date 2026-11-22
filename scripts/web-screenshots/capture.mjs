@@ -31,6 +31,95 @@ async function unusedPort() {
   return port;
 }
 
+async function checkRouting(page, output) {
+  await page.getByRole("link", { name: "Маршрутизация", exact: true }).click();
+  await page.getByRole("button", { name: "Добавить правило" }).click();
+  const editor = page.getByRole("dialog");
+  await editor.getByLabel("Название").fill("Свет в мастерской");
+  await editor.getByLabel("Обработчик").selectOption("home");
+  await editor.getByLabel("Содержит любую из фраз").fill("свет");
+  await editor.locator("#rule-extra summary").click();
+  await editor.getByLabel("ID слов активации").fill("demo");
+  await editor.getByRole("button", { name: "Добавить группу" }).click();
+  await editor.getByLabel("Любая фраза из группы").fill("мастерской");
+  await editor.getByRole("button", { name: "Сохранить и применить" }).click();
+  await editor.waitFor({ state: "hidden" });
+  const test = page.locator("#routing-test");
+  await test.getByLabel("Пробная фраза").fill("Включи свет в мастерской");
+  await test.getByLabel("ID слова активации").fill("demo");
+  const check = async expected => {
+    const response = page.waitForResponse(r => r.url().endsWith("/api/route"));
+    await test.getByRole("button", { name: "Проверить", exact: true }).click();
+    const result = await (await response).json();
+    assert.equal(result.active.rule, expected);
+    assert.deepEqual(result.active, result.saved);
+    assert.equal(result.classifier_called, false);
+    await page.locator("#routing-result").waitFor();
+  };
+  await test.getByLabel("ID слова активации").fill("another");
+  await check("home_devices");
+  await test.getByLabel("ID слова активации").fill("demo");
+  await check("Свет в мастерской");
+  await page.screenshot({ path: path.join(output, "web-panel-routing.png"), animations: "disabled" });
+  await page.locator("#routing-live summary").click();
+  await page.getByRole("button", { name: "Определить маршрут" }).click();
+  await page.locator("#routing-live-result").filter({ hasText: "Алиса · Home Assistant отключён · Свет в мастерской" }).waitFor();
+  await page.getByRole("button", { name: "Изменить правило Свет в мастерской" }).click();
+  await editor.getByLabel("Правило включено").uncheck();
+  await editor.getByRole("button", { name: "Сохранить и применить" }).click();
+  await editor.waitFor({ state: "hidden" });
+  await check("home_devices");
+  await page.getByRole("button", { name: "Изменить правило Свет в мастерской" }).click();
+  await editor.getByLabel("Правило включено").check();
+  await editor.getByLabel("Место в списке").selectOption("");
+  await editor.getByRole("button", { name: "Сохранить и применить" }).click();
+  await editor.waitFor({ state: "hidden" });
+  await check("home_devices");
+  await page.getByRole("button", { name: "Изменить правило Свет в мастерской" }).click();
+  page.once("dialog", dialog => dialog.accept());
+  await editor.getByRole("button", { name: "Удалить правило…" }).click();
+  await editor.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Изменить правило Свет в мастерской" }).waitFor({ state: "detached" });
+}
+
+async function checkAccount(page) {
+  await page.getByRole("link", { name: "ChatGPT", exact: true }).click();
+  await page.getByText("Вход не выполнен", { exact: true }).waitFor();
+  // Exercise the real cross-site navigation without contacting a provider.
+  await page.route("https://auth.openai.com/**", async route => {
+    const q = new URL(route.request().url()).searchParams;
+    const callback = new URL(q.get("redirect_uri"));
+    callback.search = new URLSearchParams({ state: q.get("state"), error: "access_denied" });
+    await route.fulfill({ contentType: "text/html", body: '<a href="' + callback.href.replaceAll("&", "&amp;") + '">Decline</a>' });
+  });
+  await page.getByRole("button", { name: "Войти через ChatGPT" }).click();
+  await page.getByRole("link", { name: "Decline" }).click();
+  await page.locator("#result").filter({ hasText: "Вход отменён" }).waitFor();
+  assert.equal(new URL(page.url()).search, "");
+  await page.getByRole("link", { name: "Вернуться в панель" }).click();
+  await page.getByText("Вход не выполнен", { exact: true }).waitFor();
+
+  // Present a second loopback Host to simulate a panel opened by a remote
+  // browser. The real API selects the manual return and validates its state.
+  await page.route("**/api/chatgpt/start", async route => {
+    const forwarded = new URL(route.request().url());
+    forwarded.hostname = "127.0.0.2";
+    const response = await route.fetch({ headers: { ...route.request().headers(), host: forwarded.host, origin: forwarded.origin } });
+    await route.fulfill({ response });
+  });
+  await page.getByRole("button", { name: "Войти через ChatGPT" }).click();
+  const accountLink = page.getByRole("link", { name: "Открыть ChatGPT в новой вкладке" });
+  await accountLink.waitFor();
+  const authorization = new URL(await accountLink.getAttribute("href"));
+  const callback = new URL(authorization.searchParams.get("redirect_uri"));
+  assert.equal(callback.port, "1455");
+  callback.search = new URLSearchParams({ state: authorization.searchParams.get("state"), error: "access_denied" });
+  await page.getByLabel("Адрес после входа").fill(callback.href);
+  await page.getByRole("button", { name: "Завершить вход" }).click();
+  await page.locator("#account-message").filter({ hasText: "Вход отменён" }).waitFor();
+  assert.equal(await page.getByLabel("Адрес после входа").inputValue(), "");
+}
+
 async function capture(binary, output) {
   const temp = await mkdtemp(path.join(tmpdir(), "quasar-web-screenshots-"));
   const conversations = [];
@@ -69,6 +158,7 @@ async function capture(binary, output) {
     let panelPort = await unusedPort();
     while (panelPort === bridgePort) panelPort = await unusedPort();
     const config = path.join(temp, "config.json");
+    const credentials = path.join(temp, "account.json");
     await writeFile(config, JSON.stringify({
       listen: `${HOST}:${bridgePort}`,
       upstream: `ws://${HOST}:${mockPort}/uni.ws`,
@@ -81,7 +171,7 @@ async function capture(binary, output) {
       conversation_log: { enabled: false },
       routing: { default_route: "llm" },
     }), { mode: 0o600 });
-    bridge = spawn(binary, ["-config", config], { cwd: temp, stdio: ["ignore", "inherit", "inherit"] });
+    bridge = spawn(binary, ["-config", config], { cwd: temp, env: { ...process.env, QUASAR_LLM_CHATGPT_AUTH_FILE: credentials }, stdio: ["ignore", "inherit", "inherit"] });
     const spawned = once(bridge, "spawn");
     await spawned;
 
@@ -107,6 +197,14 @@ async function capture(binary, output) {
     await page.locator("#overview-model").filter({ hasText: MODEL }).waitFor();
     await page.screenshot({ path: path.join(output, "web-panel-overview.png"), animations: "disabled" });
 
+    await checkRouting(page, output);
+    await checkAccount(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const section of ["overview", "routing", "account"]) {
+      await page.goto(url + "#" + section);
+      await page.locator("#" + section).waitFor();
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), section + " exceeds mobile width");
+    }
     await page.setViewportSize({ width: 1040, height: 1150 });
     await page.getByRole("link", { name: "Чат", exact: true }).click();
     const input = page.getByRole("textbox", { name: "Сообщение" });

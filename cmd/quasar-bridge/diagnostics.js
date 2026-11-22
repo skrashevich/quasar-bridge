@@ -1,7 +1,7 @@
 "use strict";
 
 const byId = id => document.getElementById(id);
-const pageNames = { overview: "Обзор", settings: "Настройки", query: "Чат", airplay: "AirPlay", history: "История", logs: "Журнал событий" };
+const pageNames = { overview: "Обзор", routing: "Маршрутизация", account: "ChatGPT", settings: "Настройки", query: "Чат", airplay: "AirPlay", history: "История", logs: "Журнал событий" };
 const state = { page: "overview", status: null, config: null, restartRun: "", settings: new Map(), drafts: new Map(), configBusy: false, statusBusy: false, historyBusy: false, airplayBusy: false, queryBusy: false, queryDialog: storedQueryDialog(), queryMessages: [], queryExpired: false };
 function storedQueryDialog() {
   try { return sessionStorage.getItem("quasarBridge.queryDialog") || ""; } catch (_) { return ""; }
@@ -32,7 +32,7 @@ const enumSettings = {
   "routing.default_route": [["classify", "Классификатор"], ["yandex", "Алиса"], ["llm", "Модель"], ["home", "Умный дом"]],
   "routing.classifier.on_error": [["yandex", "Алиса"], ["llm", "Модель"], ["home", "Умный дом"]]
 };
-const sourceNames = { rule: "Совпало правило", default: "Маршрут по умолчанию", classifier: "Классификатор", classifier_error: "Ошибка классификатора; выбран резервный маршрут", airplay: "Команда AirPlay", mode: "Режим Bridge", pending: "Нужен классификатор", builtin: "Встроенная команда", bridge_configuration: "Команда управления Bridge", bridge_diagnostics: "Управление веб-интерфейсом", recovery: "Команда восстановления Bridge", music: "Команда воспроизведения музыки", playback: "Управление воспроизведением" };
+const sourceNames = { home_disabled: "Home Assistant отключён", rule: "Совпало правило", default: "Маршрут по умолчанию", classifier: "Классификатор", classifier_error: "Ошибка классификатора; выбран резервный маршрут", airplay: "Команда AirPlay", mode: "Режим Bridge", pending: "Нужен классификатор", builtin: "Встроенная команда", bridge_configuration: "Команда управления Bridge", bridge_diagnostics: "Управление веб-интерфейсом", recovery: "Команда восстановления Bridge", music: "Команда воспроизведения музыки", playback: "Управление воспроизведением" };
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -64,7 +64,11 @@ async function request(path, options = {}, timeout = 15000) {
     const response = await fetch(path, { cache: "no-store", ...options, signal: controller.signal });
     let data;
     try { data = await response.json(); } catch (_) { throw new Error("Bridge вернул некорректный ответ (HTTP " + response.status + ")."); }
-    if (!response.ok) throw new Error(data.error || "Ошибка HTTP " + response.status);
+    if (!response.ok) {
+      const error = new Error(data.error || "Ошибка HTTP " + response.status);
+      error.status = response.status;
+      throw error;
+    }
     return data;
   } catch (error) {
     if (error.name === "AbortError") throw new Error("Bridge не ответил вовремя. Проверьте соединение и попробуйте снова.");
@@ -104,9 +108,26 @@ function renderStatus(data) {
   setConnected(true);
   if (data.version) byId("version").textContent = "Версия " + data.version;
   byId("overview-mode").textContent = ({ hybrid: "Гибридный режим", observe: "Наблюдение", proxy: "Прокси" })[data.mode] || data.mode || "Работает";
-  fillFacts("overview-state", [["Bridge", data.status === "ok" ? "Работает" : data.status || "Работает"], ["AirPlay", data.airplay?.enabled === false ? "Отключён" : ({ running: "Включён", stopped: "Выключен", starting: "Запускается", stopping: "Выключается" })[data.airplay?.state] || "Неизвестно"], ["История диалогов", data.conversation_log_enabled ? "Записывается" : "Запись отключена"]]);
-  fillFacts("routing-state", [["По умолчанию", routeName(data.routing_default_route)], ["Классификация моделью", data.routing_classifier_enabled ? "Включена" : "Выключена"], ["Действующих правил", data.routing_rules ?? "—"]]);
-  const features = [["Инструменты модели", data.assistant_tools_enabled], ["Контекст диалога", data.dialogue_context_enabled], ["Home Assistant", data.home_assistant_enabled], ["Воспроизведение музыки", data.music_playback_enabled], ["MCP-серверы", Number(data.mcp_servers_configured) > 0]];
+  byId("routing-observe").hidden = data.mode !== "observe";
+  const sessions = data.speaker_subscriptions?.length;
+  byId("station-state").textContent = sessions === undefined ? "Сведения о подключении недоступны" : sessions ? "Активных соединений с колонками: " + sessions : "Ожидание подключения колонки";
+  byId("frames-up").textContent = data.client_frames?.toLocaleString("ru-RU") ?? "—";
+  byId("frames-down").textContent = data.server_frames?.toLocaleString("ru-RU") ?? "—";
+  byId("channel-uptime").textContent = uptimeText(data.uptime_seconds);
+  byId("overview-model").textContent = data.llm_model || "Модель не задана";
+  const apiName = enumSettings.llm_api.find(([value]) => value === data.llm_api)?.[1] || data.llm_api || "Не указан";
+  byId("overview-api").textContent = "Подключение · " + apiName;
+  byId("account-provider").textContent = data.llm_api === "chatgpt"
+    ? "Bridge использует ChatGPT. Выбранная модель — " + (data.llm_model || "не задана") + "."
+    : "Текущее подключение — " + apiName + ". Для запросов по подписке выберите провайдер ChatGPT в установщике или конфигурации Bridge.";
+  const providerLink = byId("overview-provider-link");
+  providerLink.href = data.llm_api === "chatgpt" ? "#account" : "#settings";
+  providerLink.textContent = data.llm_api === "chatgpt" ? "Аккаунт ChatGPT" : "Настройки модели";
+  fillFacts("overview-state", [["AirPlay", data.airplay?.enabled === false ? "Отключён" : ({ running: "Включён", stopped: "Выключен", starting: "Запускается", stopping: "Выключается" })[data.airplay?.state] || "Неизвестно"], ["История диалогов", data.conversation_log_enabled ? "Записывается" : "Запись отключена"], ["Home Assistant", data.home_assistant_enabled ? "Включён" : "Отключён"]]);
+  const routing = [["Включено правил", data.routing_rules ?? "—"], ["Без совпадения", data.routing_classifier_enabled ? "Выбирает классификатор" : routeName(data.routing_default_route)]];
+  if (data.routing_classifier_enabled) routing.push(["При отключении классификатора", routeName(data.routing_default_route)]);
+  fillFacts("routing-state", routing);
+  const features = [["Инструменты модели", data.assistant_tools_enabled], ["Контекст диалога", data.dialogue_context_enabled], ["Воспроизведение музыки", data.music_playback_enabled], ["MCP-серверы", Number(data.mcp_servers_configured) > 0]];
   byId("feature-state").replaceChildren(...features.map(([name, on]) => element("span", "feature" + (on ? "" : " disabled"), name + (on ? ": включено" : ": отключено"))));
   fillFacts("technical-state", [["Время работы", uptimeText(data.uptime_seconds)], ["Кадров от колонки", data.client_frames ?? "—"], ["Кадров от Яндекса", data.server_frames ?? "—"], ["Ошибок записи истории", data.conversation_log_failures ?? "—"], ["Ревизия маршрутов", data.routing_revision || "—"], ["Панель по сети", data.diagnostics?.network_access ? "Доступна" : "Только localhost"], ["Адрес панели", data.diagnostics?.address || "—"], ["Порт панели", data.diagnostics?.port ?? "—"]]);
   byId("status-json").textContent = JSON.stringify(data, null, 2);
@@ -219,7 +240,14 @@ function settingRow(setting, index) {
   control.disabled = setting.writable === false || state.configBusy;
   control.setAttribute("aria-describedby", help.id + " setting-error-" + index);
   control.dataset.path = path;
-  if (kind !== "boolean") editor.append(control);
+  if (path === "routing.rules") {
+    const link = element("a", "text-link", "Настроить и проверить правила");
+    link.href = "#routing";
+    const advanced = element("details", "raw-state");
+    advanced.open = state.drafts.has(path);
+    advanced.append(element("summary", "", "Редактировать массив JSON"), control);
+    editor.append(link, advanced);
+  } else if (kind !== "boolean") editor.append(control);
   const error = element("p", "field-error"); error.id = "setting-error-" + index; error.hidden = true; editor.append(error);
   control.addEventListener("input", () => {
     const rawValue = kind === "boolean" ? String(control.checked) : control.value;
@@ -291,8 +319,6 @@ function updateConfigSummary() {
   else if (config?.restart_required) text = "Сохранённые настройки требуют перезапуска Bridge.";
   byId("overview-config").textContent = config ? text : "Настройки ещё не загружены.";
   byId("apply-help").textContent = text + (count ? " Несохранённые правки при этом не применяются." : "");
-  const model = state.settings.get("llm_model");
-  byId("overview-model").textContent = model ? String(model.active || "Не задана") : "Настройки модели недоступны";
 }
 async function loadConfig(reportError = true) {
   try {
@@ -310,7 +336,7 @@ async function loadConfig(reportError = true) {
     return true;
   } catch (error) {
     if (reportError) message("config-message", error.message, true);
-    if (!state.config) { byId("overview-config").textContent = "Не удалось загрузить настройки."; byId("config-summary").textContent = "Каталог настроек недоступен. Нажмите «Обновить значения», чтобы повторить."; byId("overview-model").textContent = "Настройки недоступны"; }
+    if (!state.config) { byId("overview-config").textContent = "Не удалось загрузить настройки."; byId("config-summary").textContent = "Каталог настроек недоступен. Нажмите «Обновить значения», чтобы повторить."; }
     return false;
   }
 }
@@ -379,13 +405,7 @@ async function previewQuery(event) {
   message("query-message", "Проверяем правила…");
   try {
     const result = await post("api/route", { text });
-    byId("route-result").replaceChildren(...[["Действующие настройки", result.active], ["Сохранённые настройки", result.saved]].map(([label, decision]) => {
-      const card = element("section", "surface");
-      card.append(element("h3", "", label), element("p", "route-name", routeName(decision?.route)));
-      card.append(element("p", "route-explanation", decision?.rule ? "Правило: " + decision.rule : sourceNames[decision?.source] || "Источник: " + (decision?.source || "не определён")));
-      return card;
-    }));
-    byId("route-result").hidden = false;
+    renderRouteComparison("route-result", result);
     message("query-message", "Маршрут проверен без выполнения запроса. Классификатор модели не вызывался. Проверка охватывает правила и команды управления Bridge; специальные команды музыки и контекст диалога здесь не моделируются.");
   } catch (error) { message("query-message", error.message, true); }
   finally { setQueryBusy(false); }
@@ -708,6 +728,8 @@ function navigate() {
   document.querySelectorAll(".nav-link").forEach(link => { const active = link.hash === "#" + page; link.classList.toggle("active", active); if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current"); });
   byId("page-title").textContent = pageNames[page]; document.title = pageNames[page] + " — Quasar Bridge";
   if (page === "settings") loadConfig();
+  if (page === "routing") loadRouting();
+  if (page === "account") loadAccount();
   if (page === "history") loadHistory();
   if (page === "logs") loadLogs();
   if (page === "query") {
@@ -755,6 +777,8 @@ document.querySelectorAll("[data-settings-filter]").forEach(link => link.addEven
 window.addEventListener("hashchange", navigate);
 window.addEventListener("beforeunload", event => { if (dirtySettings().length) { event.preventDefault(); event.returnValue = ""; } });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadStatus(); loadLogs(); } });
+setupRouting();
+setupAccount();
 restoreChat();
 loadStatus();
 if (location.hash !== "#settings") loadConfig();

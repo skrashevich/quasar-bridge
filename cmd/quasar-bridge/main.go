@@ -23,6 +23,7 @@ import (
 
 	"quasarbridge/internal/assistant"
 	"quasarbridge/internal/bridge"
+	"quasarbridge/internal/chatgpt"
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/home"
 	"quasarbridge/internal/journal"
@@ -404,7 +405,7 @@ func main() {
 		result["diagnostics"] = map[string]any{"network_access": configuration.diagnosticsNetworkAccess(), "port": cfg.Diagnostics.Port, "address": panel.Address()}
 		return result
 	}
-	panelControl := diagnosticControl{Configuration: configuration, Engine: engine, Logs: logs, MusicQueue: musicQueue, Status: panelStatus, AirPlay: airPlay, Network: configuration.diagnosticsNetworkAccess, QueryBusy: new(atomic.Bool), YandexQuery: yandexQuery, Dialogs: newQueryDialogs(time.Duration(cfg.DialogueContext.TTLSeconds) * time.Second)}
+	panelControl := diagnosticControl{ChatGPT: &panelChatGPT{store: chatgpt.Store{Path: cfg.LLMChatGPTAuthFile}}, Configuration: configuration, Engine: engine, Logs: logs, MusicQueue: musicQueue, Status: panelStatus, AirPlay: airPlay, Network: configuration.diagnosticsNetworkAccess, QueryBusy: new(atomic.Bool), YandexQuery: yandexQuery, Dialogs: newQueryDialogs(time.Duration(cfg.DialogueContext.TTLSeconds) * time.Second)}
 	registerPanel := func(m *http.ServeMux) {
 		registerDiagnostics(m, diagnosticLogs, func() map[string]any { return airPlayHealth(airPlay) }, configuration.diagnosticsNetworkAccess)
 		registerDiagnosticsAPI(m, panelControl)

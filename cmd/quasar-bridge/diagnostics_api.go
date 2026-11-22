@@ -25,6 +25,7 @@ import (
 )
 
 type diagnosticControl struct {
+	ChatGPT       *panelChatGPT
 	Configuration *configurationControl
 	Engine        *bridge.Engine
 	Logs          *journal.Writer
@@ -46,6 +47,9 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 	}
 	register := func(pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(pattern, diagnosticsAccess(control.Network, handler))
+	}
+	if control.ChatGPT != nil {
+		control.ChatGPT.register(mux, register)
 	}
 	register("GET /diagnostics/api/status", func(w http.ResponseWriter, r *http.Request) {
 		state := map[string]any{}
@@ -98,9 +102,42 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 		value, err := control.Configuration.Apply(r.Context(), request.Action)
 		writeDiagnosticResult(w, value, err)
 	})
+	register("GET /diagnostics/api/routing", func(w http.ResponseWriter, r *http.Request) {
+		if control.Configuration == nil {
+			writeDiagnosticError(w, http.StatusServiceUnavailable, "Routing control is unavailable")
+			return
+		}
+		value, err := control.Configuration.GetRouting(r.Context())
+		writeDiagnosticResult(w, value, err)
+	})
+	register("POST /diagnostics/api/routing/rule", func(w http.ResponseWriter, r *http.Request) {
+		var mutation assistant.RoutingMutation
+		if !readDiagnosticJSON(w, r, &mutation) {
+			return
+		}
+		if control.Configuration == nil {
+			writeDiagnosticError(w, http.StatusServiceUnavailable, "Routing control is unavailable")
+			return
+		}
+		value, err := control.Configuration.MutateRouting(r.Context(), mutation)
+		writeDiagnosticResult(w, value, err)
+	})
+	register("POST /diagnostics/api/routing/options", func(w http.ResponseWriter, r *http.Request) {
+		var options assistant.RoutingOptions
+		if !readDiagnosticJSON(w, r, &options) {
+			return
+		}
+		if control.Configuration == nil {
+			writeDiagnosticError(w, http.StatusServiceUnavailable, "Routing control is unavailable")
+			return
+		}
+		value, err := control.Configuration.ConfigureRouting(r.Context(), options)
+		writeDiagnosticResult(w, value, err)
+	})
 	register("POST /diagnostics/api/route", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Text string `json:"text"`
+			Text     string `json:"text"`
+			WakeWord string `json:"wake_word"`
 		}
 		if !readDiagnosticJSON(w, r, &request) || !validDiagnosticText(w, request.Text) {
 			return
@@ -109,12 +146,13 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 			writeDiagnosticError(w, http.StatusServiceUnavailable, "Routing control is unavailable")
 			return
 		}
-		value, err := control.Configuration.TestRouting(r.Context(), request.Text, "")
+		value, err := control.Configuration.TestRouting(r.Context(), request.Text, request.WakeWord)
 		writeDiagnosticResult(w, value, err)
 	})
 	register("POST /diagnostics/api/decide", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Text string `json:"text"`
+			Text     string `json:"text"`
+			WakeWord string `json:"wake_word"`
 		}
 		if !readDiagnosticJSON(w, r, &request) || !validDiagnosticText(w, request.Text) {
 			return
@@ -134,7 +172,7 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 		// Match CLI -route, including special handlers and classifier fallback,
 		// without generating an answer or executing the chosen action. Observe
 		// mode still permits this diagnostic path, as it does in the CLI.
-		decision := control.Engine.Decide(ctx, request.Text)
+		decision := control.Engine.DecideWithWakeWord(ctx, request.Text, request.WakeWord)
 		writeDiagnosticJSON(w, http.StatusOK, struct {
 			bridge.RouteDecision
 			ElapsedMS int64 `json:"elapsed_ms"`
@@ -309,7 +347,7 @@ func writeDiagnosticResult(w http.ResponseWriter, value any, err error) {
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
 			status = http.StatusGatewayTimeout
-		case strings.Contains(err.Error(), "changed externally"), strings.Contains(err.Error(), "restart already scheduled"), strings.Contains(err.Error(), "restart required"):
+		case strings.Contains(err.Error(), "routing revision changed"), strings.Contains(err.Error(), "unapplied saved changes"), strings.Contains(err.Error(), "changed externally"), strings.Contains(err.Error(), "restart already scheduled"), strings.Contains(err.Error(), "restart required"):
 			status = http.StatusConflict
 		case strings.Contains(err.Error(), "unavailable"), strings.Contains(err.Error(), "requires the standalone"):
 			status = http.StatusServiceUnavailable

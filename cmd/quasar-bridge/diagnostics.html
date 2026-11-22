@@ -6,6 +6,8 @@
   <meta name="color-scheme" content="light">
   <title>Панель управления — Quasar Bridge</title>
   <link rel="stylesheet" href="app.css">
+  <script src="routing.js" defer></script>
+  <script src="account.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -15,6 +17,8 @@
     <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">q<span>b</span></span><span>Quasar<br>Bridge</span></a>
     <nav aria-label="Разделы панели">
       <a href="#overview" class="nav-link active" aria-current="page"><span aria-hidden="true">◉</span> Обзор</a>
+      <a href="#routing" class="nav-link"><span aria-hidden="true">⑂</span> Маршрутизация</a>
+      <a href="#account" class="nav-link"><span aria-hidden="true">◎</span> ChatGPT</a>
       <a href="#settings" class="nav-link"><span aria-hidden="true">≡</span> Настройки <span id="nav-dirty" class="nav-count" hidden></span></a>
       <a href="#query" class="nav-link"><span aria-hidden="true">↗</span> Чат</a>
       <a href="#airplay" class="nav-link"><span aria-hidden="true">♫</span> AirPlay</a>
@@ -28,22 +32,66 @@
     <p id="global-message" class="notice" role="status" hidden></p>
     <section id="overview" class="page" aria-labelledby="overview-title">
       <h2 id="overview-title" class="visually-hidden">Состояние Bridge</h2>
-      <div class="signal-path" aria-label="Обработка голосового запроса">
-        <div class="signal-node"><span class="signal-symbol" aria-hidden="true">◉</span><strong>Колонка</strong><span>Голосовой запрос</span></div><span class="signal-line" aria-hidden="true"></span>
-        <div class="signal-node bridge-node"><span class="signal-symbol" aria-hidden="true">⇄</span><strong>Quasar Bridge</strong><span id="overview-mode">Проверяем режим…</span></div><span class="signal-line" aria-hidden="true"></span>
-        <div class="signal-destinations"><div><strong>Алиса</strong><span>Сервисы Яндекса</span></div><div><strong>Модель</strong><span id="overview-model">Загрузка настроек…</span></div></div>
-      </div>
-      <div class="section-heading"><h2>Сейчас в работе</h2><button id="refresh-status" type="button" class="quiet">Обновить</button></div>
-      <dl id="overview-state" class="facts"><div><dt>Bridge</dt><dd>Загружаем состояние…</dd></div></dl>
+      <section class="channel" aria-labelledby="channel-title">
+        <div class="channel-head"><h2 id="channel-title">Канал станции</h2><span id="overview-mode">Проверяем режим…</span></div>
+        <p id="station-state" class="channel-status">Проверяем подключение…</p>
+        <div class="channel-meters"><div><span>Кадры от колонки с запуска</span><strong id="frames-up">—</strong></div><div><span>Кадры от Яндекса с запуска</span><strong id="frames-down">—</strong></div><div><span>Время работы Bridge</span><strong id="channel-uptime">—</strong></div></div>
+      </section>
+      <div class="section-heading"><h2>Обработчики запросов</h2><button id="refresh-status" type="button" class="quiet">Обновить</button></div>
       <div class="overview-columns">
-        <section class="surface" aria-labelledby="overview-routing-title"><h3 id="overview-routing-title">Куда направляются запросы</h3><dl id="routing-state" class="detail-list"></dl><a class="text-link" href="#query">Открыть чат</a></section>
-        <section class="surface" aria-labelledby="overview-settings-title"><h3 id="overview-settings-title">Сохранено и применяется</h3><p id="overview-config">Загружаем настройки…</p><a class="text-link" href="#settings">Открыть настройки</a><p class="muted small">Сохранение файла и применение настроек — отдельные действия.</p></section>
+        <section class="surface"><h3>Маршрутизация</h3><dl id="routing-state" class="detail-list"></dl><a class="text-link" href="#routing">Правила и проверка фразы</a></section>
+        <section class="surface"><h3>Нейросеть</h3><p id="overview-model" class="model-name">Загрузка модели…</p><p id="overview-api" class="muted small"></p><a class="text-link" id="overview-provider-link" href="#settings" data-settings-filter="llm">Настройки модели</a></section>
       </div>
+      <h2 class="subheading">Сервисы станции</h2>
+      <dl id="overview-state" class="facts"><div><dt>Состояние</dt><dd>Загружаем…</dd></div></dl>
+      <section class="surface"><h3>Настройки Bridge</h3><p id="overview-config">Загружаем настройки…</p><a class="text-link" href="#settings">Открыть настройки</a></section>
       <section class="surface" aria-labelledby="overview-features-title"><h3 id="overview-features-title">Возможности</h3><div id="feature-state" class="feature-list"><span>Загружаем…</span></div></section>
       <details class="surface technical-details"><summary>Техническое состояние</summary><dl id="technical-state" class="detail-list"></dl><details class="raw-state"><summary>Полный ответ состояния</summary><pre id="status-json" tabindex="0" aria-label="Техническое состояние Bridge в JSON">Загружаем…</pre></details></details>
     </section>
+    <section id="routing" class="page" aria-label="Правила маршрутизации" hidden>
+      <p id="routing-observe" class="notice" hidden>Bridge работает в режиме наблюдения и передаёт запросы колонки Алисе. Здесь можно проверить маршрутизацию для гибридного режима.</p>
+      <form id="routing-test" class="surface route-test">
+        <h2>Проверка фразы</h2><p class="muted">Введите запрос, чтобы увидеть обработчик и совпавшее правило. Проверка не выполняет команду и не вызывает модель.</p>
+        <div class="test-inputs"><label>Пробная фраза<input id="routing-phrase" placeholder="Например, включи свет на кухне" required maxlength="8000"></label><label>ID слова активации <span class="optional">(необязательно)</span><input id="routing-wake" placeholder="Например, alice"></label><button type="submit" class="primary">Проверить</button></div>
+        <p id="routing-test-message" class="notice" role="status" hidden></p><div id="routing-result" class="route-result" aria-live="polite" hidden></div>
+        <details id="routing-live" hidden><summary>Проверить выбор Bridge</summary>
+          <p class="muted small">Bridge учтёт доступность обработчиков и команды плеера. Если потребуется классификация, он отправит фразу настроенной модели. Сама команда не выполняется.</p>
+          <button type="button" id="routing-decide">Определить маршрут</button><p id="routing-live-result" class="notice" role="status" hidden></p>
+        </details>
+      </form>
+      <div class="section-heading"><div><h2>Порядок правил</h2><p class="muted small">Срабатывает первое включённое правило, условия которого подходят.</p></div><div class="actions"><button type="button" id="refresh-routing" class="quiet">Обновить</button><button type="button" id="rule-new" disabled>Добавить правило</button></div></div>
+      <p id="routing-message" class="notice" role="status" hidden></p>
+      <p id="routing-pending" class="notice" hidden>В файле есть неприменённые изменения маршрутизации. Проверка сравнит обе версии. <a href="#settings" data-settings-filter="routing">Открыть сохранённые настройки</a></p>
+      <ol id="rule-list" class="rules"></ol>
+      <form id="routing-options" class="surface"><h2>Если правила не подошли</h2><fieldset disabled><label class="switch-label"><input id="classifier-enabled" type="checkbox"> Поручить выбор обработчика модели</label>
+        <label>Маршрут при выключенном классификаторе<select id="default-route"></select></label><p id="classifier-help" class="muted small"></p><button type="submit">Применить настройки маршрута</button></fieldset></form>
+      <dialog id="rule-dialog" aria-labelledby="rule-dialog-title"><form id="rule-editor">
+        <header class="section-heading"><h2 id="rule-dialog-title">Новое правило</h2><button type="button" class="quiet" id="rule-close" aria-label="Закрыть редактор">Закрыть</button></header>
+        <div class="rule-grid"><label>Название<input id="rule-name" required></label><label>Обработчик<select id="rule-route"></select></label></div>
+        <div class="rule-grid"><label>Место в списке<select id="rule-before"></select></label><label class="switch-label"><input type="checkbox" id="rule-enabled" checked> Правило включено</label></div>
+        <h3>Условия совпадения</h3><p class="muted small">Заполните хотя бы одно условие для совпадения. Разные условия должны выполняться одновременно. В списках пишите каждую фразу с новой строки.</p>
+        <div id="rule-conditions" class="rule-grid"></div>
+        <details id="rule-extra" class="technical-details"><summary>Исключения, слова активации, регулярное выражение и группы</summary>
+        <div id="extra-conditions" class="rule-grid"></div>
+        <div class="group-editor"><h3>Группы фраз</h3><p class="muted small">В запросе должна встретиться хотя бы одна фраза из каждой группы.</p><div id="rule-groups"></div><button type="button" id="group-add" class="quiet">Добавить группу</button></div></details>
+        <p id="rule-error" class="notice error" role="alert" hidden></p>
+        <div class="dialog-actions"><button id="rule-delete" type="button" class="quiet delete-button" hidden>Удалить правило…</button><button id="rule-save" type="submit" class="primary">Сохранить и применить</button></div>
+      </form></dialog>
+    </section>
+    <section id="account" class="page" aria-label="Подписка ChatGPT" hidden>
+      <section class="surface account-surface"><h2>Аккаунт ChatGPT</h2><p class="muted">Войдите в аккаунт, чтобы Bridge мог обращаться к модели по вашей подписке ChatGPT.</p>
+        <dl class="detail-list" id="account-state"></dl><p id="account-message" class="notice" role="status" hidden></p>
+        <div class="actions"><button id="account-start" class="primary" type="button" disabled>Войти через ChatGPT</button><button id="account-logout" type="button" hidden>Выйти из аккаунта…</button><button id="account-refresh" type="button" class="quiet">Обновить</button></div>
+        <section id="account-manual" hidden><h3>Завершение входа</h3><p>Откройте ChatGPT и подтвердите доступ. После возврата на 127.0.0.1 скопируйте полный адрес из строки браузера, даже если страница не загрузилась. Ссылка действует 10 минут.</p>
+          <a id="account-authorize" class="button" target="_blank" rel="noopener noreferrer">Открыть ChatGPT в новой вкладке</a>
+          <form id="account-finish"><label>Адрес после входа<input id="account-callback" type="password" autocomplete="off" spellcheck="false" required></label><button type="submit" class="primary">Завершить вход</button></form>
+        </section>
+      </section>
+      <section class="surface"><h3>Модель Bridge</h3><p id="account-provider" class="muted"></p><a href="#settings" data-settings-filter="llm">Открыть настройки модели</a></section>
+    </section>
     <section id="settings" class="page" aria-labelledby="settings-title" hidden>
       <h2 id="settings-title" class="visually-hidden">Настройки Bridge</h2>
+      <p class="settings-links"><a href="#routing">Редактор правил маршрутизации</a> <a href="#account">Вход в ChatGPT</a></p>
       <p class="intro">Измените нужные параметры и сохраните их в файл. Затем примените изменения: часть настроек требует перезапуска Bridge.</p>
       <div class="settings-tools"><label class="search-field"><span class="visually-hidden">Поиск настроек</span><input id="settings-search" type="search" placeholder="Найти настройку или её описание" autocomplete="off"></label><button id="refresh-config" type="button" class="quiet">Обновить значения</button></div>
       <p id="config-message" class="notice" role="status" hidden></p><p id="config-summary" class="muted small">Загружаем каталог настроек…</p>
