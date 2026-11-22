@@ -1,7 +1,7 @@
 "use strict";
 
 const byId = id => document.getElementById(id);
-const pageNames = { overview: "Обзор", settings: "Настройки", query: "Чат", airplay: "AirPlay", history: "История", logs: "Журнал событий" };
+const pageNames = { overview: "Обзор", routing: "Маршрутизация", account: "ChatGPT", settings: "Настройки", query: "Чат", airplay: "AirPlay", history: "История", logs: "Журнал событий" };
 const state = { page: "overview", status: null, config: null, restartRun: "", settings: new Map(), drafts: new Map(), configBusy: false, statusBusy: false, historyBusy: false, airplayBusy: false, queryBusy: false, queryDialog: storedQueryDialog(), queryMessages: [], queryExpired: false };
 function storedQueryDialog() {
   try { return sessionStorage.getItem("quasarBridge.queryDialog") || ""; } catch (_) { return ""; }
@@ -13,7 +13,7 @@ function saveQueryDialog(id) {
     else sessionStorage.removeItem("quasarBridge.queryDialog");
   } catch (_) { /* The current tab still keeps its in-memory context. */ }
 }
-const logState = { cursor: 0, run: "", text: "", paused: false, busy: false };
+const logState = { cursor: 0, run: "", rows: [], paused: false, busy: false };
 const settingLabels = {
   mode: "Режим Bridge", listen: "Адрес HTTP-сервера", upstream: "Сервер Алисы", allowed_ips: "Разрешённые адреса",
   llm_base_url: "Адрес сервера модели", llm_model: "Модель", llm_api: "Формат API", llm_reasoning_effort: "Усилие рассуждения", llm_max_output_tokens: "Максимум токенов ответа", llm_hosted_tools: "Серверные инструменты", llm_chat_parameters: "Параметры генерации", llm_strip_prefixes: "Обращения к модели", llm_tts_markup: "Голоса и звуковые эффекты", home_warm_area: "Область Home Assistant", listen_after_reply: "Слушать после ответа",
@@ -32,7 +32,7 @@ const enumSettings = {
   "routing.default_route": [["classify", "Классификатор"], ["yandex", "Алиса"], ["llm", "Модель"], ["home", "Умный дом"]],
   "routing.classifier.on_error": [["yandex", "Алиса"], ["llm", "Модель"], ["home", "Умный дом"]]
 };
-const sourceNames = { rule: "Совпало правило", default: "Маршрут по умолчанию", classifier: "Классификатор", classifier_error: "Ошибка классификатора; выбран резервный маршрут", airplay: "Команда AirPlay", mode: "Режим Bridge", pending: "Нужен классификатор", builtin: "Встроенная команда", bridge_configuration: "Команда управления Bridge", bridge_diagnostics: "Управление веб-интерфейсом", recovery: "Команда восстановления Bridge", music: "Команда воспроизведения музыки", playback: "Управление воспроизведением" };
+const sourceNames = { home_disabled: "Home Assistant отключён", rule: "Совпало правило", default: "Маршрут по умолчанию", classifier: "Классификатор", classifier_error: "Ошибка классификатора; выбран резервный маршрут", airplay: "Команда AirPlay", mode: "Режим Bridge", pending: "Нужен классификатор", builtin: "Встроенная команда", bridge_configuration: "Команда управления Bridge", bridge_diagnostics: "Управление веб-интерфейсом", recovery: "Команда восстановления Bridge", music: "Команда воспроизведения музыки", playback: "Управление воспроизведением" };
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -64,7 +64,11 @@ async function request(path, options = {}, timeout = 15000) {
     const response = await fetch(path, { cache: "no-store", ...options, signal: controller.signal });
     let data;
     try { data = await response.json(); } catch (_) { throw new Error("Bridge вернул некорректный ответ (HTTP " + response.status + ")."); }
-    if (!response.ok) throw new Error(data.error || "Ошибка HTTP " + response.status);
+    if (!response.ok) {
+      const error = new Error(data.error || "Ошибка HTTP " + response.status);
+      error.status = response.status;
+      throw error;
+    }
     return data;
   } catch (error) {
     if (error.name === "AbortError") throw new Error("Bridge не ответил вовремя. Проверьте соединение и попробуйте снова.");
@@ -99,14 +103,41 @@ function renderAirPlay(airplay = {}) {
   byId("set-volume").disabled = state.airplayBusy || !available || !airplay.connected;
   byId("volume-level").disabled = state.airplayBusy || !available || !airplay.connected;
 }
+const stationModels = new Map([
+  ["yandexstation", "Яндекс Станция"], ["yandexstation_2", "Яндекс Станция Макс"],
+  ["yandexmidi", "Яндекс Станция 2"], ["orion", "Яндекс Станция 3"], ["cucumber", "Яндекс Станция Миди"],
+  ["yandexmini", "Яндекс Станция Мини"], ["yandexmini_2", "Яндекс Станция Мини 2"],
+  ["bergamot", "Яндекс Станция Мини 3"], ["pickle", "Яндекс Станция Мини 3 Про"],
+  ["yandexmicro", "Яндекс Станция Лайт"], ["plum", "Яндекс Станция Лайт 2"],
+  ["yandexplum", "Яндекс Станция Лайт 2"], ["mango", "Яндекс Станция Стрит"]
+]);
 function renderStatus(data) {
   state.status = data;
   setConnected(true);
   if (data.version) byId("version").textContent = "Версия " + data.version;
   byId("overview-mode").textContent = ({ hybrid: "Гибридный режим", observe: "Наблюдение", proxy: "Прокси" })[data.mode] || data.mode || "Работает";
-  fillFacts("overview-state", [["Bridge", data.status === "ok" ? "Работает" : data.status || "Работает"], ["AirPlay", data.airplay?.enabled === false ? "Отключён" : ({ running: "Включён", stopped: "Выключен", starting: "Запускается", stopping: "Выключается" })[data.airplay?.state] || "Неизвестно"], ["История диалогов", data.conversation_log_enabled ? "Записывается" : "Запись отключена"]]);
-  fillFacts("routing-state", [["По умолчанию", routeName(data.routing_default_route)], ["Классификация моделью", data.routing_classifier_enabled ? "Включена" : "Выключена"], ["Действующих правил", data.routing_rules ?? "—"]]);
-  const features = [["Инструменты модели", data.assistant_tools_enabled], ["Контекст диалога", data.dialogue_context_enabled], ["Home Assistant", data.home_assistant_enabled], ["Воспроизведение музыки", data.music_playback_enabled], ["MCP-серверы", Number(data.mcp_servers_configured) > 0]];
+  byId("routing-observe").hidden = data.mode !== "observe";
+  const speaker = data.speaker || {};
+  byId("station-model").textContent = stationModels.get(speaker.model) || speaker.model || "Нет данных";
+  byId("station-serial").textContent = speaker.serial_number || "Нет данных";
+  byId("station-firmware").textContent = speaker.firmware_version || "Нет данных";
+  byId("frames-up").textContent = data.client_frames?.toLocaleString("ru-RU") ?? "—";
+  byId("frames-down").textContent = data.server_frames?.toLocaleString("ru-RU") ?? "—";
+  byId("channel-uptime").textContent = uptimeText(data.uptime_seconds);
+  byId("overview-model").textContent = data.llm_model || "Модель не задана";
+  const apiName = enumSettings.llm_api.find(([value]) => value === data.llm_api)?.[1] || data.llm_api || "Не указан";
+  byId("overview-api").textContent = "Подключение · " + apiName;
+  byId("account-provider").textContent = data.llm_api === "chatgpt"
+    ? "Bridge использует ChatGPT. Выбранная модель — " + (data.llm_model || "не задана") + "."
+    : "Текущее подключение — " + apiName + ". Для запросов по подписке выберите провайдер ChatGPT в установщике или конфигурации Bridge.";
+  const providerLink = byId("overview-provider-link");
+  providerLink.href = data.llm_api === "chatgpt" ? "#account" : "#settings";
+  providerLink.textContent = data.llm_api === "chatgpt" ? "Аккаунт ChatGPT" : "Настройки модели";
+  fillFacts("overview-state", [["AirPlay", data.airplay?.enabled === false ? "Отключён" : ({ running: "Включён", stopped: "Выключен", starting: "Запускается", stopping: "Выключается" })[data.airplay?.state] || "Неизвестно"], ["История диалогов", data.conversation_log_enabled ? "Записывается" : "Запись отключена"], ["Home Assistant", data.home_assistant_enabled ? "Включён" : "Отключён"]]);
+  const routing = [["Включено правил", data.routing_rules ?? "—"], ["Без совпадения", data.routing_classifier_enabled ? "Выбирает классификатор" : routeName(data.routing_default_route)]];
+  if (data.routing_classifier_enabled) routing.push(["При отключении классификатора", routeName(data.routing_default_route)]);
+  fillFacts("routing-state", routing);
+  const features = [["Инструменты модели", data.assistant_tools_enabled], ["Контекст диалога", data.dialogue_context_enabled], ["Воспроизведение музыки", data.music_playback_enabled], ["MCP-серверы", Number(data.mcp_servers_configured) > 0]];
   byId("feature-state").replaceChildren(...features.map(([name, on]) => element("span", "feature" + (on ? "" : " disabled"), name + (on ? ": включено" : ": отключено"))));
   fillFacts("technical-state", [["Время работы", uptimeText(data.uptime_seconds)], ["Кадров от колонки", data.client_frames ?? "—"], ["Кадров от Яндекса", data.server_frames ?? "—"], ["Ошибок записи истории", data.conversation_log_failures ?? "—"], ["Ревизия маршрутов", data.routing_revision || "—"], ["Панель по сети", data.diagnostics?.network_access ? "Доступна" : "Только localhost"], ["Адрес панели", data.diagnostics?.address || "—"], ["Порт панели", data.diagnostics?.port ?? "—"]]);
   byId("status-json").textContent = JSON.stringify(data, null, 2);
@@ -195,6 +226,17 @@ function settingRow(setting, index) {
   if (setting.writable === false) flags.append(element("span", "badge", setting.environment ? "Задано окружением: " + setting.environment : "Только чтение"));
   description.append(flags);
   const editor = element("div", "setting-editor");
+  const provider = state.settings.get("llm_api");
+  if (path === "llm_model" && !isDirty(setting) && provider?.active === "chatgpt" && (state.drafts.get("llm_api") ?? provider.effective) === "chatgpt") {
+    label.removeAttribute("for");
+    help.textContent = "Выберите модель из каталога вашей подписки. Изменение вступит в силу со следующим запросом.";
+    flags.replaceChildren();
+    const link = element("a", "button", "Выбрать модель ChatGPT");
+    link.href = "#account";
+    editor.append(element("p", "small", "Действующая модель — " + (setting.active || "не задана")), link);
+    row.append(description, editor);
+    return row;
+  }
   let control;
   const raw = state.drafts.has(path) ? state.drafts.get(path) : editableValue(setting);
   if (kind === "select") {
@@ -219,7 +261,14 @@ function settingRow(setting, index) {
   control.disabled = setting.writable === false || state.configBusy;
   control.setAttribute("aria-describedby", help.id + " setting-error-" + index);
   control.dataset.path = path;
-  if (kind !== "boolean") editor.append(control);
+  if (path === "routing.rules") {
+    const link = element("a", "text-link", "Настроить и проверить правила");
+    link.href = "#routing";
+    const advanced = element("details", "raw-state");
+    advanced.open = state.drafts.has(path);
+    advanced.append(element("summary", "", "Редактировать массив JSON"), control);
+    editor.append(link, advanced);
+  } else if (kind !== "boolean") editor.append(control);
   const error = element("p", "field-error"); error.id = "setting-error-" + index; error.hidden = true; editor.append(error);
   control.addEventListener("input", () => {
     const rawValue = kind === "boolean" ? String(control.checked) : control.value;
@@ -229,6 +278,10 @@ function settingRow(setting, index) {
     try { parseValue(setting, rawValue); error.hidden = true; control.removeAttribute("aria-invalid"); }
     catch (problem) { error.textContent = problem.message; error.hidden = false; control.setAttribute("aria-invalid", "true"); }
     updateConfigSummary();
+    if (path === "llm_api") {
+      renderSettings();
+      byId(control.id).focus();
+    }
   });
   if (setting.pending || setting.writable === false) {
     const values = element("div", "setting-values");
@@ -291,8 +344,6 @@ function updateConfigSummary() {
   else if (config?.restart_required) text = "Сохранённые настройки требуют перезапуска Bridge.";
   byId("overview-config").textContent = config ? text : "Настройки ещё не загружены.";
   byId("apply-help").textContent = text + (count ? " Несохранённые правки при этом не применяются." : "");
-  const model = state.settings.get("llm_model");
-  byId("overview-model").textContent = model ? String(model.active || "Не задана") : "Настройки модели недоступны";
 }
 async function loadConfig(reportError = true) {
   try {
@@ -310,7 +361,7 @@ async function loadConfig(reportError = true) {
     return true;
   } catch (error) {
     if (reportError) message("config-message", error.message, true);
-    if (!state.config) { byId("overview-config").textContent = "Не удалось загрузить настройки."; byId("config-summary").textContent = "Каталог настроек недоступен. Нажмите «Обновить значения», чтобы повторить."; byId("overview-model").textContent = "Настройки недоступны"; }
+    if (!state.config) { byId("overview-config").textContent = "Не удалось загрузить настройки."; byId("config-summary").textContent = "Каталог настроек недоступен. Нажмите «Обновить значения», чтобы повторить."; }
     return false;
   }
 }
@@ -379,13 +430,7 @@ async function previewQuery(event) {
   message("query-message", "Проверяем правила…");
   try {
     const result = await post("api/route", { text });
-    byId("route-result").replaceChildren(...[["Действующие настройки", result.active], ["Сохранённые настройки", result.saved]].map(([label, decision]) => {
-      const card = element("section", "surface");
-      card.append(element("h3", "", label), element("p", "route-name", routeName(decision?.route)));
-      card.append(element("p", "route-explanation", decision?.rule ? "Правило: " + decision.rule : sourceNames[decision?.source] || "Источник: " + (decision?.source || "не определён")));
-      return card;
-    }));
-    byId("route-result").hidden = false;
+    renderRouteComparison("route-result", result);
     message("query-message", "Маршрут проверен без выполнения запроса. Классификатор модели не вызывался. Проверка охватывает правила и команды управления Bridge; специальные команды музыки и контекст диалога здесь не моделируются.");
   } catch (error) { message("query-message", error.message, true); }
   finally { setQueryBusy(false); }
@@ -461,19 +506,26 @@ async function copyChatText(text, button) {
     button.textContent = "Скопировано";
   } catch (_) { button.textContent = "Выделите текст для копирования"; }
 }
-function chatMessageNode(record) {
-  const entry = element("article", "chat-message from-" + record.role + (record.status ? " is-" + record.status : ""));
+function messageBubble(role, author, text, timestamp) {
+  const entry = element("article", "chat-message from-" + role);
   const meta = element("div", "chat-message-meta");
-  const author = record.role === "user" ? "Вы" : record.route === "yandex" ? "Алиса" : record.route === "llm" ? "Нейросеть" : "Bridge";
   meta.append(element("strong", "", author));
-  if (record.time) {
-    const time = element("time", "", new Date(record.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }));
-    time.dateTime = record.time; meta.append(time);
+  if (timestamp) {
+    const time = element("time", "", new Date(timestamp).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }));
+    time.dateTime = timestamp;
+    time.title = timeText(timestamp);
+    meta.append(time);
   }
   const bubble = element("div", "chat-bubble");
-  bubble.append(element("p", "chat-text", record.text));
-  if (Array.isArray(record.playback) && record.playback.length) bubble.append(renderQueryPlayback(record));
+  bubble.append(element("p", "chat-text", text));
   entry.append(meta, bubble);
+  return entry;
+}
+function chatMessageNode(record) {
+  const author = record.role === "user" ? "Вы" : record.route === "yandex" ? "Алиса" : record.route === "llm" ? "Нейросеть" : "Bridge";
+  const entry = messageBubble(record.role, author, record.text, record.time);
+  if (record.status) entry.classList.add("is-" + record.status);
+  if (Array.isArray(record.playback) && record.playback.length) entry.querySelector(".chat-bubble").append(renderQueryPlayback(record));
   if (record.role === "assistant" && !record.status) {
     const tools = element("div", "chat-message-tools");
     const timing = typeof record.elapsed_ms === "number" ? (record.elapsed_ms / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " с" : "";
@@ -561,6 +613,38 @@ async function airPlayAction(action) {
   } catch (error) { message("airplay-message", error.message, true); }
   finally { state.airplayBusy = false; renderAirPlay(state.status?.airplay); }
 }
+function renderHistory(items) {
+  const list = byId("history-items");
+  if (!items.length) {
+    list.replaceChildren(element("p", "empty-state", "Записей не найдено. Измените текст поиска или период."));
+    return;
+  }
+  const days = document.createDocumentFragment();
+  const dateLabel = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  let day, previousDate;
+  // SearchHistory returns the most recent matches first. Read each exchange from top to bottom.
+  for (const item of items.slice().reverse()) {
+    const date = dateLabel.format(new Date(item.time));
+    if (date !== previousDate) {
+      day = element("section", "history-day");
+      day.append(element("h4", "history-date", date));
+      days.append(day);
+      previousDate = date;
+    }
+    const turn = element("div", "history-turn");
+    turn.append(messageBubble("user", "Пользователь", item.query, item.time));
+    const author = item.route === "llm" ? "Нейросеть" : item.route ? routeName(item.route) : "Колонка";
+    if (item.answer) turn.append(messageBubble("assistant", author, item.answer));
+    const status = { interrupted: "Запрос прерван", incomplete: "Запись неполная", no_answer: "Текст ответа не записан" }[item.status];
+    if (status || !item.answer) {
+      const note = status || "Текст ответа не записан";
+      turn.append(element("p", "history-note", !item.answer && item.route ? author + " · " + note : note));
+    }
+    day.append(turn);
+  }
+  list.replaceChildren(days);
+  list.scrollTop = list.scrollHeight;
+}
 async function loadHistory(event) {
   if (event) event.preventDefault();
   if (state.historyBusy) return;
@@ -574,50 +658,118 @@ async function loadHistory(event) {
   try {
     const result = await request("api/history?" + params);
     const items = result.items || [];
-    byId("history-summary").textContent = "Записей: " + items.length + ". Время и даты фильтра: " + Intl.DateTimeFormat().resolvedOptions().timeZone + " (часовой пояс браузера)." + (result.partial ? " Показана часть истории: достигнут предел чтения." : "");
-    byId("history-items").replaceChildren(...items.map(item => {
-      const entry = element("article", "history-item"); const meta = element("div", "history-meta");
-      const time = element("time", "", timeText(item.time)); time.dateTime = item.time; meta.append(time);
-      if (item.route) meta.append(element("span", "badge", routeName(item.route)));
-      const status = { interrupted: "Запрос прерван", incomplete: "Неполная запись", no_answer: "Без текста ответа" }[item.status];
-      if (status) meta.append(element("span", "badge", status));
-      const missing = item.status === "interrupted" ? "Запрос прерван. Текст ответа в журнале отсутствует." : "Текст ответа отсутствует в журнале. Это не означает, что колонка не ответила.";
-      entry.append(meta, element("h3", "history-query", item.query), element("p", "history-answer", item.answer || missing));
-      return entry;
-    }));
-    if (!items.length) byId("history-items").append(element("p", "empty-state", "Записей не найдено. Измените текст поиска или период."));
-    message("history-message", result.recording ? "" : "Запись новых диалогов отключена. Сохранённая ранее история остаётся доступна. Включить запись можно в настройках.");
+    const filtered = params.get("query") || since || until || params.get("limit") !== "20";
+    byId("history-filter-toggle").textContent = filtered ? "Изменить фильтры" : "Поиск и фильтры";
+    const noun = { one: "запрос", few: "запроса", many: "запросов" }[new Intl.PluralRules("ru-RU").select(items.length)];
+    byId("history-summary").textContent = items.length + " " + noun + " · " + Intl.DateTimeFormat().resolvedOptions().timeZone;
+    renderHistory(items);
+    message("history-message", [result.partial && "Показана часть истории.", !result.recording && "Запись новых диалогов отключена в настройках."].filter(Boolean).join(" "));
   } catch (error) { message("history-message", error.message, true); if (!byId("history-items").querySelector("article")) byId("history-items").replaceChildren(element("p", "empty-state", "История недоступна. Повторите поиск после восстановления связи.")); }
   finally { state.historyBusy = false; byId("search-history").disabled = false; }
 }
-function readableLogs(raw) {
-  const query = byId("log-search").value.trim().toLocaleLowerCase("ru-RU");
-  const levelFilter = byId("log-level").value;
-  return raw.split("\n").filter(Boolean).map(line => {
+function packetRow(text, id, run) {
+  const row = element("details", "log-packet");
+  const body = element("pre", "packet-body");
+  row.append(element("summary", "", text), body);
+  if (id === 0) {
+    body.textContent = "Пакет больше 1 МиБ. Доступна только краткая запись.";
+    return row;
+  }
+  let loading = false;
+  row.addEventListener("toggle", async () => {
+    if (!row.open) { body.textContent = ""; return; }
+    if (loading) return;
+    loading = true;
+    body.textContent = "Загружаем пакет…";
     try {
-      const { time, level, msg, ...fields } = JSON.parse(line);
-      const details = Object.entries(fields).map(([key, value]) => key + "=" + JSON.stringify(value));
-      return { level: String(level || "").toUpperCase(), text: [time ? new Date(time).toLocaleTimeString("ru-RU") : "", level, msg, ...details].filter(value => value !== undefined).join(" ") };
-    } catch (_) { return { level: "", text: line }; }
-  }).filter(line => (!levelFilter || line.level === levelFilter) && (!query || line.text.toLocaleLowerCase("ru-RU").includes(query))).map(line => line.text).join("\n");
+      const packet = await request("logs/" + id + "?" + new URLSearchParams({ run }), {}, 5000);
+      if (row.open) body.textContent = JSON.stringify(packet, null, 2);
+    } catch (error) {
+      if (row.open) body.textContent = error.message;
+    } finally { loading = false; }
+  });
+  return row;
 }
-function renderLogs() {
+
+const frameDirections = new Map([["client", "↑ От колонки"], ["server", "↓ От Яндекса"]]);
+
+function logRow(line, run) {
+  let text = line, level = "", direction, id;
+  try {
+    const { time, level: severity, msg, packet_id, ...fields } = JSON.parse(line);
+    if (msg === "frame" && frameDirections.has(fields.direction)) {
+      direction = fields.direction;
+      delete fields.direction;
+    }
+    const values = Object.entries(fields).map(([key, value]) => key + "=" + JSON.stringify(value));
+    text = [time ? new Date(time).toLocaleTimeString("ru-RU") : "", severity, msg, ...values].filter(v => v !== undefined).join(" ");
+    level = String(severity || "").toUpperCase();
+    if (msg === "frame" && Number.isSafeInteger(packet_id) && packet_id >= 0) id = packet_id;
+  } catch (_) { /* Plain text log records are still searchable. */ }
+  const node = id === undefined ? element("div", "log-line", text) : packetRow(text, id, run);
+  if (direction) {
+    const label = frameDirections.get(direction);
+    node.dataset.direction = direction;
+    const heading = id === undefined ? node : node.querySelector("summary");
+    heading.prepend(element("span", "log-direction", label), " ");
+    text += ` ${label} direction="${direction}"`;
+  }
+  return { node, level, search: text.toLocaleLowerCase("ru-RU") };
+}
+
+function filterLogs() {
+  const query = byId("log-search").value.trim().toLocaleLowerCase("ru-RU");
+  const level = byId("log-level").value;
+  let visible = false;
+  for (const row of logState.rows) {
+    row.node.hidden = Boolean((level && row.level !== level) || (query && !row.search.includes(query)));
+    if (!row.node.hidden) visible = true;
+  }
+  const empty = byId("log-empty");
+  empty.hidden = visible;
+  empty.textContent = logState.rows.length ? "По выбранным фильтрам событий нет." : "Событий пока нет. Повторите действие на колонке.";
+}
+
+const logEncoder = new TextEncoder();
+function appendLogs(data) {
   const log = byId("log");
-  const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
-  const readable = readableLogs(logState.text);
-  log.textContent = readable || (logState.text ? "По выбранным фильтрам событий нет." : "Событий пока нет. Повторите действие на колонке.");
+  const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 48 && !log.querySelector("details[open]:not([hidden])");
+  const reset = data.reset || logState.run !== data.run;
+  if (reset) {
+    log.replaceChildren(byId("log-empty"));
+    logState.rows = [];
+  }
+  logState.run = data.run;
+  logState.cursor = data.cursor;
+  if (!reset && !data.text) return;
+  const fragment = document.createDocumentFragment();
+  const raw = data.text || "";
+  let start = data.cursor - logEncoder.encode(raw).length;
+  for (const line of raw.split("\n")) {
+    if (!line) { start++; continue; }
+    const row = logRow(line, data.run);
+    row.start = start;
+    start += logEncoder.encode(line).length + 1;
+    logState.rows.push(row);
+    fragment.append(row.node);
+  }
+  let expired = 0;
+  while (expired < logState.rows.length && logState.rows[expired].start < data.cursor - 1048576) {
+    logState.rows[expired++].node.remove();
+  }
+  if (expired) logState.rows.splice(0, expired);
+  log.append(fragment);
+  filterLogs();
   if (atEnd) log.scrollTop = log.scrollHeight;
 }
+
 async function loadLogs() {
   if (logState.paused || logState.busy || document.hidden || state.page !== "logs") return;
   logState.busy = true;
   try {
     const data = await request("logs?" + new URLSearchParams({ after: String(logState.cursor), run: logState.run }), {}, 5000);
     if (logState.paused) return;
-    if (data.reset || logState.run !== data.run) logState.text = "";
-    logState.run = data.run; logState.cursor = data.cursor; logState.text += data.text || "";
-    if (logState.text.length > 1048576) { logState.text = logState.text.slice(-1048576); logState.text = logState.text.slice(logState.text.indexOf("\n") + 1); }
-    renderLogs();
+    appendLogs(data);
     if (data.version) byId("version").textContent = "Версия " + data.version;
     byId("limit").textContent = data.truncated ? "Начало журнала уже вышло за лимит 1 МиБ. Скачайте файл сейчас; полный сервисный журнал остаётся на колонке." : "Доступны события с запуска Bridge, до 1 МиБ. Файл содержит журнал, версию и текущее состояние AirPlay.";
     byId("connection").classList.remove("error");
@@ -633,6 +785,8 @@ function navigate() {
   document.querySelectorAll(".nav-link").forEach(link => { const active = link.hash === "#" + page; link.classList.toggle("active", active); if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current"); });
   byId("page-title").textContent = pageNames[page]; document.title = pageNames[page] + " — Quasar Bridge";
   if (page === "settings") loadConfig();
+  if (page === "routing") loadRouting();
+  if (page === "account") loadAccount();
   if (page === "history") loadHistory();
   if (page === "logs") loadLogs();
   if (page === "query") {
@@ -673,13 +827,19 @@ document.querySelectorAll("[data-airplay]").forEach(button => button.addEventLis
 byId("volume-level").addEventListener("input", () => { byId("volume-value").value = byId("volume-level").value + "%"; });
 byId("set-volume").addEventListener("click", () => airPlayAction("volume:" + byId("volume-level").value));
 byId("history-form").addEventListener("submit", loadHistory);
+byId("history-filter-toggle").addEventListener("click", event => {
+  const toggle = event.currentTarget;
+  toggle.setAttribute("aria-expanded", String(toggle.getAttribute("aria-expanded") !== "true"));
+});
 byId("pause").addEventListener("click", () => { logState.paused = !logState.paused; byId("pause").textContent = logState.paused ? "Продолжить обновление" : "Приостановить обновление"; byId("pause").setAttribute("aria-pressed", String(logState.paused)); if (logState.paused) byId("connection").textContent = "Обновление страницы приостановлено. Bridge продолжает записывать события."; else loadLogs(); });
-byId("log-search").addEventListener("input", renderLogs);
-byId("log-level").addEventListener("change", renderLogs);
+byId("log-search").addEventListener("input", filterLogs);
+byId("log-level").addEventListener("change", filterLogs);
 document.querySelectorAll("[data-settings-filter]").forEach(link => link.addEventListener("click", () => { byId("settings-search").value = link.dataset.settingsFilter; filterSettings(); }));
 window.addEventListener("hashchange", navigate);
 window.addEventListener("beforeunload", event => { if (dirtySettings().length) { event.preventDefault(); event.returnValue = ""; } });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadStatus(); loadLogs(); } });
+setupRouting();
+setupAccount();
 restoreChat();
 loadStatus();
 if (location.hash !== "#settings") loadConfig();

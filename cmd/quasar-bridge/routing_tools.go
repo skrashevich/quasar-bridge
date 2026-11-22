@@ -10,9 +10,9 @@ import (
 	"reflect"
 	"slices"
 
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/configvoice"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/configvoice"
 )
 
 type routingBehavior struct {

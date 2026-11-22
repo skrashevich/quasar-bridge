@@ -32,5 +32,6 @@ __pycache__/
 *.pyc
 
 /dist/
+/scripts/web-screenshots/node_modules/
 *.jsonl
 *.jsonl.*

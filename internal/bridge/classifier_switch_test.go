@@ -5,7 +5,7 @@ import (
 	"encoding/json/v2"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // Decode JSON to test both explicit switches and legacy configs without a flag.

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 func TestNamedMusicNegationStaysInsideTitle(t *testing.T) {

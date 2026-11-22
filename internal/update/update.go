@@ -20,6 +20,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/skrashevich/quasar-bridge/internal/localfile"
 )
 
 // Version is set by the release build; unversioned binaries remain development builds.
@@ -70,7 +72,7 @@ func New(configPath string) *Updater {
 	}}
 	// Older releases already ship VERSION next to the launcher scripts.
 	if u.currentVersion == "dev" && filepath.Base(filepath.Dir(executable)) == "bin" {
-		if data, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(executable)), "VERSION")); err == nil {
+		if data, _, err := localfile.Read(filepath.Join(filepath.Dir(filepath.Dir(executable)), "VERSION"), localfile.NoFollow, 4096); err == nil {
 			if version := strings.TrimSpace(string(data)); stableVersion.MatchString(version) {
 				u.currentVersion = version
 			}
@@ -171,7 +173,7 @@ func standaloneState(executable, configPath string) (string, error) {
 	if err != nil || expectedErr != nil || config != expected {
 		return "", errors.New("running configuration does not belong to this standalone installation")
 	}
-	pid, err := os.ReadFile(filepath.Join(state, "bridge.pid"))
+	pid, _, err := localfile.Read(filepath.Join(state, "bridge.pid"), localfile.NoFollow, 128)
 	if err != nil || strings.TrimSpace(string(pid)) != fmt.Sprint(os.Getpid()) {
 		return "", errors.New("this process is not managed by the standalone service")
 	}
@@ -279,8 +281,7 @@ func (u *Updater) prepare(ctx context.Context, stage, tag, arch string) error {
 		return errors.New("invalid release SHA-256")
 	}
 	// Stream the archive to /tmp: speakers have a small memory budget.
-	archive := filepath.Join(stage, name)
-	file, err := os.OpenFile(archive, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	file, err := os.CreateTemp(stage, "release-*.tar.gz")
 	if err != nil {
 		return err
 	}
@@ -320,7 +321,7 @@ func (u *Updater) prepare(ctx context.Context, stage, tag, arch string) error {
 		return err
 	}
 	for name, want := range map[string]string{"ARCH": arch, "VERSION": strings.TrimPrefix(tag, "v")} {
-		data, err := os.ReadFile(filepath.Join(dest, name))
+		data, _, err := localfile.Read(filepath.Join(dest, name), localfile.NoFollow, 4096)
 		if err != nil || strings.TrimSpace(string(data)) != want {
 			return errors.New("release archive version or architecture mismatch")
 		}
@@ -334,7 +335,19 @@ func extract(reader io.Reader, dest string) error {
 		return errors.New("invalid release gzip archive")
 	}
 	defer gz.Close()
-	tr := tar.NewReader(gz)
+	// Count the entire inflated tar stream, including headers, padding and
+	// trailing gzip members. Keep the existing limit for actual file contents.
+	return extractTar(gz, dest, maxExtracted+(1<<20))
+}
+
+func extractTar(inflated io.Reader, dest string, streamLimit int64) error {
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	stream := &io.LimitedReader{R: inflated, N: streamLimit + 1}
+	tr := tar.NewReader(stream)
 	var total int64
 	entries := 0
 	for {
@@ -349,25 +362,24 @@ func extract(reader io.Reader, dest string) error {
 		if entries > 256 || !filepath.IsLocal(h.Name) || strings.Contains(h.Name, "\\") {
 			return errors.New("unsafe release archive path or too many entries")
 		}
-		path := filepath.Join(dest, h.Name)
 		switch h.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(path, 0700); err != nil {
+			if err := root.MkdirAll(h.Name, 0700); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			total += h.Size
-			if h.Size < 0 || total > maxExtracted {
+			if h.Size < 0 || h.Size > maxExtracted-total {
 				return errors.New("extracted release exceeds size limit")
 			}
-			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			total += h.Size
+			if err := root.MkdirAll(filepath.Dir(h.Name), 0700); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(h.Mode)&0700)
+			f, err := root.OpenFile(h.Name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(h.Mode)&0700)
 			if err != nil {
 				return err
 			}
-			_, copyErr := io.Copy(f, tr)
+			_, copyErr := io.CopyN(f, tr, h.Size)
 			closeErr := f.Close()
 			if err := errors.Join(copyErr, closeErr); err != nil {
 				return err
@@ -377,8 +389,15 @@ func extract(reader io.Reader, dest string) error {
 		}
 	}
 	// Drain gzip to verify its trailer as well as the tar payload.
-	_, err = io.Copy(io.Discard, io.LimitReader(gz, maxExtracted+1))
-	return err
+	_, err = io.CopyN(io.Discard, inflated, stream.N)
+	switch err {
+	case io.EOF:
+		return nil
+	case nil:
+		return errors.New("decompressed release stream exceeds size limit")
+	default:
+		return err
+	}
 }
 
 // The installer stops this process. Run it in its own session, with no inherited
@@ -387,7 +406,7 @@ func launchInstall(ctx context.Context, stage, state, lock string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	log, err := os.OpenFile(filepath.Join(state, "update.log"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	log, err := openOperationLog(state, "update.log")
 	if err != nil {
 		return err
 	}

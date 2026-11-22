@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/home"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/home"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type homeDialogueTools func(context.Context, string, map[string]any) (jsontext.Value, error)
@@ -24,7 +24,7 @@ func (f homeDialogueTools) Call(ctx context.Context, name string, args map[strin
 }
 
 func TestQueryHomeConfirmationKeepsDialogContext(t *testing.T) {
-	for _, confirmation := range []string{"да", "нет"} {
+	for _, confirmation := range []string{"да", "нет", "только доступные"} {
 		t.Run(confirmation, func(t *testing.T) {
 			const question = "норм. включи свет в кабинете"
 			const clarification = "Некоторые светильники в кабинете недоступны. Включить только доступные?"
@@ -51,7 +51,7 @@ func TestQueryHomeConfirmationKeepsDialogContext(t *testing.T) {
 				case "ha_get_entity_exposure":
 					value = map[string]any{"exposed_to": map[string]any{"conversation": true}}
 				case "ha_call_service":
-					if confirmation != "да" || args["entity_id"] != "light.office" || args["service"] != "turn_on" {
+					if confirmation == "нет" || args["entity_id"] != "light.office" || args["service"] != "turn_on" {
 						t.Errorf("unexpected physical action: %+v", args)
 					}
 					actions.Add(1)
@@ -114,7 +114,7 @@ func TestQueryHomeConfirmationKeepsDialogContext(t *testing.T) {
 				t.Fatalf("confirmation lost home context: route=%s dialog=%s", route, same)
 			}
 			wantActions := int32(0)
-			if confirmation == "да" {
+			if confirmation != "нет" {
 				wantActions = 1
 			}
 			if actions.Load() != wantActions || plannerCalls != 2 || cloudCalls != 2 {

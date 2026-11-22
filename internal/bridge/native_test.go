@@ -6,12 +6,12 @@ import (
 	"encoding/binary"
 	"encoding/json/v2"
 	"fmt"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"quasarbridge/internal/journal"
 	"slices"
 	"strings"
 	"testing"
@@ -34,8 +34,8 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 type resolverFunc func(context.Context, string) (Resolution, error)

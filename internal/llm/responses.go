@@ -67,6 +67,9 @@ func (c *Client) responses(ctx context.Context, messages []Message, structured b
 		request["reasoning"] = map[string]string{"effort": c.ReasoningEffort}
 	}
 	if subscription {
+		if c.SubscriptionModel != nil {
+			request["model"] = c.SubscriptionModel()
+		}
 		request["stream"] = true
 		delete(request, "max_output_tokens")
 	}

@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type Config struct {
@@ -44,9 +44,10 @@ func key(ctx context.Context) string { s, _ := ctx.Value(speakerKey{}).(string);
 func SpeakerKey(ctx context.Context) string { return key(ctx) }
 
 type turn struct {
-	user, answer string
-	route        string
-	private      bool
+	user, answer      string
+	route             string
+	private           bool
+	homeQuestionUntil time.Time
 }
 type entry struct {
 	turns         []turn
@@ -196,8 +197,14 @@ func (s *Store) CommitRoute(ctx context.Context, ticket Ticket, route, user, ans
 		e.turns = nil
 		return true
 	}
-	e.turns = append(e.turns, turn{user: user, answer: answer, route: route, private: private})
-	e.at = s.now()
+	completed := turn{user: user, answer: answer, route: route, private: private}
+	if route == "home" {
+		reply := strings.TrimSpace(answer)
+		if strings.HasSuffix(reply, "?") || strings.HasPrefix(strings.ToLower(reply), "уточните") {
+			completed.homeQuestionUntil = e.at.Add(45 * time.Second)
+		}
+	}
+	e.turns = append(e.turns, completed)
 	chars := 0
 	for _, t := range e.turns {
 		chars += utf8.RuneCountInString(t.user) + utf8.RuneCountInString(t.answer)
@@ -212,6 +219,25 @@ func (s *Store) CommitRoute(ctx context.Context, ticket Ticket, route, user, ans
 	}
 	return true
 }
+
+// TakeHomeQuestion consumes the last clarification when this speaker supplies
+// text. Preparing an audio stream (which may end in silence) does not consume it.
+func (s *Store) TakeHomeQuestion(ctx context.Context, ticket Ticket) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.current(ctx, ticket) {
+		return false
+	}
+	turns := s.entries[ticket.key].turns
+	if len(turns) == 0 {
+		return false
+	}
+	last := &turns[len(turns)-1]
+	open := s.now().Before(last.homeQuestionUntil)
+	last.homeQuestionUntil = time.Time{}
+	return open
+}
+
 func (s *Store) Reset(ctx context.Context) {
 	if s == nil {
 		return

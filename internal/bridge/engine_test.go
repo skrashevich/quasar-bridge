@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type completionFunc func(context.Context, []llm.Message, bool) (string, error)

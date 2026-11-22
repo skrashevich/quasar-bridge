@@ -24,9 +24,9 @@ import (
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	eventsource "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/data/event_source"
 
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 // Exercises PRs #29, #44 and #56 through real Native, Engine, HTTP LLM client,

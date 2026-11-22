@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/yandex"
 	airplay "github.com/skrashevich/station-airplay"
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/yandex"
 )
 
 type diagnosticCompleter func(context.Context, []llm.Message, bool) (string, error)
@@ -387,5 +387,46 @@ func TestDiagnosticAPICapabilitiesAndAirPlayUseRealControl(t *testing.T) {
 	response = diagnosticAPIRequest(mux, "POST", "airplay", `{"action":"invalid"}`, "application/json")
 	if response.Code != 400 || r.state != airplay.StateRunning {
 		t.Fatalf("invalid action changed receiver: status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+func TestPanelRoutingOptionsAndConflicts(t *testing.T) {
+	c := configurationFixture(t, `{"routing":{"rules":[],"default_route":"yandex"}}`)
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, diagnosticControl{Configuration: c})
+	revision := func() string {
+		t.Helper()
+		r := diagnosticAPIRequest(mux, "GET", "routing", "", "")
+		var state struct {
+			SavedRevision string `json:"saved_revision"`
+		}
+		if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &state) != nil || state.SavedRevision == "" {
+			t.Fatal("missing saved revision")
+		}
+		return state.SavedRevision
+	}
+	post := func(endpoint, body string) *httptest.ResponseRecorder {
+		return diagnosticAPIRequest(mux, "POST", endpoint, body, "application/json")
+	}
+	options := `{"expected_revision":"` + revision() + `","classifier_enabled":true,"default_route":"llm"}`
+	if r := post("routing/options", options); r.Code != 200 || !c.engine.RoutingStatus().ClassifierEnabled {
+		t.Fatal("classifier was not applied", r.Body)
+	}
+	if r := post("routing/options", options); r.Code != 409 {
+		t.Fatalf("stale revision accepted: %d", r.Code)
+	}
+	if r := post("config", `{"changes":{"routing.classifier.enabled":false}}`); r.Code != 200 {
+		t.Fatal(r.Body)
+	}
+	r := post("route", `{"text":"пример"}`)
+	var preview struct {
+		Active bridge.RouteDecision `json:"active"`
+		Saved  bridge.RouteDecision `json:"saved"`
+	}
+	if err := json.Unmarshal(r.Body.Bytes(), &preview); err != nil || preview.Active.Route != "classify" || preview.Saved.Route != "llm" {
+		t.Fatal("preview did not distinguish pending options", r.Body, err)
+	}
+	if r := post("routing/rule", `{"expected_revision":"`+revision()+`","action":"upsert","rule":{"name":"example","route":"llm","match":{"contains_any":["example"]}}}`); r.Code != 409 {
+		t.Fatalf("unapplied changes overwritten: %d", r.Code)
 	}
 }

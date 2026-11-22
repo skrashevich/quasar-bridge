@@ -150,13 +150,12 @@ func (c *credentials) clearTokens() {
 	c.ExpiresAt = time.Time{}
 }
 
-// Status reads local account information without refreshing or making a request.
+// Status reads the last atomically saved credentials without acquiring a writer
+// lock, creating files, or refreshing the session.
 func (s *Store) Status(ctx context.Context) (Status, error) {
-	unlock, err := s.lock(ctx)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return Status{}, err
 	}
-	defer unlock()
 	c, err := s.load()
 	if errors.Is(err, os.ErrNotExist) {
 		return Status{}, nil
@@ -170,6 +169,12 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 // Token reloads credentials under an interprocess lock and rotates near-expiry
 // tokens once, including when Bridge diagnostics and the daemon run together.
 func (s *Store) Token(ctx context.Context) (string, error) {
+	return s.TokenForAccount(ctx, nil)
+}
+
+// TokenForAccount also checks that credentials still belong to the requested
+// account before using or refreshing them. A nil account accepts the current one.
+func (s *Store) TokenForAccount(ctx context.Context, account *Status) (string, error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return "", err
@@ -181,6 +186,9 @@ func (s *Store) Token(ctx context.Context) (string, error) {
 	}
 	if err != nil {
 		return "", err
+	}
+	if account != nil && (account.Subject != c.Subject || account.ClientID != c.ClientID) {
+		return "", errors.New("ChatGPT account changed")
 	}
 	if time.Until(c.ExpiresAt) > time.Minute {
 		return c.AccessToken, nil

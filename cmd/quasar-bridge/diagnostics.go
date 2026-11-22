@@ -5,12 +5,14 @@ import (
 	_ "embed"
 	"encoding/json/v2"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	"quasarbridge/internal/update"
+	"github.com/skrashevich/quasar-bridge/internal/update"
 )
 
 //go:embed diagnostics.html
@@ -18,6 +20,15 @@ var diagnosticsHTML string
 
 //go:embed diagnostics.js
 var diagnosticsJS string
+
+//go:embed diagnostics_routing.js
+var routingJS string
+
+//go:embed diagnostics_account.js
+var accountJS string
+
+//go:embed diagnostics_theme.js
+var themeJS string
 
 //go:embed diagnostics.css
 var diagnosticsCSS string
@@ -31,6 +42,7 @@ type diagnosticLog struct {
 	cursor  int64
 	run     string
 	partial bool
+	packets diagnosticPackets
 }
 
 func newDiagnosticLog(limit int) *diagnosticLog {
@@ -105,11 +117,15 @@ func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() 
 	for _, asset := range []struct{ path, contentType, body string }{
 		{"/diagnostics/{$}", "text/html; charset=utf-8", diagnosticsHTML},
 		{"/diagnostics/app.js", "text/javascript; charset=utf-8", diagnosticsJS},
+		{"/diagnostics/routing.js", "text/javascript; charset=utf-8", routingJS},
+		{"/diagnostics/account.js", "text/javascript; charset=utf-8", accountJS},
+		{"/diagnostics/callback.js", "text/javascript; charset=utf-8", callbackJS},
+		{"/diagnostics/theme.js", "text/javascript; charset=utf-8", themeJS},
 		{"/diagnostics/app.css", "text/css; charset=utf-8", diagnosticsCSS},
 	} {
 		mux.HandleFunc("GET "+asset.path, guard(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", asset.contentType)
-			_, _ = fmt.Fprint(w, asset.body)
+			http.ServeContent(w, r, asset.path, time.Time{}, strings.NewReader(asset.body))
 		}))
 	}
 	mux.HandleFunc("GET /diagnostics/logs", guard(func(w http.ResponseWriter, r *http.Request) {
@@ -126,15 +142,16 @@ func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() 
 		}
 		snapshot := logs.snapshot(after)
 		snapshot.Version, snapshot.AirPlay = update.Version, status()
-		w.Header().Set("Content-Type", "application/json")
-		body, _ := json.Marshal(snapshot)
-		_, _ = w.Write(body)
+		writeDiagnosticJSON(w, http.StatusOK, snapshot)
 	}))
+	mux.HandleFunc("GET /diagnostics/logs/{id}", guard(logs.packetDetails))
 	mux.HandleFunc("GET /diagnostics/download", guard(func(w http.ResponseWriter, r *http.Request) {
 		snapshot := logs.snapshot(0)
 		state, _ := json.Marshal(status())
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="quasar-bridge-diagnostics-`+time.Now().UTC().Format("20060102-150405")+`.txt"`)
-		_, _ = fmt.Fprintf(w, "Quasar Bridge diagnostics\nVersion: %s\nCaptured: %s\nLog truncated: %t\nAirPlay: %s\n\n%s", update.Version, time.Now().UTC().Format(time.RFC3339), snapshot.Truncated, state, snapshot.Text)
+		header := fmt.Sprintf("Quasar Bridge diagnostics\nVersion: %s\nCaptured: %s\nLog truncated: %t\nAirPlay: %s\n\n", update.Version, time.Now().UTC().Format(time.RFC3339), snapshot.Truncated, state)
+		_, _ = io.WriteString(w, header)
+		_, _ = io.WriteString(w, snapshot.Text)
 	}))
 }

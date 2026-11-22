@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/update"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/update"
 )
 
 type testUpdater struct{ installs int }

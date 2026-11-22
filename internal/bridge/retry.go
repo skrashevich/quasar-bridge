@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"strings"
 
-	"quasarbridge/internal/configvoice"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/configvoice"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 func isRetryCommand(text string) bool {

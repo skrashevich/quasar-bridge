@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/reply"
-	"quasarbridge/internal/update"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/update"
 )
 
 func configurationFixture(t *testing.T, body string) *configurationControl {

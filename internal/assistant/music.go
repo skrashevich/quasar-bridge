@@ -8,8 +8,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 func musicDefinition() llm.Tool {

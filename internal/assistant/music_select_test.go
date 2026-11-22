@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 const musicSelectionPage = `<script type="application/ld+json">[{"title":"Мы вместе","audioUrl":"https://svk.su/together.mp3"},{"title":"Нас нет","audioUrl":"https://svk.su/nas-net.mp3?original=yes"}]</script>`

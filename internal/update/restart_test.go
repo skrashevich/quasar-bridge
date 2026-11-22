@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"quasarbridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
 )
 
 func TestRestartWaitsForAnswerContext(t *testing.T) {

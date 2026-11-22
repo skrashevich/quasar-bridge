@@ -17,8 +17,8 @@ import (
 	fileplayer "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/audio_file_player"
 	"google.golang.org/protobuf/proto"
 
-	"quasarbridge/internal/sound"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 func soundInput(id string) []byte {

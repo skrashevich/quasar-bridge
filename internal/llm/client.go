@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// Provider state is opaque and belongs only to this request's tool loop.
+	ExtraContent jsontext.Value `json:"extra_content,omitempty"`
 	// Preserve reasoning and other Responses items only for this tool loop.
 	// They are deliberately absent from the Chat Completions wire format.
 	responseOutput []jsontext.Value
@@ -27,6 +30,9 @@ type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
+	// In particular, Gemini requires extra_content.google.thought_signature
+	// on the same call where it was received, without interpreting its value.
+	ExtraContent jsontext.Value `json:"extra_content,omitempty"`
 }
 type FunctionCall struct {
 	Name      string `json:"name"`
@@ -54,6 +60,8 @@ type Client struct {
 	// AccessToken supplies renewable subscription credentials for the ChatGPT API.
 	// APIKey is never used in this mode.
 	AccessToken func(context.Context) (string, error)
+	// SubscriptionModel resolves the running Bridge's selection for each new ChatGPT request.
+	SubscriptionModel func() string
 }
 
 var serviceMarkup = regexp.MustCompile(`(?i)(?:</?[|｜]|<\s*/?\s*(?:[\w.-]+:)?(?:(?:tool_calls?|function_calls?|tool_responses?|tool_results?|think(?:ing)?|analysis|reasoning(?:_content)?)\b|(?:function|parameter|invoke)(?:\s*=|\s+|\s*>|$)))`)
@@ -93,6 +101,25 @@ func (c *Client) Complete(ctx context.Context, messages []Message, structured bo
 func (c *Client) Chat(ctx context.Context, messages []Message, tools []Tool) (Message, error) {
 	return c.chat(ctx, messages, false, tools)
 }
+
+// AllowsToolPrefetch disables unsigned, client-invented function calls for
+// Gemini. Let the model request tools and return its own signed calls instead.
+// Ordinary Chat Completions and Responses clients keep their existing prefetch.
+func (c *Client) AllowsToolPrefetch() bool {
+	if c.API != "" && c.API != "chat_completions" {
+		return true
+	}
+	model := strings.ToLower(strings.TrimSpace(c.Model))
+	if _, last, ok := strings.CutLast(model, "/"); ok {
+		model = last
+	}
+	if strings.HasPrefix(model, "gemini-") {
+		return false
+	}
+	endpoint, err := url.Parse(c.BaseURL)
+	return err != nil || !strings.EqualFold(endpoint.Hostname(), "generativelanguage.googleapis.com")
+}
+
 func (c *Client) chat(ctx context.Context, messages []Message, structured bool, tools []Tool) (Message, error) {
 	if err := ValidateChatParameters(c.ChatParameters); err != nil {
 		return Message{}, err
@@ -161,8 +188,14 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 	if len(result.Choices) == 0 || (strings.TrimSpace(result.Choices[0].Message.Content) == "" && len(result.Choices[0].Message.ToolCalls) == 0) {
 		return Message{}, errors.New("LLM returned no answer")
 	}
-	if result.Choices[0].FinishReason == "length" {
+	switch result.Choices[0].FinishReason {
+	case "length":
 		return Message{}, errors.New("LLM answer exceeded token budget")
+	case "error":
+		// Some OpenAI-compatible gateways (e.g. Hermes Agent) report a failed provider call as
+		// HTTP 200 with finish_reason "error" and a diagnostic text in content; speaking that
+		// text would read an internal error message aloud.
+		return Message{}, errors.New("LLM backend reported an error")
 	}
 	m := result.Choices[0].Message
 	m.Role = "assistant"

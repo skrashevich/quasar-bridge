@@ -26,10 +26,10 @@ import (
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/proto"
 
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/reply"
-	"quasarbridge/internal/sound"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 type Resolution struct {

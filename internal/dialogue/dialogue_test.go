@@ -33,6 +33,29 @@ func TestHomeRouteSharesContextExpiryAndLimits(t *testing.T) {
 	}
 }
 
+func TestHomeQuestionIsConsumedOnceByCurrentTurn(t *testing.T) {
+	s := New(DefaultConfig())
+	now := time.Unix(1000, 0)
+	s.now = func() time.Time { return now }
+	ctx := t.Context()
+	for _, elapsed := range []time.Duration{44 * time.Second, 45 * time.Second} {
+		_, question := s.Begin(ctx)
+		s.CommitRoute(ctx, question, "home", "Выключи свет", "Уточните комнату.", false)
+		_, older := s.Begin(ctx)
+		now = now.Add(elapsed)
+		_, current := s.Begin(ctx)
+		if s.TakeHomeQuestion(ctx, older) {
+			t.Fatal("superseded request consumed the question")
+		}
+		if got := s.TakeHomeQuestion(ctx, current); got != (elapsed < 45*time.Second) {
+			t.Fatalf("question available after %s: %t", elapsed, got)
+		}
+		if s.TakeHomeQuestion(ctx, current) {
+			t.Fatal("question was available twice")
+		}
+	}
+}
+
 func TestStoreIsolationExpiryAndReset(t *testing.T) {
 	s := New(DefaultConfig())
 	now := time.Unix(1000, 0)
