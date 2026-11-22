@@ -69,6 +69,9 @@ async function loadCommand() {
     commandEditor.csrfToken = view.csrf_token;
     byId("command-id").value = id;
     byId("command-path").value = view.command?.path || "";
+    byId("command-path-help").hidden = !view.command_directory;
+    if (view.command_directory) byId("command-path").placeholder = view.command_directory + "/voice-note";
+    byId("command-programs").replaceChildren(...(view.programs || []).map(path => new Option(path, path)));
     byId("command-timeout").value = view.command?.timeout_ms ? view.command.timeout_ms / 1000 : "";
     byId("command-description").value = view.description || "";
     byId("command-args").replaceChildren();

@@ -1031,8 +1031,7 @@ class InstallationTest(unittest.TestCase):
         self.env["SSH_CONNECTION"] = "192.0.2.2 51000 192.0.2.1 22"
         self.install()
         clients = self.state / "command-editor.clients"
-        self.assertEqual(clients.read_text(), "192.0.2.2\n")
-        self.assertEqual(clients.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(clients.exists())
         self.assertEqual(sorted(p.name for p in (self.state / "app/bin").iterdir()), ["quasar-bridge"])
         for name in ("SOURCE.md", "docs/licenses/go-aac-LGPL-3.0.txt",
                      "docs/licenses/go-aac-GPL-3.0.txt"):

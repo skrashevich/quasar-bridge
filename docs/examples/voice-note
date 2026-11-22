@@ -1,5 +1,11 @@
 #!/bin/sh
 set -eu
-
+umask 077
+dir=${0%/*}
+state=${dir%/*}
+name=${1##*/}
+case "$name" in notes.jsonl|notes-*.jsonl) ;; *) exit 1 ;; esac
+test "$1" = "$state/$name" && test ! -L "$1" || exit 1
+if test -e "$1" && test ! -f "$1"; then exit 1; fi
 cat >> "$1"
 printf '%s\n' 'Заметка сохранена.'

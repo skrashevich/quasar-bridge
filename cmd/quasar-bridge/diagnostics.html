@@ -116,7 +116,9 @@
             <label>ID команды<input id="command-id" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}" title="От 1 до 64 латинских букв, цифр, точек, дефисов и подчёркиваний. Первый символ — буква или цифра." placeholder="voice_note" spellcheck="false"></label>
             <label>Тайм-аут, секунды<input id="command-timeout" type="number" min="0.001" max="60" step="0.001" placeholder="10" aria-describedby="command-timeout-help"><small id="command-timeout-help" class="muted">По умолчанию 10, максимум 60.</small></label>
           </div>
-          <label>Путь к программе<input id="command-path" required pattern="/.*" title="Укажите абсолютный путь на устройстве с Bridge." placeholder="/data/opt/quasar-bridge/commands/voice-note" spellcheck="false" autocapitalize="none"></label>
+          <label>Путь к программе<input id="command-path" list="command-programs" required pattern="/.*" title="Укажите абсолютный путь на устройстве с Bridge." placeholder="/data/opt/quasar-bridge/commands/voice-note" aria-describedby="command-path-help" spellcheck="false" autocapitalize="none"></label>
+          <datalist id="command-programs"></datalist>
+          <p id="command-path-help" class="muted small" hidden>Новые программы для сети устанавливаются в каталог <code>commands</code> рядом с <code>config.json</code>. Для программы вне каталога выберите аргументы уже настроенного вызова.</p>
           <fieldset class="command-arguments"><legend>Аргументы</legend><p class="muted small">Каждая строка передаётся программе как один аргумент. Пробелы внутри сохраняются.</p>
             <div id="command-args"></div><button id="command-arg-add" type="button" class="quiet">Добавить аргумент</button>
           </fieldset>

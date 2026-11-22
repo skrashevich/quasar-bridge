@@ -11,6 +11,7 @@ import (
 	"github.com/skrashevich/quasar-bridge/internal/wire"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -87,11 +88,20 @@ func newCoreHarness(t *testing.T, fault string) coreHarness {
 	policy := bridge.DefaultRoutingConfig()
 	policy.DefaultRoute = "yandex"
 	policy.Classifier.Enabled = new(true)
-	script, err := filepath.Abs("../../../docs/examples/voice-note")
+	fixture := t.TempDir()
+	dir := filepath.Join(fixture, "commands")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	example, err := os.ReadFile("../../../docs/examples/voice-note")
 	if err != nil {
 		t.Fatal(err)
 	}
-	notes := filepath.Join(t.TempDir(), "voice notes.jsonl")
+	script := filepath.Join(dir, "voice-note")
+	if err := os.WriteFile(script, example, 0700); err != nil {
+		t.Fatal(err)
+	}
+	notes := filepath.Join(fixture, "notes.jsonl")
 	policy.Commands = map[string]bridge.RoutingCommand{"voice_note": {Path: script, Args: []string{notes}, TimeoutMS: 5000}}
 	policy.Classifier.Commands = map[string]string{"voice_note": voiceNoteDescription}
 	policy.Rules = append([]bridge.RoutingRule{{Name: "notes", Route: "command", Command: "voice_note",

@@ -340,7 +340,8 @@ async function access(page, panelResponse) {
   const editor = new URL("api/routing/command", url);
   const before = await api(page, "routing/command");
   assert.ok(before.csrf_token);
-  const command = { action: "create", id: "csrf_check", command: { path: "/bin/cat" }, expected_revision: before.revision };
+  const example = (await api(page, "routing/command?id=voice_note")).command;
+  const command = { action: "create", id: "csrf_check", command: example, expected_revision: before.revision };
   const header = { "X-Quasar-CSRF": before.csrf_token };
   for (const headers of [
     { Origin: editor.origin }, header,
@@ -360,6 +361,27 @@ async function access(page, panelResponse) {
   assert.equal(preflight.headers()["access-control-allow-origin"], undefined);
   assert.equal((await api(page, "routing/command")).revision, before.revision);
   assert.ok(!(await api(page, "routing")).active.command_ids?.includes(command.id));
+
+  const second = await page.context().browser().newContext();
+  try {
+    const read = await second.request.get(editor.href);
+    assert.equal(read.status(), 200);
+    const other = await read.json();
+    assert.ok(other.csrf_token && other.csrf_token !== before.csrf_token);
+    const headers = { ...header, Origin: editor.origin };
+    assert.equal((await second.request.post(editor.href, { headers, data: command })).status(), 403);
+    assert.equal((await page.request.post(editor.href, { headers, data: command })).status(), 200);
+    const saved = await second.request.get(editor.href + "?id=" + command.id);
+    assert.equal(saved.status(), 200);
+    const view = await saved.json();
+    assert.deepEqual(view.command, example);
+    const remove = { action: "delete", id: command.id, expected_revision: view.revision };
+    const ownHeaders = { Origin: editor.origin, "X-Quasar-CSRF": view.csrf_token };
+    assert.equal((await second.request.post(editor.href, { headers: ownHeaders, data: remove })).status(), 200);
+    assert.equal((await api(page, "routing/command")).revision, before.revision);
+  } finally {
+    await second.close();
+  }
 }
 
 const scenarios = { overview, routing, commands, settings, chat, history, airplay, logs, account, models, access };

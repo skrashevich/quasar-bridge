@@ -2,6 +2,7 @@
 """Test real standalone Bridge builds in an ephemeral kuyase station VM."""
 import argparse
 from contextlib import contextmanager, suppress
+from ipaddress import IPv4Address
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+from urllib.request import Request, urlopen
 
 from firmware import FIRMWARE
 from report import Report
@@ -72,6 +74,43 @@ def browser_case(name, url, out, arch):
                                 stdout=stream, stderr=subprocess.STDOUT, timeout=120)
     if result.returncode:
         raise RuntimeError(log.read_text(errors="replace")[-4000:] or f"Browser exited {result.returncode}")
+
+
+def check_lan_command_editor(panel):
+    interface = shell("ip -4 addr show dev eth0")
+    match = re.search(r"\binet (\S+?)/", interface)
+    if not match:
+        raise RuntimeError("guest eth0 has no IPv4 address")
+    addr = IPv4Address(match[1])
+    if addr.is_loopback or addr.is_unspecified:
+        raise RuntimeError("expected the guest LAN interface")
+    endpoint = f"http://{addr}:2704/diagnostics/api/routing/command"
+
+    def editor_available():
+        data = shell(f"wget -q -T 3 -O - {endpoint} 2>/dev/null || true")
+        if not data:
+            return False
+        view = json.loads(data)
+        return bool(view.get("csrf_token")) and view.get("command_directory") == f"{GUEST}/commands"
+
+    def network(enabled):
+        for path, data in (("config", {"changes": {"diagnostics.network_access": enabled}}),
+                           ("apply", {"action": "reload"})):
+            request = Request(panel + "api/" + path, data=json.dumps(data).encode(),
+                              headers={"Content-Type": "application/json"})
+            with urlopen(request, timeout=10) as response:
+                json.load(response)
+
+    if editor_available():
+        raise RuntimeError("LAN editor reachable while network access is disabled")
+    try:
+        network(True)
+        if not editor_available():
+            raise RuntimeError("LAN client could not open the form with network access enabled")
+    finally:
+        network(False)
+    if editor_available():
+        raise RuntimeError("LAN editor still reachable after disabling network access")
 
 
 def check_model_picker(arch, out, launch):
@@ -198,10 +237,10 @@ def main():
         if hostname != "qemu-" + args.board:
             raise RuntimeError("connected to wrong station VM")
         (out / "guest.txt").write_text(shell("uname -a; cat /tmp/quasar-emu-hw.json"))
-        shell(f"mkdir -p {GUEST}")
+        shell(f"mkdir -p {GUEST}/commands && chmod 700 {GUEST} {GUEST}/commands")
         push(build / "kuyase-control", GUEST + "/control")
-        push(ROOT / "docs/examples/voice-note", GUEST + "/voice-note")
-        shell(f"chmod 755 {GUEST}/control {GUEST}/voice-note")
+        push(ROOT / "docs/examples/voice-note", GUEST + "/commands/voice-note")
+        shell(f"chmod 755 {GUEST}/control {GUEST}/commands/voice-note")
         default_rules = json.loads((ROOT / "config.example.json").read_text())["routing"]["rules"]
         # Keep ADB shell transports open: legacy adbd kills detached children.
         for arch in ([args.arch] if args.arch else ("arm64", "armv7")):
@@ -218,7 +257,10 @@ def main():
                 "llm_model": "kuyase-fixture", "llm_chatgpt_auth_file": f"{GUEST}/account-{arch}.json",
                 "routing": {
                     "default_route": "yandex",
-                    "commands": {"voice_note": {"path": f"{GUEST}/voice-note", "args": [notes], "timeout_ms": 5000}},
+                    "commands": {
+                        "voice_note": {"path": f"{GUEST}/commands/voice-note", "args": [notes], "timeout_ms": 5000},
+                        "echo_input": {"path": "/bin/cat"},
+                    },
                     "rules": [{"name": "notes", "route": "command", "command": "voice_note",
                                "match": {"starts_with_any": ["запиши заметку"]}}, *default_rules],
                     "classifier": {"enabled": True, "commands": {"voice_note": "Сохранить голосовую заметку в блокнот"}},
@@ -273,6 +315,7 @@ def main():
                 report.check(arch, "web-commands", check_commands_panel)
                 for name in ("overview", "settings", "chat", "history", "airplay", "logs", "account", "access"):
                     report.check(arch, "web-" + name, lambda: browser_case(name, panel, out, arch))
+                report.check(arch, "web-command-lan", lambda: check_lan_command_editor(panel))
 
             report.check(arch, "web-models", lambda: check_model_picker(arch, out, launch))
 
