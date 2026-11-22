@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bufio"
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -13,9 +14,21 @@ import (
 
 const maxStreamBytes = 2 << 20
 
+type deltaConsumerKey struct{}
+
+// WithTextDeltas attaches a request-scoped consumer for incremental output.
+// Only message text deltas are delivered, never tool arguments or reasoning.
+func WithTextDeltas(ctx context.Context, consumer func(string) error) context.Context {
+	return context.WithValue(ctx, deltaConsumerKey{}, consumer)
+}
+
 // readResponseStream releases output only after the terminal response. Some
 // providers omit its output array, so retain completed items, never deltas.
 func readResponseStream(body io.Reader) ([]byte, error) {
+	return readResponseStreamWithDeltas(body, nil)
+}
+
+func readResponseStreamWithDeltas(body io.Reader, onDelta func(string) error) ([]byte, error) {
 	limited := &io.LimitedReader{R: body, N: maxStreamBytes + 1}
 	scanner := bufio.NewScanner(limited)
 	scanner.Buffer(make([]byte, 4096), maxStreamBytes+1)
@@ -33,6 +46,7 @@ func readResponseStream(body io.Reader) ([]byte, error) {
 		}
 		var event struct {
 			Type        string         `json:"type"`
+			Delta       string         `json:"delta"`
 			Response    jsontext.Value `json:"response"`
 			OutputIndex *int           `json:"output_index"`
 			Item        jsontext.Value `json:"item"`
@@ -41,6 +55,13 @@ func readResponseStream(body io.Reader) ([]byte, error) {
 			return nil, errors.New("invalid LLM response stream")
 		}
 		switch event.Type {
+		case "response.output_text.delta":
+			if onDelta != nil && event.Delta != "" {
+				if err := onDelta(event.Delta); err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
 		case "response.output_item.done":
 			var item struct {
 				Type string `json:"type"`
