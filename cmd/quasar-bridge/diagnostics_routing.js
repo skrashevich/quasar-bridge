@@ -9,6 +9,11 @@ const defaultRuleLabels = new Map([
   ["yandex_services", "Сервисы Алисы"]
 ]);
 const ruleLabel = name => defaultRuleLabels.get(name) || name;
+// Rules in matching order: extra_rules are checked before rules.
+const orderedRules = routing => [...(routing.extra_rules || []), ...routing.rules];
+// Built-in rules stay unsaved while the file has no routing.rules. A change
+// that touches them or puts a rule among them saves the whole list to rules.
+const unsavedBuiltins = data => data.builtin_rules ? data.saved.rules : [];
 const ruleFields = [
   ["contains_any", "Содержит любую из фраз"],
   ["starts_with_any", "Начинается с одной из фраз"],
@@ -36,7 +41,7 @@ function showRouting() {
   byId("classifier-enabled").checked = data.active_behavior.classifier_enabled;
   byId("default-route").value = data.active_behavior.default_route;
   showClassifierHelp();
-  const rules = data.active.rules;
+  const rules = orderedRules(data.active);
   const list = byId("rule-list");
   list.replaceChildren(...rules.map((rule, index) => {
     const row = element("li", "rule-row" + (rule.disabled ? " rule-off" : ""));
@@ -50,7 +55,9 @@ function showRouting() {
     }
     if (rule.match.contains_all_groups?.length) summary.push("Группы фраз: " + rule.match.contains_all_groups.length);
     const title = element("strong", "", ruleLabel(rule.name));
-    if (defaultRuleLabels.has(rule.name)) title.append(element("small", "rule-id", rule.name));
+    const builtin = defaultRuleLabels.has(rule.name);
+    if (builtin) title.append(element("small", "rule-id", rule.name));
+    title.append(element("small", "badge rule-kind" + (builtin ? "" : " own"), builtin ? "встроенное" : "своё"));
     copy.append(title, element("span", "small muted", summary.join(" · ")));
     const target = element("span", "rule-target", routeName(rule.route));
     if (rule.disabled) target.append(element("small", "", "Выключено"));
@@ -164,14 +171,28 @@ function openRule(rule) {
   const data = routingView.data;
   routingView.editing = rule;
   routingView.revision = data.saved_revision;
-  const rules = data.saved.rules;
+  const rules = orderedRules(data.saved);
   const index = rule ? rules.findIndex(item => item.name === rule.name) : -1;
   byId("rule-dialog-title").textContent = rule ? "Редактирование правила" : "Новое правило";
   byId("rule-name").value = rule?.name || "";
   byId("rule-name").readOnly = Boolean(rule);
   byId("rule-route").value = rule?.route || "llm";
-  byId("rule-before").replaceChildren(...rules.filter(item => item.name !== rule?.name).map(item => new Option("Перед «" + ruleLabel(item.name) + "»", item.name)), new Option("В конце списка", ""));
+  const others = rules.filter(item => item.name !== rule?.name);
+  const position = item => new Option("Перед «" + ruleLabel(item.name) + "»", item.name);
+  const builtins = unsavedBuiltins(data);
+  if (builtins.length && !builtins.some(item => item.name === rule?.name)) {
+    const own = element("optgroup");
+    own.label = "Свои правила — встроенные не меняются";
+    own.append(...others.slice(0, others.length - builtins.length).map(position), new Option("После своих правил", builtins[0].name));
+    const among = element("optgroup");
+    among.label = "Среди встроенных — они сохранятся в файл";
+    among.append(...builtins.slice(1).map(position), new Option("В конце списка", ""));
+    byId("rule-before").replaceChildren(own, among);
+  } else {
+    byId("rule-before").replaceChildren(...others.map(position), new Option("В конце списка", ""));
+  }
   byId("rule-before").value = rules[index + 1]?.name || "";
+  showRuleNote();
   byId("rule-enabled").checked = !rule?.disabled;
   for (const [key] of ruleFields) {
     const value = rule?.match[key];
@@ -188,6 +209,15 @@ function openRule(rule) {
   message("rule-error");
   byId("rule-dialog").showModal();
   byId(rule ? "rule-route" : "rule-name").focus();
+}
+
+// Warn before saving freezes the built-in rules: the whole list goes to the
+// file and stops following Bridge updates.
+function showRuleNote() {
+  const builtins = unsavedBuiltins(routingView.data);
+  const select = byId("rule-before");
+  const among = select.selectedOptions[0]?.parentElement === select.children[1];
+  byId("rule-builtin-note").hidden = !builtins.length || !(among || builtins.some(item => item.name === routingView.editing?.name));
 }
 
 function readTerms(input, original = []) {
@@ -245,7 +275,7 @@ function saveRule(event) {
   try { rule = readRuleDraft(); }
   catch (error) { message("rule-error", error.message, true); return; }
   if (!rule.name) { message("rule-error", "Введите название правила.", true); return; }
-  if (!routingView.editing && routingView.data.saved.rules.some(item => item.name === rule.name)) {
+  if (!routingView.editing && orderedRules(routingView.data.saved).some(item => item.name === rule.name)) {
     message("rule-error", "Такое название уже есть. Укажите другое название.", true); return;
   }
   changeRouting("rule", {
@@ -301,6 +331,7 @@ function setupRouting() {
   byId("refresh-routing").addEventListener("click", loadRouting);
   byId("rule-new").addEventListener("click", () => openRule(null));
   byId("rule-editor").addEventListener("submit", saveRule);
+  byId("rule-before").addEventListener("change", showRuleNote);
   byId("rule-dialog").addEventListener("input", resetRulePreview);
   byId("rule-dialog").addEventListener("close", resetRulePreview);
   byId("rule-preview").addEventListener("submit", previewRule);

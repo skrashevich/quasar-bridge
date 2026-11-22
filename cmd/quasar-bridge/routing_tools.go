@@ -30,7 +30,11 @@ func (c *configurationControl) GetRouting(ctx context.Context) (any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	next, err := readConfig(c.path)
+	raw, err := os.ReadFile(c.path)
+	if err != nil {
+		return nil, errors.New("cannot read configuration file")
+	}
+	next, err := parseConfig(raw, false)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +55,11 @@ func (c *configurationControl) GetRouting(ctx context.Context) (any, error) {
 		Order          string               `json:"order"`
 		ActiveBehavior routingBehavior      `json:"active_behavior"`
 		SavedBehavior  routingBehavior      `json:"saved_behavior"`
-	}{c.active.Routing, next.Routing, active.Revision(), saved.Revision(), !reflect.DeepEqual(c.active.Routing, next.Routing), "extra_rules are checked before rules; first enabled matching rule wins; Bridge configuration administration has priority over these rules", effectiveRoutingBehavior(c.active.Routing), effectiveRoutingBehavior(next.Routing)}, nil
+		// BuiltinRules reports that the saved file has no routing.rules, so
+		// rules are the built-in defaults of the running version. A rule edit
+		// keeps them unsaved only while they stay intact after extra_rules.
+		BuiltinRules bool `json:"builtin_rules"`
+	}{c.active.Routing, next.Routing, active.Revision(), saved.Revision(), !reflect.DeepEqual(c.active.Routing, next.Routing), "extra_rules are checked before rules; first enabled matching rule wins; Bridge configuration administration has priority over these rules", effectiveRoutingBehavior(c.active.Routing), effectiveRoutingBehavior(next.Routing), !explicitRoutingRules(raw)}, nil
 }
 
 func (c *configurationControl) MutateRouting(ctx context.Context, mutation assistant.RoutingMutation) (any, error) {

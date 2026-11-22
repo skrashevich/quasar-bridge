@@ -81,6 +81,7 @@
         <form id="rule-editor">
         <div class="rule-grid"><label>Название<input id="rule-name" required></label><label>Обработчик<select id="rule-route"></select></label></div>
         <div class="rule-grid"><label>Место в списке<select id="rule-before"></select></label><label class="switch-label"><input type="checkbox" id="rule-enabled" checked> Правило включено</label></div>
+        <p id="rule-builtin-note" class="notice" hidden>После сохранения весь список правил запишется в файл настроек: встроенные правила перестанут обновляться вместе с Bridge.</p>
         <h3>Условия совпадения</h3><p class="muted small">Заполните хотя бы одно условие для совпадения. Разные условия должны выполняться одновременно. В списках пишите каждую фразу с новой строки.</p>
         <div id="rule-conditions" class="rule-grid"></div>
         <details id="rule-extra" class="technical-details"><summary>Исключения, слова активации, регулярное выражение и группы</summary>

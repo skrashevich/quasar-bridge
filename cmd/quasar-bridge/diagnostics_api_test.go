@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -428,5 +429,53 @@ func TestPanelRoutingOptionsAndConflicts(t *testing.T) {
 	}
 	if r := post("routing/rule", `{"expected_revision":"`+revision()+`","action":"upsert","rule":{"name":"example","route":"llm","match":{"contains_any":["example"]}}}`); r.Code != 409 {
 		t.Fatalf("unapplied changes overwritten: %d", r.Code)
+	}
+}
+
+func TestPanelRuleKeepsBuiltInRulesUnsaved(t *testing.T) {
+	c := configurationFixture(t, `{"llm_model":"old"}`)
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, diagnosticControl{Configuration: c})
+	type routing struct {
+		Saved         bridge.RoutingConfig `json:"saved"`
+		SavedRevision string               `json:"saved_revision"`
+		BuiltinRules  bool                 `json:"builtin_rules"`
+	}
+	read := func() routing {
+		t.Helper()
+		var state routing
+		r := diagnosticAPIRequest(mux, "GET", "routing", "", "")
+		if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &state) != nil {
+			t.Fatal("cannot read routing", r.Body)
+		}
+		return state
+	}
+	upsert := func(before string) {
+		t.Helper()
+		body := `{"expected_revision":"` + read().SavedRevision + `","action":"upsert","before":"` + before + `","rule":{"name":"lamp","route":"home","match":{"contains_any":["лампу"]}}}`
+		if r := diagnosticAPIRequest(mux, "POST", "routing/rule", body, "application/json"); r.Code != 200 {
+			t.Fatal(r.Code, r.Body)
+		}
+	}
+	defaults := bridge.DefaultRoutingConfig().Rules
+	if state := read(); !state.BuiltinRules || len(state.Saved.ExtraRules) != 0 {
+		t.Fatalf("built-in rules not reported: %+v", state)
+	}
+	// The panel offers "after own rules" as the place before the first
+	// built-in rule; the built-in rules stay unsaved.
+	upsert(defaults[0].Name)
+	state := read()
+	if !state.BuiltinRules || len(state.Saved.ExtraRules) != 1 || state.Saved.ExtraRules[0].Name != "lamp" || !reflect.DeepEqual(state.Saved.Rules, defaults) {
+		t.Fatalf("panel rule not saved as an extra rule: %+v", state)
+	}
+	if got := c.engine.Decide(t.Context(), "включи лампу"); got.Rule != "lamp" {
+		t.Fatalf("extra rule not checked first: %+v", got)
+	}
+	// The end of the list lies after the built-in rules, so they are saved
+	// with the rule and the panel stops reporting them as built-in.
+	upsert("")
+	state = read()
+	if state.BuiltinRules || len(state.Saved.ExtraRules) != 0 || len(state.Saved.Rules) != len(defaults)+1 || state.Saved.Rules[len(defaults)].Name != "lamp" {
+		t.Fatalf("rule at the end not saved with the built-in rules: %+v", state)
 	}
 }

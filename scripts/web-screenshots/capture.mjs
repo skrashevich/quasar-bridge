@@ -52,6 +52,37 @@ async function checkTheme(page, output) {
   await expectScheme("dark");
 }
 
+async function routingState(page) {
+  return (await page.request.get(new URL("api/routing", page.url()).href)).json();
+}
+
+// The demo configuration has no routing.rules, so a rule added from the panel
+// goes to extra_rules in front of the built-in rules, which stay unsaved.
+async function checkOwnRules(page, editor) {
+  const state = await routingState(page);
+  assert.equal(state.builtin_rules, true);
+  assert.deepEqual(state.saved.extra_rules.map(rule => rule.name), ["Свет в мастерской"]);
+  const rows = page.locator("#rule-list .rule-row");
+  assert.equal(await rows.count(), state.saved.rules.length + 1);
+  assert.match(await rows.first().textContent(), /^1Свет в мастерской/);
+  assert.equal(await rows.first().locator(".rule-kind").textContent(), "своё");
+  assert.equal(await rows.filter({ hasText: "home_devices" }).locator(".rule-kind").textContent(), "встроенное");
+
+  await page.getByRole("button", { name: "Добавить правило" }).click();
+  await editor.getByLabel("Название").fill("Свет в мастерской");
+  await editor.getByLabel("Содержит любую из фраз").fill("лампа");
+  await editor.getByRole("button", { name: "Сохранить и применить" }).click();
+  await editor.getByRole("alert").filter({ hasText: "Такое название уже есть" }).waitFor();
+  await editor.getByRole("button", { name: "Закрыть редактор" }).click();
+  await editor.waitFor({ state: "hidden" });
+
+  await page.getByRole("button", { name: "Изменить правило home_devices" }).click();
+  assert.ok(await editor.locator("#rule-builtin-note").isVisible());
+  await editor.getByRole("button", { name: "Закрыть редактор" }).click();
+  await editor.waitFor({ state: "hidden" });
+  assert.equal((await routingState(page)).saved_revision, state.saved_revision);
+}
+
 async function checkRouting(page, output) {
   await page.getByRole("link", { name: "Маршрутизация", exact: true }).click();
   await page.getByRole("button", { name: "Добавить правило" }).click();
@@ -79,6 +110,7 @@ async function checkRouting(page, output) {
   await editor.getByLabel("Название").fill("Свет в мастерской");
   await editor.getByRole("button", { name: "Сохранить и применить" }).click();
   await editor.waitFor({ state: "hidden" });
+  await checkOwnRules(page, editor);
   const test = page.locator("#routing-test");
   await test.getByLabel("Пробная фраза").fill("Включи свет в мастерской");
   await test.getByLabel("ID слова активации").fill("demo");
@@ -102,6 +134,8 @@ async function checkRouting(page, output) {
   await page.getByRole("button", { name: "Изменить правило Свет в мастерской" }).click();
   assert.equal(await phrase.inputValue(), "");
   assert.ok(await result.isHidden());
+  assert.equal(await editor.getByLabel("Место в списке").inputValue(), "bridge_updates");
+  assert.ok(await editor.locator("#rule-builtin-note").isHidden());
   const savedRevision = await revision();
   await editor.locator("#rule-extra summary").click();
   await phrase.fill("Включи свет в мастерской");
@@ -134,9 +168,11 @@ async function checkRouting(page, output) {
   await page.getByRole("button", { name: "Изменить правило Свет в мастерской" }).click();
   await editor.getByLabel("Правило включено").check();
   await editor.getByLabel("Место в списке").selectOption("");
+  assert.ok(await editor.locator("#rule-builtin-note").isVisible());
   await editor.getByRole("button", { name: "Сохранить и применить" }).click();
   await editor.waitFor({ state: "hidden" });
   await check("home_devices");
+  assert.equal((await routingState(page)).builtin_rules, false);
   await page.getByRole("button", { name: "Изменить правило Свет в мастерской" }).click();
   page.once("dialog", dialog => dialog.accept());
   await editor.getByRole("button", { name: "Удалить правило…" }).click();
