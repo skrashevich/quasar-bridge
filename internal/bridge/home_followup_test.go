@@ -152,6 +152,20 @@ func TestStandaloneMusicRequestDoesNotAnswerHomeQuestion(t *testing.T) {
 	}
 }
 
+func TestCompletedStateReadCanContinueInAnotherRoom(t *testing.T) {
+	e := followupTestEngine(true)
+	h := &followupHome{question: "Свет выключен."}
+	e.Home = h
+	const first = "Горит ли свет в кабинете?"
+	if _, err := e.Resolve(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	result, err := e.Resolve(t.Context(), "А в спальне?")
+	if err != nil || result.Route != "home" || len(h.followups) != 1 || h.followups[0][1] != first {
+		t.Fatalf("state context lost: result=%+v err=%v followups=%v", result, err, h.followups)
+	}
+}
+
 func TestClarificationDoesNotCaptureUnmatchedNewAction(t *testing.T) {
 	e := followupTestEngine(true)
 	e.LLM = completionFunc(func(context.Context, []llm.Message, bool) (string, error) {

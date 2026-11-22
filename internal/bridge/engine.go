@@ -425,9 +425,10 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if snapshot.Route == "llm" && len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue"}
 	}
-	if snapshot.Route == "home" && len(snapshot.Messages) > 0 &&
+	roomReply := strings.TrimPrefix(dialogue.Normalize(text), "а ")
+	if _, contextual := e.Home.(HomeDialogueHandler); contextual && snapshot.Route == "home" && len(snapshot.Messages) > 0 &&
 		home.IsStateQuestion(snapshot.Messages[0].Content) && !dialogue.IsHomeQuestion(snapshot.Messages[len(snapshot.Messages)-1].Content) &&
-		homeRoomReply.MatchString(strings.TrimPrefix(dialogue.Normalize(text), "а ")) && isHomeClarificationReply(text, "") {
+		homeRoomReply.MatchString(roomReply) && isHomeClarificationReply(roomReply, "") {
 		return RouteDecision{Route: "home", Source: "home_state_dialogue"}
 	}
 	if !p.classifierEnabled {
