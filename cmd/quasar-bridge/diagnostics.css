@@ -295,6 +295,9 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 #account-manual p { max-width:74ch; }
 #account-finish { margin:16px 0 0; display:grid; align-items:end; gap:12px; grid-template-columns:minmax(0,1fr) auto; }
 .account-surface .detail-list { max-width:560px; }
+#account-model-form { max-width:560px; margin:0 0 18px; }
+#account-model-form label { display:block; margin-bottom:5px; font-weight:600; }
+#account-model-form .actions,#model-message { margin-top:12px; }
 .callback-page { margin:8vh auto; max-width:660px; }
 .callback-page p { margin:16px 0; }
 @media (max-width:960px) {

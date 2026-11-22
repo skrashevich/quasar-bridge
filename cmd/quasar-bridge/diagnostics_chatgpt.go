@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"quasarbridge/internal/chatgpt"
+	"quasarbridge/internal/llm"
 )
 
 // Both panel listeners share pending attempts. Only the browser that received
@@ -48,13 +49,64 @@ func panelCallbackPort(r *http.Request) (uint16, bool) {
 	return 1455, false
 }
 
-func (p *panelChatGPT) register(mux *http.ServeMux, register func(string, http.HandlerFunc)) {
+func (p *panelChatGPT) register(mux *http.ServeMux, register func(string, http.HandlerFunc), config *configurationControl) {
 	register("GET /diagnostics/api/chatgpt", func(w http.ResponseWriter, r *http.Request) {
 		status, err := p.store.Status(r.Context())
 		if !status.SignedIn {
 			status.Email = ""
 		}
-		writeDiagnosticResult(w, map[string]any{"signed_in": status.SignedIn, "email": status.Email}, err)
+		usesChatGPT := false
+		if config != nil {
+			config.mu.Lock()
+			usesChatGPT = config.active.LLMAPI == "chatgpt"
+			config.mu.Unlock()
+		}
+		writeDiagnosticResult(w, map[string]any{"signed_in": status.SignedIn, "email": status.Email, "uses_chatgpt": usesChatGPT}, err)
+	})
+	client := &llm.Client{API: "chatgpt", AccessToken: p.store.Token, HTTP: p.store.HTTP}
+	register("GET /diagnostics/api/chatgpt/models", func(w http.ResponseWriter, r *http.Request) {
+		if config == nil {
+			writeDiagnosticError(w, http.StatusServiceUnavailable, "Настройки Bridge недоступны.")
+			return
+		}
+		model, err := config.chatGPTModel()
+		if err != nil {
+			writeDiagnosticResult(w, nil, err)
+			return
+		}
+		models, err := client.Models(r.Context())
+		if err != nil {
+			writeDiagnosticError(w, http.StatusBadGateway, "Не удалось получить список моделей ChatGPT. "+err.Error())
+			return
+		}
+		writeDiagnosticJSON(w, http.StatusOK, struct {
+			chatGPTModelState
+			Models []llm.Model `json:"models"`
+		}{model, models})
+	})
+	register("POST /diagnostics/api/chatgpt/model", func(w http.ResponseWriter, r *http.Request) {
+		var choice struct {
+			Model    string `json:"model"`
+			Expected string `json:"expected_model"`
+		}
+		if !readDiagnosticJSON(w, r, &choice) {
+			return
+		}
+		if config == nil {
+			writeDiagnosticError(w, http.StatusServiceUnavailable, "Настройки Bridge недоступны.")
+			return
+		}
+		models, err := client.Models(r.Context())
+		if err != nil {
+			writeDiagnosticError(w, http.StatusBadGateway, "Не удалось проверить доступные модели ChatGPT. "+err.Error())
+			return
+		}
+		if !slices.ContainsFunc(models, func(m llm.Model) bool { return m.ID == choice.Model }) {
+			writeDiagnosticError(w, http.StatusUnprocessableEntity, "Модель отсутствует в каталоге ChatGPT. Обновите список.")
+			return
+		}
+		value, err := config.saveChatGPTModel(r.Context(), choice.Expected, choice.Model)
+		writeDiagnosticResult(w, value, err)
 	})
 	register("POST /diagnostics/api/chatgpt/start", p.start)
 	register("POST /diagnostics/api/chatgpt/complete", p.complete)

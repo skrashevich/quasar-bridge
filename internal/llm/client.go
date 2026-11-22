@@ -60,6 +60,8 @@ type Client struct {
 	// AccessToken supplies renewable subscription credentials for the ChatGPT API.
 	// APIKey is never used in this mode.
 	AccessToken func(context.Context) (string, error)
+	// SubscriptionModel resolves the running Bridge's selection for each new ChatGPT request.
+	SubscriptionModel func() string
 }
 
 var serviceMarkup = regexp.MustCompile(`(?i)(?:</?[|｜]|<\s*/?\s*(?:[\w.-]+:)?(?:(?:tool_calls?|function_calls?|tool_responses?|tool_results?|think(?:ing)?|analysis|reasoning(?:_content)?)\b|(?:function|parameter|invoke)(?:\s*=|\s+|\s*>|$)))`)

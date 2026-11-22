@@ -49,7 +49,7 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 		mux.HandleFunc(pattern, diagnosticsAccess(control.Network, handler))
 	}
 	if control.ChatGPT != nil {
-		control.ChatGPT.register(mux, register)
+		control.ChatGPT.register(mux, register, control.Configuration)
 	}
 	register("GET /diagnostics/api/status", func(w http.ResponseWriter, r *http.Request) {
 		state := map[string]any{}
@@ -371,7 +371,7 @@ func writeDiagnosticResult(w http.ResponseWriter, value any, err error) {
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
 			status = http.StatusGatewayTimeout
-		case strings.Contains(err.Error(), "routing revision changed"), strings.Contains(err.Error(), "unapplied saved changes"), strings.Contains(err.Error(), "changed externally"), strings.Contains(err.Error(), "restart already scheduled"), strings.Contains(err.Error(), "restart required"):
+		case errors.Is(err, errModelChanged), strings.Contains(err.Error(), "routing revision changed"), strings.Contains(err.Error(), "unapplied saved changes"), strings.Contains(err.Error(), "changed externally"), strings.Contains(err.Error(), "restart already scheduled"), strings.Contains(err.Error(), "restart required"):
 			status = http.StatusConflict
 		case strings.Contains(err.Error(), "unavailable"), strings.Contains(err.Error(), "requires the standalone"):
 			status = http.StatusServiceUnavailable

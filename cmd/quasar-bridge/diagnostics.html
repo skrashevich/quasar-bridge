@@ -102,7 +102,15 @@
           <form id="account-finish"><label>Адрес после входа<input id="account-callback" type="password" autocomplete="off" spellcheck="false" required></label><button type="submit" class="primary">Завершить вход</button></form>
         </section>
       </section>
-      <section class="surface"><h3>Модель Bridge</h3><p id="account-provider" class="muted"></p><a href="#settings" data-settings-filter="llm">Открыть настройки модели</a></section>
+      <section class="surface account-surface"><h2>Модель Bridge</h2><p id="account-provider" class="muted"></p>
+        <form id="account-model-form" hidden>
+          <label for="account-model">Модель подписки ChatGPT</label>
+          <select id="account-model" disabled aria-describedby="model-message"></select>
+          <div class="actions"><button id="model-save" type="submit" class="primary" disabled>Применить модель</button><button id="model-refresh" type="button" class="quiet">Обновить список</button></div>
+          <p id="model-message" class="notice" role="status" hidden></p>
+        </form>
+        <a href="#settings" data-settings-filter="llm">Открыть настройки модели</a>
+      </section>
     </section>
     <section id="settings" class="page" aria-labelledby="settings-title" hidden>
       <h2 id="settings-title" class="visually-hidden">Настройки Bridge</h2>

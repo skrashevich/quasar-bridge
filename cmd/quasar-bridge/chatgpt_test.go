@@ -17,12 +17,13 @@ import (
 
 type chatGPTTransport func(*http.Request) (*http.Response, error)
 
+const subscriptionFixture = `{"version":1,"ext_agent_host_id":"host-fixture","issuer":"https://auth.openai.com","subject":"user-fixture","client_id":"oaiapp_fixture","access_token":"subscription-fixture","refresh_token":"refresh-fixture","scope":"chatgpt.tokens.use.direct offline_access","expires_at":"2100-01-01T00:00:00Z"}`
+
 func (f chatGPTTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestChatGPTConfiguredClientUsesAccountInsteadOfAPIKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "account.json")
-	const credentials = `{"version":1,"ext_agent_host_id":"host-fixture","issuer":"https://auth.openai.com","subject":"user-fixture","client_id":"oaiapp_fixture","access_token":"subscription-fixture","refresh_token":"refresh-fixture","scope":"chatgpt.tokens.use.direct offline_access","expires_at":"2100-01-01T00:00:00Z"}`
-	if err := os.WriteFile(path, []byte(credentials), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(subscriptionFixture), 0600); err != nil {
 		t.Fatal(err)
 	}
 	encodedPath, err := json.Marshal(path)

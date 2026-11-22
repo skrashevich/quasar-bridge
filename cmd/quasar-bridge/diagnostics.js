@@ -216,6 +216,17 @@ function settingRow(setting, index) {
   if (setting.writable === false) flags.append(element("span", "badge", setting.environment ? "Задано окружением: " + setting.environment : "Только чтение"));
   description.append(flags);
   const editor = element("div", "setting-editor");
+  const provider = state.settings.get("llm_api");
+  if (path === "llm_model" && !isDirty(setting) && provider?.active === "chatgpt" && (state.drafts.get("llm_api") ?? provider.effective) === "chatgpt") {
+    label.removeAttribute("for");
+    help.textContent = "Выберите модель из каталога вашей подписки. Изменение вступит в силу со следующим запросом.";
+    flags.replaceChildren();
+    const link = element("a", "button", "Выбрать модель ChatGPT");
+    link.href = "#account";
+    editor.append(element("p", "small", "Действующая модель — " + (setting.active || "не задана")), link);
+    row.append(description, editor);
+    return row;
+  }
   let control;
   const raw = state.drafts.has(path) ? state.drafts.get(path) : editableValue(setting);
   if (kind === "select") {
@@ -257,6 +268,10 @@ function settingRow(setting, index) {
     try { parseValue(setting, rawValue); error.hidden = true; control.removeAttribute("aria-invalid"); }
     catch (problem) { error.textContent = problem.message; error.hidden = false; control.setAttribute("aria-invalid", "true"); }
     updateConfigSummary();
+    if (path === "llm_api") {
+      renderSettings();
+      byId(control.id).focus();
+    }
   });
   if (setting.pending || setting.writable === false) {
     const values = element("div", "setting-values");

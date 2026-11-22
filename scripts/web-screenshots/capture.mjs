@@ -171,6 +171,39 @@ async function checkAccount(page) {
   assert.equal(await page.getByLabel("Адрес после входа").inputValue(), "");
 }
 
+async function checkModelPicker(page) {
+  let current = "previous-model";
+  let loads = 0;
+  await page.route("**/api/chatgpt", route => route.fulfill({ json: { signed_in: true, uses_chatgpt: true } }));
+  await page.route("**/api/chatgpt/models", route => {
+    loads++;
+    if (loads === 2) return route.fulfill({ status: 502, json: { error: "Каталог временно недоступен" } });
+    const models = [{ id: "provider-model", name: "Provider Model" }];
+    if (loads > 2) models.push({ id: "another-model", name: "Another Model" });
+    return route.fulfill({ json: { models, active: current, saved: current, writable: true } });
+  });
+  await page.route("**/api/chatgpt/model", route => {
+    assert.deepEqual(route.request().postDataJSON(), { model: "another-model", expected_model: current });
+    current = "another-model";
+    return route.fulfill({ json: { active: current, saved: current, writable: true } });
+  });
+  await page.getByRole("button", { name: "Обновить", exact: true }).click();
+  const picker = page.getByRole("combobox", { name: "Модель подписки ChatGPT" });
+  await picker.getByRole("option", { name: "Provider Model (provider-model)" }).waitFor({ state: "attached" });
+  assert.equal(await picker.inputValue(), "");
+  const apply = page.getByRole("button", { name: "Применить модель" });
+  assert.ok(await apply.isDisabled());
+  const refresh = page.getByRole("button", { name: "Обновить список" });
+  await refresh.click();
+  await page.getByText("Каталог временно недоступен").waitFor();
+  assert.ok(await picker.isDisabled());
+  await refresh.click();
+  await picker.selectOption("another-model");
+  await apply.click();
+  await page.getByText("Для следующих запросов выбрана модель another-model.").waitFor();
+  assert.ok(await apply.isDisabled());
+}
+
 async function capture(binary, output) {
   const temp = await mkdtemp(path.join(tmpdir(), "quasar-web-screenshots-"));
   const conversations = [];
@@ -251,6 +284,7 @@ async function capture(binary, output) {
     await checkTheme(page, output);
     await checkRouting(page, output);
     await checkAccount(page);
+    await checkModelPicker(page);
     await page.setViewportSize({ width: 390, height: 844 });
     for (const section of ["overview", "routing", "account"]) {
       await page.goto(url + "#" + section);

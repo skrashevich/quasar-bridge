@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"quasarbridge/internal/chatgpt"
+	"quasarbridge/internal/llm"
 )
 
 func TestPanelChatGPTLogin(t *testing.T) {
@@ -124,5 +126,90 @@ func TestPanelLoginRemoteReturn(t *testing.T) {
 	req := httptest.NewRequest("POST", "http://192.0.2.1:2704/diagnostics/api/chatgpt/start", nil)
 	if port, automatic := panelCallbackPort(req); port != 1455 || automatic {
 		t.Fatal("remote browser cannot return to the speaker's loopback")
+	}
+}
+
+func TestPanelChatGPTSelectsSubscriptionModel(t *testing.T) {
+	c := configurationFixture(t, `{"llm_api":"chatgpt","llm_model":"old"}`)
+	store := chatgpt.Store{Path: filepath.Join(t.TempDir(), "account.json")}
+	if err := os.WriteFile(store.Path, []byte(subscriptionFixture), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store.HTTP = &http.Client{Transport: chatGPTTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "api.openai.com" || r.Header.Get("Authorization") != "Bearer subscription-fixture" {
+			t.Fatal("wrong subscription request")
+		}
+		body := `{"models":[{"slug":"new","display_name":"New Model","visibility":"list"},{"slug":"hidden","visibility":"hide"}]}`
+		if r.URL.Path == "/v1/responses" {
+			var request struct {
+				Model string `json:"model"`
+			}
+			if err := json.UnmarshalRead(r.Body, &request); err != nil || request.Model != "new" {
+				t.Fatalf("inference model = %q, err = %v", request.Model, err)
+			}
+			body = "data: " + `{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}}` + "\n\n"
+		} else if r.URL.Path != "/v1/models" || r.Method != "GET" {
+			t.Fatal("wrong catalog endpoint")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	client := &llm.Client{API: "chatgpt", Model: "old", SubscriptionModel: c.activeModel, AccessToken: store.Token, HTTP: store.HTTP}
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, diagnosticControl{Configuration: c, ChatGPT: &panelChatGPT{store: store}})
+	catalog := diagnosticAPIRequest(mux, "GET", "chatgpt/models", "", "")
+	if catalog.Code != 200 || !strings.Contains(catalog.Body.String(), `"name":"New Model"`) || strings.Contains(catalog.Body.String(), "hidden") {
+		t.Fatal(catalog.Body.String())
+	}
+	selectModel := func(body string, code int) {
+		t.Helper()
+		res := diagnosticAPIRequest(mux, "POST", "chatgpt/model", body, "application/json")
+		if res.Code != code {
+			t.Fatalf("got %d %s, want %d", res.Code, res.Body, code)
+		}
+	}
+	selectModel(`{"expected_model":"old","model":"hidden"}`, 422)
+	selectModel(`{"expected_model":"stale","model":"new"}`, 409)
+	if c.activeModel() != "old" {
+		t.Fatal("invalid choice changed active model")
+	}
+	selectModel(`{"expected_model":"old","model":"new"}`, 200)
+	if cfg, err := readConfig(c.path); err != nil || cfg.LLMModel != "new" {
+		t.Fatal("choice was not persisted")
+	}
+	if answer, err := client.Complete(t.Context(), nil, false); err != nil || answer != "ok" {
+		t.Fatalf("inference after model change: %q, %v", answer, err)
+	}
+}
+
+func TestPanelChatGPTInstallerModel(t *testing.T) {
+	t.Setenv("QUASAR_LLM_MODEL", "installed")
+	c := configurationFixture(t, `{"llm_api":"chatgpt"}`)
+	dir := filepath.Dir(c.path)
+	t.Setenv("QUASAR_DATA_DIR", dir)
+	path := filepath.Join(dir, "runtime.env")
+	const original = "KEEP='value'\n# BEGIN QUASAR SETUP\nQUASAR_LLM_MODEL=\"installed\"\nQUASAR_MODE=\"hybrid\"\n# END QUASAR SETUP\n"
+	write := func(data string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, data := range []string{original + "export QUASAR_LLM_MODEL=manual\n", strings.ReplaceAll(original, "installed", "external"), "QUASAR_LLM_MODEL=installed\n"} {
+		write(data)
+		if _, err := c.saveChatGPTModel(t.Context(), "installed", "new"); err == nil {
+			t.Fatal("manual override accepted")
+		}
+	}
+	write(original)
+	if _, err := c.saveChatGPTModel(t.Context(), "installed", "provider/model-$x"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	want := strings.Replace(original, "installed", `provider/model-\$x`, 1)
+	if err != nil || string(raw) != want || c.activeModel() != "provider/model-$x" {
+		t.Fatal("incorrect installer model change")
+	}
+	if state, err := c.chatGPTModel(); err != nil || !state.Writable || state.Active != state.Saved {
+		t.Fatal("saved and active model diverged")
 	}
 }

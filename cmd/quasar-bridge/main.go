@@ -220,6 +220,9 @@ func main() {
 		return "Аварийный откат запланирован после этого ответа. После успешного восстановления подключения к Яндексу колонка перезагрузится.", nil
 	}
 	configuration := &configurationControl{path: *path, active: cfg, engine: engine, logs: logs}
+	if cfg.LLMAPI == "chatgpt" {
+		lc.SubscriptionModel = configuration.activeModel
+	}
 	yandexQuery := func(ctx context.Context, text string, dialog *queryDialog) (string, error) {
 		configuration.mu.Lock()
 		timezone := configuration.active.AssistantTools.Timezone
@@ -400,7 +403,7 @@ func main() {
 	panelStatus := func() map[string]any {
 		result := status()
 		result["run"] = diagnosticLogs.run
-		result["version"], result["llm_model"], result["llm_api"] = update.Version, cfg.LLMModel, cfg.LLMAPI
+		result["version"], result["llm_model"], result["llm_api"] = update.Version, configuration.activeModel(), cfg.LLMAPI
 		result["uptime_seconds"] = int64(time.Since(startedAt).Seconds())
 		result["diagnostics"] = map[string]any{"network_access": configuration.diagnosticsNetworkAccess(), "port": cfg.Diagnostics.Port, "address": panel.Address()}
 		return result
