@@ -46,6 +46,7 @@ func TestConfigurationRejectsInvalidBatchWithoutWriting(t *testing.T) {
 		{"llm_reasoning_effort": jsontext.Value(`"high"`)},
 		{"assistant_tools": jsontext.Value(`{"mcp_servers":[{"command":"sh"}]}`)},
 		{"assistant_tools.mcp_servers": jsontext.Value("[]")},
+		{"routing.commands": jsontext.Value(`{"note":{"path":"/bin/cat"}}`)},
 		{"airplay.aplay": jsontext.Value(`"sh"`)},
 		{"tls_key": jsontext.Value(`"/secret"`)},
 		{"routing.rules": jsontext.Value(`[{"name":"invalid","route":"llm","match":{"regex":"["}}]`)},

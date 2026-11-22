@@ -1,6 +1,6 @@
 "use strict";
 
-const commandEditor = { id: "", revision: "", key: "", load: 0 };
+const commandEditor = { id: "", revision: "", csrfToken: "", load: 0 };
 
 function showCommandList(data, locked) {
   const list = byId("command-list");
@@ -27,12 +27,10 @@ function showCommandList(data, locked) {
 }
 
 function commandRequest(query, body) {
-  const headers = {};
-  if (commandEditor.key) headers.Authorization = "Bearer " + commandEditor.key;
-  const options = { headers };
+  const options = { mode: "same-origin" };
   if (body) {
     options.method = "POST";
-    headers["Content-Type"] = "application/json";
+    options.headers = { "Content-Type": "application/json", "X-Quasar-CSRF": commandEditor.csrfToken };
     options.body = JSON.stringify(body);
   }
   return request("api/routing/command" + query, options);
@@ -59,24 +57,16 @@ function addCommandArg(value = "") {
   return field;
 }
 
-function requireCommandKey() {
-  commandEditor.key = "";
-  byId("command-unlock").hidden = false;
-  byId("command-editor").hidden = true;
-  byId("command-key").value = "";
-  byId("command-key").focus();
-}
-
 async function loadCommand() {
   const load = ++commandEditor.load;
   const id = commandEditor.id;
   byId("command-loading").hidden = false;
-  byId("command-unlock").hidden = true;
   message("command-error");
   try {
     const view = await commandRequest(id ? "?id=" + encodeURIComponent(id) : "");
     if (load !== commandEditor.load) return;
     commandEditor.revision = view.revision;
+    commandEditor.csrfToken = view.csrf_token;
     byId("command-id").value = id;
     byId("command-path").value = view.command?.path || "";
     byId("command-timeout").value = view.command?.timeout_ms ? view.command.timeout_ms / 1000 : "";
@@ -88,13 +78,7 @@ async function loadCommand() {
     byId(id ? "command-path" : "command-id").focus();
   } catch (error) {
     if (load !== commandEditor.load) return;
-    if (error.status === 401) {
-      const enteredKey = Boolean(commandEditor.key);
-      requireCommandKey();
-      if (enteredKey) message("command-error", "Ключ не подошёл. Проверьте значение и попробуйте ещё раз.", true);
-    } else {
-      message("command-error", error.message, true);
-    }
+    message("command-error", error.message, true);
   } finally {
     if (load === commandEditor.load) byId("command-loading").hidden = true;
   }
@@ -113,12 +97,9 @@ function setupCommandEditor() {
   byId("command-new").addEventListener("click", () => openCommand(""));
   byId("command-close").addEventListener("click", () => dialog.close());
   dialog.addEventListener("cancel", event => { if (routingView.busy) event.preventDefault(); });
-  dialog.addEventListener("close", () => { commandEditor.load++; byId("command-key").value = ""; });
-  byId("command-unlock").addEventListener("submit", event => {
-    event.preventDefault();
-    commandEditor.key = byId("command-key").value.trim();
-    byId("command-key").value = "";
-    loadCommand();
+  dialog.addEventListener("close", () => {
+    commandEditor.load++;
+    commandEditor.csrfToken = "";
   });
   byId("command-arg-add").addEventListener("click", () => addCommandArg().focus());
   byId("command-editor").addEventListener("submit", event => {

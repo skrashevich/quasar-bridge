@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
-	"crypto/subtle"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,52 +20,61 @@ import (
 	"github.com/skrashevich/quasar-bridge/internal/bridge"
 )
 
-// LAN access to the ordinary diagnostics panel does not grant shell privileges.
-// A local operator can use an SSH tunnel or supply this installation's editor key.
-func (c *configurationControl) commandEditorAccess(w http.ResponseWriter, r *http.Request) bool {
-	if c == nil {
-		writeDiagnosticError(w, http.StatusServiceUnavailable, "Редактор команд недоступен.")
+// The SSH installer records its client's IP in service-owned state. Opening
+// diagnostics to the LAN alone must not grant permission to define programs.
+func (c *configurationControl) trustedCommandClient(peer netip.Addr) bool {
+	if !peer.IsValid() || peer.IsLoopback() {
 		return false
 	}
-	if _, local := diagnosticAddresses(r); local {
-		return true
-	}
-	c.mu.Lock()
-	key, err := commandEditorKey(filepath.Join(filepath.Dir(c.path), "command-editor.key"))
-	c.mu.Unlock()
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(c.path), "command-editor.clients"))
 	if err != nil {
-		writeDiagnosticError(w, http.StatusInternalServerError, "Не удалось прочитать ключ редактора рядом с config.json.")
 		return false
 	}
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(key)) != 1 {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="Quasar Bridge command editor"`)
-		writeDiagnosticError(w, http.StatusUnauthorized, "Для редактирования команд по сети введите ключ редактора.")
-		return false
+	for line := range strings.Lines(string(data)) {
+		if ip, err := netip.ParseAddr(strings.TrimSpace(line)); err == nil && ip.Unmap() == peer {
+			return true
+		}
 	}
-	return true
+	return false
 }
 
-func commandEditorKey(path string) (string, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if errors.Is(err, os.ErrExist) {
-		data, err := os.ReadFile(path)
-		key := strings.TrimSpace(string(data))
-		if err == nil && len(key) < 26 {
-			err = errors.New("invalid command editor key")
+func (c *configurationControl) commandEditor() http.HandlerFunc {
+	secret := []byte(rand.Text())
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		if c == nil {
+			writeDiagnosticError(w, http.StatusServiceUnavailable, "Редактор команд недоступен.")
+			return
 		}
-		return key, err
+		peer, local := diagnosticClient(r)
+		if !local && !c.trustedCommandClient(peer) {
+			writeDiagnosticError(w, http.StatusForbidden, "Откройте редактор с компьютера, с которого установили Bridge по SSH, или через SSH-туннель.")
+			return
+		}
+		sites := r.Header.Values("Sec-Fetch-Site")
+		if len(sites) > 0 && (len(sites) != 1 || sites[0] != "same-origin") {
+			writeDiagnosticError(w, http.StatusForbidden, "Откройте редактор из веб-панели Bridge.")
+			return
+		}
+		mac := hmac.New(sha256.New, secret)
+		mac.Write([]byte(peer.String() + "\x00" + diagnosticOrigin(r)))
+		token := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		if r.Method != http.MethodPost {
+			value, err := c.commandForPanel(r.URL.Query().Get("id"), token)
+			writeDiagnosticResult(w, value, err)
+			return
+		}
+		tokens := r.Header.Values("X-Quasar-CSRF")
+		if r.Header.Get("Origin") != diagnosticOrigin(r) || len(tokens) != 1 || !hmac.Equal([]byte(tokens[0]), []byte(token)) {
+			writeDiagnosticError(w, http.StatusForbidden, "Откройте редактор заново и повторите сохранение.")
+			return
+		}
+		var edit commandEdit
+		if readDiagnosticJSON(w, r, &edit) {
+			value, err := c.editCommand(r.Context(), edit)
+			writeDiagnosticResult(w, value, err)
+		}
 	}
-	if err != nil {
-		return "", err
-	}
-	key := rand.Text()
-	_, err = f.WriteString(key + "\n")
-	if err = errors.Join(err, f.Close()); err != nil {
-		_ = os.Remove(path)
-		return "", err
-	}
-	return key, nil
 }
 
 type commandEdit struct {
@@ -74,15 +86,16 @@ type commandEdit struct {
 	ExpectedRevision string                 `json:"expected_revision"`
 }
 
-func (c *configurationControl) commandForPanel(id string) (any, error) {
+func (c *configurationControl) commandForPanel(id, csrfToken string) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r := c.active.Routing
 	view := struct {
 		Revision    string                 `json:"revision"`
+		CSRFToken   string                 `json:"csrf_token"`
 		Command     *bridge.RoutingCommand `json:"command,omitempty"`
 		Description string                 `json:"description,omitempty"`
-	}{Revision: c.engine.RoutingStatus().Revision}
+	}{Revision: c.engine.RoutingStatus().Revision, CSRFToken: csrfToken}
 	if id != "" {
 		command, ok := r.Commands[id]
 		if !ok {

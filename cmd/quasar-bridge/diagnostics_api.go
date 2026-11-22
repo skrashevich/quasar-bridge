@@ -152,19 +152,9 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 		value, err := control.Configuration.MutateRouting(r.Context(), mutation)
 		writeDiagnosticResult(w, value, err)
 	})
-	register("GET /diagnostics/api/routing/command", func(w http.ResponseWriter, r *http.Request) {
-		if control.Configuration.commandEditorAccess(w, r) {
-			value, err := control.Configuration.commandForPanel(r.URL.Query().Get("id"))
-			writeDiagnosticResult(w, value, err)
-		}
-	})
-	register("POST /diagnostics/api/routing/command", func(w http.ResponseWriter, r *http.Request) {
-		var edit commandEdit
-		if control.Configuration.commandEditorAccess(w, r) && readDiagnosticJSON(w, r, &edit) {
-			value, err := control.Configuration.editCommand(r.Context(), edit)
-			writeDiagnosticResult(w, value, err)
-		}
-	})
+	editor := control.Configuration.commandEditor()
+	register("GET /diagnostics/api/routing/command", editor)
+	register("POST /diagnostics/api/routing/command", editor)
 	register("POST /diagnostics/api/routing/options", func(w http.ResponseWriter, r *http.Request) {
 		var options assistant.RoutingOptions
 		if !readDiagnosticJSON(w, r, &options) {

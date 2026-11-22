@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func diagnosticAddresses(r *http.Request) (valid, local bool) {
+func diagnosticClient(r *http.Request) (netip.Addr, bool) {
 	peer, peerErr := netip.ParseAddrPort(r.RemoteAddr)
 	host := r.Host
 	if name, _, err := net.SplitHostPort(host); err == nil {
@@ -15,22 +15,29 @@ func diagnosticAddresses(r *http.Request) (valid, local bool) {
 	}
 	hostIP, hostErr := netip.ParseAddr(host)
 	localhost := strings.EqualFold(host, "localhost")
-	return peerErr == nil && (localhost || hostErr == nil), peer.Addr().Unmap().IsLoopback() && (localhost || hostIP.Unmap().IsLoopback())
+	if peerErr != nil || (!localhost && hostErr != nil) {
+		return netip.Addr{}, false
+	}
+	ip := peer.Addr().Unmap()
+	return ip, ip.IsLoopback() && (localhost || hostIP.Unmap().IsLoopback())
+}
+
+func diagnosticOrigin(r *http.Request) string {
+	if r.TLS != nil {
+		return "https://" + r.Host
+	}
+	return "http://" + r.Host
 }
 
 // diagnosticsAccess keeps localhost as the default and reads live access state
 // for each request. Numeric network hosts avoid trusting arbitrary DNS names.
 func diagnosticsAccess(network func() bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		valid, local := diagnosticAddresses(r)
+		peer, local := diagnosticClient(r)
 		networkEnabled := network != nil && network()
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		origin := r.Header.Get("Origin")
-		if !valid || (!networkEnabled && !local) ||
-			r.Header.Get("Sec-Fetch-Site") == "cross-site" || (origin != "" && origin != scheme+"://"+r.Host) {
+		origins := r.Header.Values("Origin")
+		if !peer.IsValid() || (!networkEnabled && !local) || r.Header.Get("Sec-Fetch-Site") == "cross-site" ||
+			len(origins) > 1 || (len(origins) == 1 && origins[0] != "" && origins[0] != diagnosticOrigin(r)) {
 			http.Error(w, "Diagnostics access denied; localhost is required unless network access is enabled.", http.StatusForbidden)
 			return
 		}

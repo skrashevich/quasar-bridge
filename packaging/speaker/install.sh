@@ -43,6 +43,7 @@ cleanup() {
  fi
  if [ -n "$stage" ]; then rm -rf "$stage"; fi
  firmware_restore || result=1
+ rm -f "$state/.install-lock/command-editor.clients"
  rmdir "$state/.install-lock"
  exit "$result"
 }
@@ -79,5 +80,16 @@ sed "s|@STATE@|$state|" "$state/app/S96quasar-bridge" > "$hook.new"
 chmod 0755 "$hook.new"
 mv -f "$hook.new" "$hook"
 firmware_restore
+# Trust the address observed by the SSH server on the first SSH installation.
+# Preserve an existing operator-managed list, including an intentionally empty one.
+if [ ! -e "$state/command-editor.clients" ]; then
+ connection=${SSH_CONNECTION:-${SSH_CLIENT:-}}
+ peer=${connection%% *}
+ case "$peer" in
+  ''|*[!0-9a-fA-F.:]*) ;;
+  *) printf '%s\n' "$peer" > "$state/.install-lock/command-editor.clients"
+     mv "$state/.install-lock/command-editor.clients" "$state/command-editor.clients" ;;
+ esac
+fi
 echo "Installed $(cat "$state/app/VERSION"). Autostart: $hook"
 echo "Config: $state/config.json. Next: control.sh check-backends, then control.sh apply."

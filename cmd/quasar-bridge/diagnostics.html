@@ -111,11 +111,6 @@
       <dialog id="command-dialog" aria-labelledby="command-title">
         <header class="section-heading"><h2 id="command-title">Новая внешняя команда</h2><button id="command-close" type="button" class="quiet" aria-label="Закрыть редактор команды">Закрыть</button></header>
         <p id="command-loading" class="muted" role="status" hidden>Загружаем команду…</p>
-        <form id="command-unlock" hidden>
-          <p>Для управления программами по сети нужен ключ владельца. На колонке он хранится рядом с <code>config.json</code> в файле <code>command-editor.key</code>. Через SSH-туннель редактор открывается сразу.</p>
-          <label>Ключ редактора<input id="command-key" type="password" autocomplete="current-password" required></label>
-          <button type="submit" class="primary">Открыть редактор</button>
-        </form>
         <form id="command-editor" hidden>
           <div class="rule-grid">
             <label>ID команды<input id="command-id" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}" title="От 1 до 64 латинских букв, цифр, точек, дефисов и подчёркиваний. Первый символ — буква или цифра." placeholder="voice_note" spellcheck="false"></label>

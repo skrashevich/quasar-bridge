@@ -1028,7 +1028,11 @@ class InstallationTest(unittest.TestCase):
             self.control("stop")
 
     def test_install_update_and_uninstall_keep_state_and_boot_independently(self):
+        self.env["SSH_CONNECTION"] = "192.0.2.2 51000 192.0.2.1 22"
         self.install()
+        clients = self.state / "command-editor.clients"
+        self.assertEqual(clients.read_text(), "192.0.2.2\n")
+        self.assertEqual(clients.stat().st_mode & 0o777, 0o600)
         self.assertEqual(sorted(p.name for p in (self.state / "app/bin").iterdir()), ["quasar-bridge"])
         for name in ("SOURCE.md", "docs/licenses/go-aac-LGPL-3.0.txt",
                      "docs/licenses/go-aac-GPL-3.0.txt"):
@@ -1046,7 +1050,9 @@ class InstallationTest(unittest.TestCase):
         backup.write_text("saved endpoint fixture")
         replacement = (self.package / "bin/quasar-bridge").read_bytes() + b"updated-single-file-fixture"
         (self.package / "bin/quasar-bridge").write_bytes(replacement)
+        clients.write_text("2001:db8::2\n")
         self.install()
+        self.assertEqual(clients.read_text(), "2001:db8::2\n")
         self.assertEqual((self.state / "app/bin/quasar-bridge").read_bytes(), replacement)
         self.assertEqual(json.loads(config.read_text())["dialogue_context"]["max_turns"], 9)
         self.assertEqual(runtime.read_text(), "GOMAXPROCS=2\n")

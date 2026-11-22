@@ -306,7 +306,6 @@ async function changeRouting(endpoint, body) {
     loadConfig(false);
     loadStatus();
   } catch (error) {
-    if (endpoint === "command" && error.status === 401) requireCommandKey();
     const text = error.status === 409 ? "Настройки изменились. Закройте редактор, обновите список и проверьте изменения перед повторным сохранением." : ruleErrorText(error);
     if (applied) routingView.data = null;
     message(applied ? "routing-message" : errorId, applied ? "Изменения применены. Обновите список, чтобы получить текущее состояние." : text, true);

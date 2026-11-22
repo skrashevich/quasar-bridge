@@ -129,13 +129,16 @@ async function commands(page) {
   const editedID = "web_note_edited";
   const rule = "Заметки из панели";
   const phrase = "Запись из панели купить кофе";
+  const description = "Добавить в <b>блокнот</b> из панели";
   await page.getByRole("button", { name: "Добавить команду" }).click();
+  assert.equal(await dialog.locator('input[type="password"]').count(), 0);
   await dialog.getByLabel("ID команды").fill(createID);
   await dialog.getByLabel("Путь к программе").fill("/bin/cat");
-  await dialog.getByLabel("Когда выбирать эту команду", { exact: false }).fill("Добавить заметку из панели");
+  await dialog.getByLabel("Когда выбирать эту команду", { exact: false }).fill(description);
   await save();
   await dialog.waitFor({ state: "hidden" });
   assert.equal((await api(page, "routing/command?id=" + createID)).command.path, "/bin/cat");
+  await page.locator("#command-list").getByText(description, { exact: true }).waitFor();
 
   await page.getByRole("button", { name: "Добавить правило" }).click();
   await dialog.getByLabel("Название").fill(rule);
@@ -168,7 +171,7 @@ async function commands(page) {
   assert.equal(pending, false);
   assert.equal(active.command_ids.includes(createID), false);
   assert.equal(active.rules.find(r => r.name === rule).command, editedID);
-  assert.equal(active.classifier.commands[editedID], "Добавить заметку из панели");
+  assert.equal(active.classifier.commands[editedID], description);
   assert.equal(active.classifier.commands[createID], undefined);
   const remove = async () => {
     page.once("dialog", d => d.accept());
@@ -333,6 +336,30 @@ async function access(page, panelResponse) {
   }
   assert.equal((await page.request.post(config, { data: JSON.stringify(data), headers: { "Content-Type": "text/plain" } })).status(), 415);
   assert.deepEqual((await api(page, "config")).settings.find(s => s.path === original.path), original);
+
+  const editor = new URL("api/routing/command", url);
+  const before = await api(page, "routing/command");
+  assert.ok(before.csrf_token);
+  const command = { action: "create", id: "csrf_check", command: { path: "/bin/cat" }, expected_revision: before.revision };
+  const header = { "X-Quasar-CSRF": before.csrf_token };
+  for (const headers of [
+    { Origin: editor.origin }, header,
+    { ...header, Origin: "null" },
+    { ...header, Origin: "https://example.invalid" },
+    { ...header, Origin: editor.origin, "Sec-Fetch-Site": "same-site" },
+  ]) {
+    const result = await page.request.post(editor.href, { data: command, headers });
+    assert.equal(result.status(), 403);
+    assert.equal(result.headers()["access-control-allow-origin"], undefined);
+  }
+  const form = await page.request.post(editor.href, { form: { id: command.id }, headers: { ...header, Origin: editor.origin } });
+  assert.equal(form.status(), 415);
+  const preflight = await page.request.fetch(editor.href, { method: "OPTIONS", headers: {
+    Origin: "https://example.invalid", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "x-quasar-csrf",
+  } });
+  assert.equal(preflight.headers()["access-control-allow-origin"], undefined);
+  assert.equal((await api(page, "routing/command")).revision, before.revision);
+  assert.ok(!(await api(page, "routing")).active.command_ids?.includes(command.id));
 }
 
 const scenarios = { overview, routing, commands, settings, chat, history, airplay, logs, account, models, access };
