@@ -10,7 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"quasarbridge/internal/webaddress"
+	"github.com/skrashevich/quasar-bridge/internal/webaddress"
 )
 
 var musicSourceSeparator = regexp.MustCompile(`(?i)(?:^|\s+)(?:со|с|на)(?:\s+(?:сайта|сайте|страницы|странице))?`)

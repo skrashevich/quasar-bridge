@@ -4,7 +4,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 
-	"quasarbridge/internal/update"
+	"github.com/skrashevich/quasar-bridge/internal/update"
 )
 
 // A short update question already has a complete, trusted tool result. Answer it

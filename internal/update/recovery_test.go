@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"quasarbridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
 )
 
 func TestSaveObservePreservesConfigurationAndBackup(t *testing.T) {

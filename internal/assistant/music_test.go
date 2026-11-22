@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 func musicTools(t *testing.T, fetch func(*http.Request) (*http.Response, error)) *Tools {

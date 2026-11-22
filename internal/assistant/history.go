@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"quasarbridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
 )
 
 type HistoryQuery struct {

@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"quasarbridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
 )
 
 func TestHistorySearchPreservesLocalLLMDisplayText(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"syscall"
 
-	"quasarbridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
 )
 
 type RestartResult struct {

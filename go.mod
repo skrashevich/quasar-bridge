@@ -1,4 +1,4 @@
-module quasarbridge
+module github.com/skrashevich/quasar-bridge
 
 go 1.27.3
 

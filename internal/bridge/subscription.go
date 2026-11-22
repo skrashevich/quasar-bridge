@@ -18,7 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 // SubscriptionMonitor reports the last explicit state on each active connection.

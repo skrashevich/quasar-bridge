@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/skrashevich/quasar-bridge/internal/journal"
 	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
 	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
@@ -17,7 +18,6 @@ import (
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	deferred "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
 	"google.golang.org/protobuf/encoding/protowire"
-	"quasarbridge/internal/journal"
 )
 
 func TestConversationTextAndDeliveredResponse(t *testing.T) {

@@ -11,13 +11,13 @@ import (
 
 	"encoding/json/v2"
 	"github.com/coder/websocket"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 	app "github.com/skrashevich/quasar-go-genproto/proto/alice/library/client/protos"
 	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
 	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/wire"
 )
 
 const llmURLsAnswer = "«Бавария» играет с «Кёльном» в пятницу, 20 ноября, в 22:30 по московскому времени. Матч пройдёт дома, в Мюнхене. ([app.fcbayern.com](https://app.fcbayern.com/en/?utm_source=openai))"

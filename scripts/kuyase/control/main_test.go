@@ -4,21 +4,21 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/home"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/home"
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/wire"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
-	"quasarbridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
 )
 
 type fakeAirPlay struct{ running atomic.Bool }

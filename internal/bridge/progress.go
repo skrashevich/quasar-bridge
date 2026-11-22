@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 	directive "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
 	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
 	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
@@ -13,8 +15,6 @@ import (
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	deferred "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
 	"google.golang.org/protobuf/encoding/protowire"
-	"quasarbridge/internal/reply"
-	"quasarbridge/internal/wire"
 )
 
 // progress starts only after the executor is known. Stop joins the pump so no

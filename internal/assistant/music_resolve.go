@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"quasarbridge/internal/webaddress"
+	"github.com/skrashevich/quasar-bridge/internal/webaddress"
 )
 
 // MusicResolution describes discovered audio without starting playback.

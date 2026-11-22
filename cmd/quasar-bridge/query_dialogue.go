@@ -6,7 +6,7 @@ import (
 	"time"
 	"uuid"
 
-	"quasarbridge/internal/yandex"
+	"github.com/skrashevich/quasar-bridge/internal/yandex"
 )
 
 var (

@@ -2,9 +2,9 @@ package assistant
 
 import (
 	"encoding/json/v2"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
 	"os"
 	"path/filepath"
-	"quasarbridge/internal/journal"
 	"strings"
 	"testing"
 	"time"

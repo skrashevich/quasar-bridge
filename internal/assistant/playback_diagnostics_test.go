@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 // Simulated streams cannot be acknowledged by speakers and must not evict any

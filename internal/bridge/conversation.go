@@ -8,8 +8,8 @@ import (
 	"time"
 	"uuid"
 
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 type turn struct {

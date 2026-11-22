@@ -10,8 +10,8 @@ import (
 	"time"
 	"uuid"
 
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/update"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/update"
 )
 
 type Chatter interface {

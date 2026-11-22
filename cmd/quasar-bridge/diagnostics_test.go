@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 func TestDiagnosticLogBoundsAndIncrementalReads(t *testing.T) {

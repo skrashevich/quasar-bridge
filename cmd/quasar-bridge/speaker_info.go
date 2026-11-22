@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"quasarbridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
 )
 
 // The Quasar firmware stores its full build and the bootloader's serial

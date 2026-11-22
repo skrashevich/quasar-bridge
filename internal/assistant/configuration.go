@@ -7,8 +7,8 @@ import (
 	"errors"
 	"strings"
 
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
 )
 
 // BridgeConfiguration is owned by the executable, which validates and persists

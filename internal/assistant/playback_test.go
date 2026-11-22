@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 func playbackContext(t *testing.T, speaker string, state sound.PlaybackState, capture func(sound.Request) error) context.Context {

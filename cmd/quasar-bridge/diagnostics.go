@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"quasarbridge/internal/update"
+	"github.com/skrashevich/quasar-bridge/internal/update"
 )
 
 //go:embed diagnostics.html

@@ -16,9 +16,9 @@ import (
 	"strings"
 	"sync"
 
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/update"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/update"
 )
 
 type voiceSetting struct {
