@@ -1,0 +1,1932 @@
+# Контракт ветки cdx/yandex-text-query; см. info.description и x-source-commit.
+openapi: 3.1.0
+info:
+  title: Quasar Bridge — внешние HTTP API и веб-панель
+  version: 0.8.0-prerelease
+  description: |-
+    Контракт реализации ветки cdx/yandex-text-query (commit 935421954765cd61c29710ee16358362db9896b5).
+    Основан на предрелизе v0.8.0 и дополнен текстовыми ответами Алисы и диалогами в API.
+
+    Основной набор — 9 JSON-операций /diagnostics/api/*, а также /diagnostics/logs и /diagnostics/download.
+    Для полного описания HTTP-поверхности добавлены HTML/JS/CSS, перенаправления панели и маршруты
+    основного listener: /healthz, /music-stream/{stream_id}, /uni.ws (только handshake).
+    На отдельном HTTP-порту панели (по умолчанию 2704) доступны только /diagnostics* и GET /.
+    Те же /diagnostics* зарегистрированы на основном listener Bridge (по умолчанию localhost:8443),
+    где дополнительно действует allowed_ips. TLS относится к основному listener, панель использует HTTP.
+
+    Включение сетевого доступа: diagnostics.network_access=true, затем apply reload; отдельный listener
+    перепривязывается с 127.0.0.1 на 0.0.0.0. При false панель продолжает работать через loopback.
+    Bearer/API key/cookie-аутентификации в реализации нет, поэтому securitySchemes отсутствует.
+    Проверки /diagnostics*: Host — числовой IP или localhost; при выключенном сетевом доступе и peer,
+    и Host должны быть loopback. Origin, если указан, должен в точности совпадать со scheme://Host
+    текущего запроса; Sec-Fetch-Site: cross-site запрещён. CORS preflight не реализован.
+    X-Forwarded-* не участвуют в проверке; произвольные DNS-имена Host не принимаются.
+    Успешно прошедшие guard ответы имеют Cache-Control: no-store, X-Content-Type-Options: nosniff
+    и ограничительный Content-Security-Policy. Ошибки guard и ServeMux — text/plain, ошибки API — JSON.
+
+    Все POST принимают application/json с параметрами, тело до 256 КиБ; неизвестные JSON-поля запрещены.
+    Схемы required описывают корректный клиентский запрос; Go-декодер отдельно не проверяет наличие
+    каждого поля: отсутствующие строки становятся пустыми и отклоняются последующей валидацией.
+    GET-маршруты ServeMux также принимают HEAD; кроме потока, HEAD отдельно не перечислены.
+    Неподдерживаемый метод обычно получает 405; неизвестный путь — 404, оба text/plain.
+    Это статический документ: v0.8.0 не публикует /openapi.yaml или Swagger UI.
+    OAuth callback CLI, исходящие API провайдеров/MCP и протокол AirPlay не относятся к этому HTTP-серверу.
+  contact:
+    url: https://github.com/skrashevich/quasar-bridge
+  license:
+    name: Apache-2.0
+    url: https://github.com/skrashevich/quasar-bridge/blob/v0.8.0/LICENSE
+externalDocs:
+  description: Исходники реализации текстовых запросов и диалогов
+  url: https://github.com/skrashevich/quasar-bridge/tree/935421954765cd61c29710ee16358362db9896b5
+servers:
+- url: http://{host}:{port}
+  description: Отдельный HTTP listener панели. diagnostics.network_access=true открывает IPv4 0.0.0.0; false
+    оставляет 127.0.0.1.
+  variables:
+    host:
+      default: 127.0.0.1
+      description: Числовой IP или localhost. Для сетевого доступа укажите IP колонки.
+    port:
+      default: '2704'
+      description: diagnostics.port
+- url: '{scheme}://{host}:{port}'
+  description: 'Основной listener Bridge: те же маршруты панели, дополнительно действует allowed_ips.'
+  variables:
+    scheme:
+      default: http
+      enum:
+      - http
+      - https
+    host:
+      default: localhost
+      description: Числовой IP или localhost.
+    port:
+      default: '8443'
+      description: Порт из listen; TLS при настроенных tls_cert/tls_key.
+security: []
+tags:
+- name: Panel
+  description: JSON API веб-панели.
+- name: Diagnostics
+  description: Операционный журнал и выгрузка.
+- name: UI
+  description: Статические файлы и перенаправления панели.
+- name: Bridge
+  description: 'Основной listener: health, музыка и WebSocket.'
+x-source-ref: cdx/yandex-text-query
+x-source-commit: 935421954765cd61c29710ee16358362db9896b5
+x-source-files:
+- cmd/quasar-bridge/main.go
+- cmd/quasar-bridge/diagnostics_api.go
+- cmd/quasar-bridge/diagnostics.go
+- cmd/quasar-bridge/diagnostics_access.go
+- cmd/quasar-bridge/diagnostics_listener.go
+- cmd/quasar-bridge/config_tools.go
+- cmd/quasar-bridge/routing_tools.go
+- cmd/quasar-bridge/query.go
+- cmd/quasar-bridge/airplay.go
+- internal/assistant/history.go
+- internal/assistant/music_queue.go
+- internal/bridge/routing.go
+- internal/bridge/subscription.go
+- internal/bridge/proxy.go
+- internal/sound/sound.go
+- internal/update/restart.go
+paths:
+  /diagnostics/api/status:
+    get:
+      tags:
+      - Panel
+      operationId: getPanelStatus
+      summary: Состояние Bridge и возможности панели
+      description: Проверяйте capabilities перед вызовом необязательной подсистемы. history=true означает настроенный
+        путь журнала, даже если запись сейчас выключена.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PanelStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /diagnostics/api/config:
+    get:
+      tags:
+      - Panel
+      operationId: getConfiguration
+      summary: Прочитать безопасный список настроек
+      description: Возвращает только разрешённые 48 настроек, без токенов, URL серверов и путей файлов. Пустая
+        section означает все настройки; доступны точный путь и префикс секции.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigurationView'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/Timeout'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      parameters:
+      - name: section
+        in: query
+        required: false
+        description: Например routing, routing.classifier или diagnostics.network_access. Неизвестная секция
+          — 400.
+        schema:
+          type: string
+    post:
+      tags:
+      - Panel
+      operationId: saveConfiguration
+      summary: Сохранить изменения конфигурации
+      description: Атомарная запись и резервная копия .voice-backup; сама по себе не применяет изменения. Переменные
+        окружения делают соответствующие поля недоступными для записи. Для применения используйте /apply.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigurationResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/Timeout'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+      requestBody:
+        required: true
+        description: 'Content-Type: application/json (параметры, например charset, допустимы); максимум 262144
+          байт, чтение до 10 секунд; неизвестные поля отклоняются.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigurationRequest'
+            example:
+              changes:
+                diagnostics.network_access: true
+                routing.classifier.enabled: false
+                routing.default_route: yandex
+      x-max-request-body-bytes: 262144
+  /diagnostics/api/apply:
+    post:
+      tags:
+      - Panel
+      operationId: applyConfiguration
+      summary: Применить настройки или запланировать перезапуск
+      description: reload применяет routing, conversation_log и diagnostics.network_access. Если остальная
+        конфигурация изменилась, возвращает 409 restart required. restart планирует перезапуск проверенной
+        standalone-службы; 200 со status=scheduled не означает завершения перезапуска.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ConfigurationResult'
+                - $ref: '#/components/schemas/RestartResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/Timeout'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+      requestBody:
+        required: true
+        description: 'Content-Type: application/json (параметры, например charset, допустимы); максимум 262144
+          байт, чтение до 10 секунд; неизвестные поля отклоняются.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+            example:
+              action: reload
+      x-max-request-body-bytes: 262144
+  /diagnostics/api/route:
+    post:
+      tags:
+      - Panel
+      operationId: previewRouting
+      summary: Сравнить статические маршруты активной и сохранённой конфигурации
+      description: Не вызывает классификатор и не выполняет действие. Проверяет статические правила и администрирование
+        Bridge; специальные обработчики media/dialogue не симулируются. wake word в HTTP-запросе не принимается.
+        route=classify означает необходимость классификации при реальном запросе.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePreview'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/Timeout'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+      requestBody:
+        required: true
+        description: 'Content-Type: application/json (параметры, например charset, допустимы); максимум 262144
+          байт, чтение до 10 секунд; неизвестные поля отклоняются.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TextRequest'
+      x-max-request-body-bytes: 262144
+  /diagnostics/api/decide:
+    post:
+      tags:
+      - Panel
+      operationId: decideRouting
+      summary: Выбрать маршрут через работающий Engine
+      description: 'Аналог CLI -route: специальные обработчики, контекст диалога и fallback классификатора.
+        Может вызвать LLM-классификатор, но не генерирует ответ и не выполняет выбранное действие. Тайм-аут
+        75 секунд. Общая блокировка с /query, конфликт — 409; fallback при ошибке классификации может вернуть
+        обычный 200.'
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveDecision'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+      requestBody:
+        required: true
+        description: 'Content-Type: application/json (параметры, например charset, допустимы); максимум 262144
+          байт, чтение до 10 секунд; неизвестные поля отклоняются.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TextRequest'
+      x-max-request-body-bytes: 262144
+  /diagnostics/api/query:
+    post:
+      tags:
+      - Panel
+      operationId: executeTextQuery
+      summary: Выполнить текстовый запрос
+      description: >-
+        Тайм-аут 75 секунд. Может выполнять инструменты и менять состояние устройств или аккаунта.
+        Маршрут yandex получает текст Алисы через отдельное соединение без микрофона и озвучивания.
+        Без dialog_id создаётся новый диалог; UUID из ответа передаётся в следующих запросах для
+        сохранения контекста Алисы, LLM или обработчика умного дома. При включённом
+        dialogue_context.enabled короткие уточнения продолжают последний локальный обработчик;
+        после уточняющего вопроса умного дома ближайшая реплика в течение 45 секунд
+        также может быть ответом в свободной форме. Явные правила маршрутизации имеют приоритет.
+        Перед действием умный дом перечитывает
+        доступность и состояния устройств. Разные диалоги изолированы от колонок и друг друга.
+        Неактивные диалоги истекают по dialogue_context.ttl_seconds (по умолчанию 300 секунд),
+        перезапуск процесса удаляет их. До 32 активных диалогов. Общая блокировка с /decide.
+        Физическое воспроизведение симулируется и возвращается в playback; прочие действия реальны.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '504':
+          $ref: '#/components/responses/Timeout'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Неизвестный или истёкший dialog_id. Не создаёт новый диалог молча.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+      requestBody:
+        required: true
+        description: 'Content-Type: application/json (параметры, например charset, допустимы); максимум 262144
+          байт, чтение до 10 секунд; неизвестные поля отклоняются.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+            examples:
+              newDialog:
+                summary: Начать новый диалог
+                value:
+                  text: Какая погода в Токио?
+              continueDialog:
+                summary: Продолжить диалог с UUID из предыдущего ответа
+                value:
+                  text: А завтра?
+                  dialog_id: 9e069ed0-af1a-40cd-b072-420e3db3cd15
+      x-max-request-body-bytes: 262144
+  /diagnostics/api/history:
+    get:
+      tags:
+      - Panel
+      operationId: searchHistory
+      summary: Поиск в журнале диалогов
+      description: Чтение до 5 секунд, лимит объёма assistant_tools.history_max_scan_mb. Все слова query ищутся
+        без учёта регистра в вопросе и ответе, ё=е. Результаты от новых к старым. Можно читать существующий
+        журнал при выключенной записи; recording отражает её текущее состояние.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/Timeout'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      parameters:
+      - name: query
+        in: query
+        required: false
+        description: Поисковая строка, максимум 200 Unicode code points.
+        schema:
+          type: string
+          maxLength: 200
+          default: ''
+      - name: limit
+        in: query
+        required: false
+        description: Количество результатов.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 5
+      - name: since
+        in: query
+        required: false
+        description: Нижняя граница включительно, RFC3339.
+        schema:
+          type: string
+          format: date-time
+      - name: until
+        in: query
+        required: false
+        description: Верхняя граница исключительно, RFC3339; строго позже since.
+        schema:
+          type: string
+          format: date-time
+  /diagnostics/api/airplay:
+    post:
+      tags:
+      - Panel
+      operationId: controlAirPlay
+      summary: Управление приёмником и отправителем AirPlay
+      description: Тайм-аут 15 секунд. start/stop/status управляют приёмником. restart — медиакоманда для текущего
+        отправителя, не перезапуск Bridge или приёмника. media_stop отправляет отправителю команду stop. Медиакоманды
+        требуют подключённого отправителя; любая ошибка Control/ControlMedia возвращает 409.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AirPlayResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+      requestBody:
+        required: true
+        description: 'Content-Type: application/json (параметры, например charset, допустимы); максимум 262144
+          байт, чтение до 10 секунд; неизвестные поля отклоняются.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AirPlayRequest'
+            example:
+              action: status
+      x-max-request-body-bytes: 262144
+  /diagnostics/logs:
+    get:
+      tags:
+      - Diagnostics
+      operationId: getOperationalLogs
+      summary: Получить хвост операционного журнала
+      description: Для инкрементального чтения передайте run и cursor предыдущего ответа как after. Без совпадающего
+        run after игнорируется. cursor — смещение в байтах; вытесненные или выходящие за конец курсоры сбрасываются.
+        reset описывает коррекцию курсора, truncated — обрезанный буфер, а не историю диалогов.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogSnapshot'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          description: Invalid log cursor
+          content:
+            text/plain:
+              schema:
+                type: string
+      parameters:
+      - name: run
+        in: query
+        required: false
+        description: ID процесса из предыдущего ответа.
+        schema:
+          type: string
+      - name: after
+        in: query
+        required: false
+        description: Курсор в байтах; проверяется только при совпавшем run.
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+  /diagnostics/download:
+    get:
+      tags:
+      - Diagnostics
+      operationId: downloadOperationalLogs
+      summary: Скачать диагностический отчёт
+      description: 'Текстовый файл: версия, UTC-время выгрузки, признак обрезки, состояние AirPlay и хвост
+        операционного журнала.'
+      responses:
+        '200':
+          description: Текстовый диагностический отчёт.
+          content:
+            text/plain:
+              schema:
+                type: string
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              example: attachment; filename="quasar-bridge-diagnostics-20261115-120000.txt"
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /diagnostics/:
+    get:
+      tags:
+      - UI
+      operationId: getPanelHTML
+      summary: HTML веб-панели
+      description: ''
+      responses:
+        '200':
+          description: HTML веб-панели
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /diagnostics/app.js:
+    get:
+      tags:
+      - UI
+      operationId: getPanelScript
+      summary: JavaScript веб-панели
+      description: ''
+      responses:
+        '200':
+          description: JavaScript веб-панели
+          content:
+            text/javascript:
+              schema:
+                type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /diagnostics/app.css:
+    get:
+      tags:
+      - UI
+      operationId: getPanelStyles
+      summary: CSS веб-панели
+      description: ''
+      responses:
+        '200':
+          description: CSS веб-панели
+          content:
+            text/css:
+              schema:
+                type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /diagnostics:
+    get:
+      tags:
+      - UI
+      operationId: redirectToPanel
+      summary: Перенаправление на /diagnostics/.
+      responses:
+        '307':
+          description: Временное перенаправление.
+          headers:
+            Location:
+              schema:
+                type: string
+                const: /diagnostics/
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /:
+    get:
+      tags:
+      - UI
+      operationId: redirectPanelRoot
+      summary: Только корень отдельного listener панели.
+      responses:
+        '307':
+          description: Временное перенаправление.
+          headers:
+            Location:
+              schema:
+                type: string
+                const: /diagnostics/
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+      servers:
+      - url: http://{host}:{port}
+        description: Отдельный HTTP listener панели. diagnostics.network_access=true открывает IPv4 0.0.0.0;
+          false оставляет 127.0.0.1.
+        variables:
+          host:
+            default: 127.0.0.1
+            description: Числовой IP или localhost. Для сетевого доступа укажите IP колонки.
+          port:
+            default: '2704'
+            description: diagnostics.port
+  /healthz:
+    get:
+      tags:
+      - Bridge
+      operationId: getHealth
+      summary: Состояние основного listener
+      description: 'Без diagnosticsAccess: ограничивается только allowed_ips основного listener. Доступность
+        не зависит от сетевого доступа к панели.'
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+      servers:
+      - url: '{scheme}://{host}:{port}'
+        description: Только основной listener Bridge (listen, TLS и allowed_ips). На порту панели маршрут отсутствует.
+        variables:
+          scheme:
+            default: http
+            enum:
+            - http
+            - https
+          host:
+            default: localhost
+            description: Числовой IP или localhost.
+          port:
+            default: '8443'
+            description: Порт из listen; TLS при настроенных tls_cert/tls_key.
+  /music-stream/{stream_id}:
+    get:
+      tags:
+      - Bridge
+      operationId: streamMusic
+      summary: MP3-поток очереди
+      description: Только основной listener, только при созданной MusicQueue (assistant_tools.enabled, web,
+        play_sound и доступный music_base_url). На порту панели отсутствует. Идентификатор выдаётся внутренним
+        playback; REST-метода создания очереди нет. 1..64 трека; Range не поддерживается. Неизвестные query-параметры
+        игнорируются. Ошибка после начала потока передаётся HTTP trailer X-Quasar-Music-Error при статусе 200.
+      responses:
+        '200':
+          description: MP3-поток.
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Accept-Ranges:
+              schema:
+                type: string
+                const: none
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          description: Неверный start, offset_ms либо повтор параметра.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Очередь неизвестна, истекла либо MusicQueue не зарегистрирована.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '502':
+          description: Ошибка источника до начала MP3-потока.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '503':
+          description: Четыре потока уже активны.
+          content:
+            text/plain:
+              schema:
+                type: string
+          headers:
+            Retry-After:
+              schema:
+                type: string
+                const: '1'
+      parameters:
+      - name: stream_id
+        in: path
+        required: true
+        description: Полученный ранее ID очереди; истекает через 2 часа.
+        schema:
+          type: string
+          description: Непрозрачный идентификатор UUID с суффиксом .mp3.
+      - name: start
+        in: query
+        required: false
+        description: Индекс трека с нуля; меньше числа треков очереди; повтор параметра запрещён.
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 63
+          default: 0
+      - name: offset_ms
+        in: query
+        required: false
+        description: Смещение в первом выбранном треке, максимум 2 часа; повтор параметра запрещён.
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 7200000
+          default: 0
+      servers:
+      - url: '{scheme}://{host}:{port}'
+        description: Только основной listener Bridge (listen, TLS и allowed_ips). На порту панели маршрут отсутствует.
+        variables:
+          scheme:
+            default: http
+            enum:
+            - http
+            - https
+          host:
+            default: localhost
+            description: Числовой IP или localhost.
+          port:
+            default: '8443'
+            description: Порт из listen; TLS при настроенных tls_cert/tls_key.
+      x-http-trailers:
+        X-Quasar-Music-Error:
+          description: Ошибка после отправки 200; тело может быть неполным MP3.
+          schema:
+            type: string
+    head:
+      tags:
+      - Bridge
+      operationId: getMusicStreamHeaders
+      summary: Заголовки MP3-потока
+      description: Только основной listener, только при созданной MusicQueue (assistant_tools.enabled, web,
+        play_sound и доступный music_base_url). На порту панели отсутствует. Идентификатор выдаётся внутренним
+        playback; REST-метода создания очереди нет. 1..64 трека; Range не поддерживается. Неизвестные query-параметры
+        игнорируются. Ошибка после начала потока передаётся HTTP trailer X-Quasar-Music-Error при статусе 200.
+      responses:
+        '200':
+          description: Только заголовки, без получения аудио от источников.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Accept-Ranges:
+              schema:
+                type: string
+                const: none
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          description: Неверный start, offset_ms либо повтор параметра.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Очередь неизвестна, истекла либо MusicQueue не зарегистрирована.
+          content:
+            text/plain:
+              schema:
+                type: string
+      parameters:
+      - name: stream_id
+        in: path
+        required: true
+        description: Полученный ранее ID очереди; истекает через 2 часа.
+        schema:
+          type: string
+          description: Непрозрачный идентификатор UUID с суффиксом .mp3.
+      - name: start
+        in: query
+        required: false
+        description: Индекс трека с нуля; меньше числа треков очереди; повтор параметра запрещён.
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 63
+          default: 0
+      - name: offset_ms
+        in: query
+        required: false
+        description: Смещение в первом выбранном треке, максимум 2 часа; повтор параметра запрещён.
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 7200000
+          default: 0
+      servers:
+      - url: '{scheme}://{host}:{port}'
+        description: Только основной listener Bridge (listen, TLS и allowed_ips). На порту панели маршрут отсутствует.
+        variables:
+          scheme:
+            default: http
+            enum:
+            - http
+            - https
+          host:
+            default: localhost
+            description: Числовой IP или localhost.
+          port:
+            default: '8443'
+            description: Порт из listen; TLS при настроенных tls_cert/tls_key.
+  /uni.ws:
+    get:
+      tags:
+      - Bridge
+      servers:
+      - url: '{scheme}://{host}:{port}'
+        description: Только основной listener Bridge (listen, TLS и allowed_ips). На порту панели маршрут отсутствует.
+        variables:
+          scheme:
+            default: http
+            enum:
+            - http
+            - https
+          host:
+            default: localhost
+            description: Числовой IP или localhost.
+          port:
+            default: '8443'
+            description: Порт из listen; TLS при настроенных tls_cert/tls_key.
+      operationId: upgradeUniProxy
+      summary: WebSocket UniProxy
+      description: HTTP Upgrade к бинарному протоколу колонки, только основной listener. Все query-параметры
+        и заголовки, кроме hop-by-hop WebSocket-заголовков передаются upstream. Согласование Sec-WebSocket-Protocol
+        с upstream; тайм-аут upstream dial 15 секунд. Лимит сообщения 8 МиБ. OpenAPI описывает только HTTP
+        handshake, не сообщения WebSocket/Protobuf. Origin проверяет websocket.Accept (тот же Host либо hostname
+        upstream).
+      x-protocol: websocket
+      responses:
+        '101':
+          description: 'Switching Protocols: установлен WebSocket.'
+        '400':
+          description: Неверный WebSocket handshake, включая неподдерживаемый Sec-WebSocket-Version (требуется
+            13).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '426':
+          description: 'Требуется HTTP/1.1 и заголовки Connection: Upgrade, Upgrade: websocket.'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '502':
+          description: invalid upstream или upstream unavailable.
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+      - error
+      additionalProperties: false
+    TextRequest:
+      type: object
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 8000
+          pattern: \S
+          description: Непустой после TrimSpace текст, не более 8000 Unicode code points.
+      required:
+      - text
+      additionalProperties: false
+    QueryRequest:
+      type: object
+      properties:
+        text:
+          $ref: '#/components/schemas/TextRequest/properties/text'
+        dialog_id:
+          type: string
+          oneOf:
+          - format: uuid
+            minLength: 1
+          - const: ''
+          description: UUID из предыдущего ответа query. Если отсутствует или пуст, начинается новый диалог.
+      required:
+      - text
+      additionalProperties: false
+    RouteDecision:
+      type: object
+      properties:
+        route:
+          type: string
+          description: Например yandex, llm, home, classify, airplay, music, playback, recovery или diagnostics;
+            набор зависит от обработчика.
+        rule:
+          type: string
+          description: Имя совпавшего правила; опускается, если пусто.
+        source:
+          type: string
+      required:
+      - route
+      - source
+    RoutePreview:
+      type: object
+      properties:
+        active:
+          $ref: '#/components/schemas/RouteDecision'
+        saved:
+          $ref: '#/components/schemas/RouteDecision'
+        classifier_called:
+          type: boolean
+          const: false
+        scope:
+          type: string
+      required:
+      - active
+      - saved
+      - classifier_called
+      - scope
+    LiveDecision:
+      allOf:
+      - $ref: '#/components/schemas/RouteDecision'
+      - type: object
+        properties:
+          elapsed_ms:
+            type: integer
+            format: int64
+            minimum: 0
+        required:
+        - elapsed_ms
+    WebLink:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+      required:
+      - url
+    Playback:
+      type: object
+      properties:
+        sound:
+          type: string
+        url:
+          type: string
+        command:
+          type: string
+        stream_id:
+          type: string
+        title:
+          type: string
+        offset_ms:
+          type: integer
+          format: int64
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebLink'
+      description: Захваченный sound.Request. Пустые строки, нулевой offset_ms и пустой tracks опускаются.
+    QueryResult:
+      type: object
+      properties:
+        dialog_id:
+          type: string
+          format: uuid
+          description: Локальный идентификатор Bridge; служебный контекст Яндекса не раскрывается.
+        route:
+          type: string
+        answer:
+          type: string
+        elapsed_ms:
+          type: integer
+          format: int64
+          minimum: 0
+        playback:
+          type: array
+          items:
+            $ref: '#/components/schemas/Playback'
+        playback_simulated:
+          type: boolean
+          const: true
+          description: Присутствует только при непустом playback.
+      required:
+      - dialog_id
+      - route
+      - answer
+      - elapsed_ms
+    AirPlayHealth:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        state:
+          type: string
+          description: Состояние приёмника station-airplay; при отсутствии приёмника stopped.
+        name:
+          type: string
+        address:
+          type: string
+        error:
+          type: string
+        connected:
+          type: boolean
+        playing:
+          type: boolean
+        volume_db:
+          type: number
+      required:
+      - enabled
+      - state
+      description: При отсутствии приёмника только enabled=false и state=stopped. При наличии остальные поля
+        также присутствуют, включая пустой error.
+    AirPlayRequest:
+      type: object
+      properties:
+        action:
+          anyOf:
+          - type: string
+            enum:
+            - start
+            - stop
+            - status
+            - pause
+            - resume
+            - next
+            - previous
+            - restart
+            - volume_up
+            - volume_down
+            - media_stop
+          - type: string
+            pattern: ^volume:(?:[+]?0*(?:[0-9]|[1-9][0-9]|100)|-0+)$
+            description: volume:<целое 0..100>; проверяется численно, ведущие нули допустимы.
+      required:
+      - action
+      additionalProperties: false
+    AirPlayResult:
+      type: object
+      properties:
+        message:
+          type: string
+        airplay:
+          $ref: '#/components/schemas/AirPlayHealth'
+      required:
+      - message
+      - airplay
+    HistoryItem:
+      type: object
+      properties:
+        time:
+          type: string
+          format: date-time
+        query:
+          type: string
+        answer:
+          type: string
+        route:
+          type: string
+        status:
+          type: string
+      required:
+      - time
+      - query
+      - answer
+    HistoryResult:
+      type: object
+      properties:
+        timezone:
+          type: string
+          description: Часовой пояс assistant_tools.timezone; timestamps time сохраняют RFC3339.
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoryItem'
+        partial:
+          type: boolean
+          const: true
+          description: Присутствует только если история прочитана частично.
+        recording:
+          type: boolean
+      required:
+      - items
+      - recording
+    ConfigurationResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+          - ok
+          - saved
+          - applied
+        changed:
+          type: array
+          items:
+            type: string
+        pending:
+          type: array
+          items:
+            type: string
+        restart_required:
+          type: boolean
+        restart_scheduled:
+          type: boolean
+      required:
+      - status
+      - pending
+      - restart_required
+      - restart_scheduled
+    RestartResult:
+      type: object
+      properties:
+        status:
+          type: string
+          const: scheduled
+        message:
+          type: string
+      required:
+      - status
+      - message
+    Setting:
+      type: object
+      properties:
+        path:
+          type: string
+        description:
+          type: string
+        environment:
+          type: string
+          description: Имя переменной окружения; опускается при отсутствии.
+        restart_required:
+          type: boolean
+        active: {}
+        saved: {}
+        effective: {}
+        pending:
+          type: boolean
+        writable:
+          type: boolean
+      required:
+      - path
+      - description
+      - restart_required
+      - active
+      - saved
+      - effective
+      - pending
+      - writable
+      description: Значения — произвольный JSON, включая null для отсутствующего saved. writable=false при
+        переопределении переменной окружения. effective учитывает значения по умолчанию и окружение.
+    ConfigurationView:
+      allOf:
+      - $ref: '#/components/schemas/ConfigurationResult'
+      - type: object
+        properties:
+          settings:
+            type: array
+            items:
+              $ref: '#/components/schemas/Setting'
+        required:
+        - settings
+    RoutingMatch:
+      type: object
+      properties:
+        wake_words:
+          type: array
+          items:
+            type: string
+        contains_any:
+          type: array
+          items:
+            type: string
+        contains_none:
+          type: array
+          items:
+            type: string
+        starts_with_any:
+          type: array
+          items:
+            type: string
+        contains_all_groups:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+            minItems: 1
+        regex:
+          type: string
+          description: Регулярное выражение Go RE2; компилируется с (?i).
+      additionalProperties: false
+      description: 'Нужно хотя бы одно непустое положительное условие: wake_words, contains_any, contains_all_groups,
+        starts_with_any или regex. contains_none само по себе недостаточно. Условия объединяются AND; элементы
+        contains_any/starts_with_any — OR. wake_words содержит ID station-wakeword.'
+      anyOf:
+      - required:
+        - wake_words
+        properties:
+          wake_words:
+            minItems: 1
+      - required:
+        - contains_any
+        properties:
+          contains_any:
+            minItems: 1
+      - required:
+        - contains_all_groups
+        properties:
+          contains_all_groups:
+            minItems: 1
+      - required:
+        - starts_with_any
+        properties:
+          starts_with_any:
+            minItems: 1
+      - required:
+        - regex
+        properties:
+          regex:
+            minLength: 1
+    RoutingRule:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          pattern: \S
+          description: Уникальное непустое имя.
+        route:
+          type: string
+          enum:
+          - yandex
+          - llm
+          - home
+        disabled:
+          type: boolean
+        match:
+          $ref: '#/components/schemas/RoutingMatch'
+      required:
+      - name
+      - route
+      - match
+      additionalProperties: false
+    ConfigurationChanges:
+      type: object
+      properties:
+        mode:
+          type: string
+          description: 'Режим Bridge: observe передаёт запросы Яндексу; hybrid включает локальные маршруты
+            и LLM и требует настроенные llm_base_url и llm_model. Смена режима требует перезапуска. Пустая
+            строка нормализуется в observe.'
+          x-restart-required: true
+          x-environment: QUASAR_MODE
+          enum:
+          - ''
+          - observe
+          - hybrid
+        diagnostics.network_access:
+          type: boolean
+          description: 'Логическое: разрешить доступ к веб-панели диагностики по сети. По умолчанию false:
+            доступ только через localhost. Применяется reload без перезапуска.'
+          x-restart-required: false
+        llm_model:
+          type: string
+          description: Модель LLM; непустая строка в hybrid. Наличие модели на сервере отдельно не проверяется.
+          x-restart-required: true
+          x-environment: QUASAR_LLM_MODEL
+        llm_api:
+          type: string
+          description: 'API: chat_completions, responses или chatgpt. Зависимые параметры меняй одним вызовом.
+            Пустая строка нормализуется в chat_completions.'
+          x-restart-required: true
+          x-environment: QUASAR_LLM_API
+          enum:
+          - ''
+          - chat_completions
+          - responses
+          - chatgpt
+        llm_reasoning_effort:
+          type: string
+          description: 'Усилие рассуждения: пустая строка, none, minimal, low, medium, high, xhigh, max; только
+            responses/chatgpt.'
+          x-restart-required: true
+          x-environment: QUASAR_LLM_REASONING_EFFORT
+          enum:
+          - ''
+          - none
+          - minimal
+          - low
+          - medium
+          - high
+          - xhigh
+          - max
+        llm_max_output_tokens:
+          type: integer
+          description: 'Лимит выходных токенов: положительное целое число.'
+          x-restart-required: true
+          minimum: 1
+        llm_hosted_tools:
+          type: array
+          items:
+            type: string
+            enum:
+            - web_search
+            - code_interpreter
+          description: 'Массив серверных инструментов: web_search, code_interpreter для responses; для chatgpt
+            только web_search; [] отключает.'
+          x-restart-required: true
+          uniqueItems: true
+        llm_chat_parameters:
+          type: object
+          properties:
+            temperature: {}
+            max_tokens: {}
+            max_completion_tokens: {}
+            response_format: {}
+            chat_template_kwargs: {}
+            reasoning_effort: {}
+          additionalProperties: false
+          description: 'Объект параметров chat_completions: temperature, max_tokens, max_completion_tokens,
+            response_format, chat_template_kwargs, reasoning_effort. {} очищает.'
+          x-restart-required: true
+          x-environment: QUASAR_LLM_CHAT_PARAMETERS
+        llm_strip_prefixes:
+          type: array
+          items:
+            type: string
+          description: Массив обращений к модели, удаляемых перед отправкой запроса. [] отключает; маршруты
+            настраиваются отдельно.
+          x-restart-required: true
+        llm_tts_markup:
+          type: boolean
+          description: 'Логическое: разрешать модели использовать TTS-разметку. При false её ответы озвучиваются
+            обычным голосом.'
+          x-restart-required: true
+        home_warm_area:
+          type: string
+          description: Название области Home Assistant для прогрева кэша; строка, пустая отключает прогрев.
+          x-restart-required: true
+          x-environment: QUASAR_HOME_WARM_AREA
+        listen_after_reply:
+          type: boolean
+          description: 'Логическое: слушать следующий вопрос после локального ответа.'
+          x-restart-required: true
+        dialogue_context.enabled:
+          type: boolean
+          description: 'Логическое: хранить контекст последовательных вопросов.'
+          x-restart-required: true
+        dialogue_context.ttl_seconds:
+          type: integer
+          description: 'Время жизни контекста в секундах: целое число 30..86400.'
+          x-restart-required: true
+          minimum: 30
+          maximum: 86400
+        dialogue_context.max_turns:
+          type: integer
+          description: 'Максимум пар вопрос/ответ в контексте: целое число 1..20.'
+          x-restart-required: true
+          minimum: 1
+          maximum: 20
+        dialogue_context.max_chars:
+          type: integer
+          description: 'Максимум символов контекста: целое число 512..65536.'
+          x-restart-required: true
+          minimum: 512
+          maximum: 65536
+        local_progress.enabled:
+          type: boolean
+          description: 'Логическое: звуковые уведомления при ожидании локального ответа.'
+          x-restart-required: true
+        local_progress.after_ms:
+          type: integer
+          description: 'Задержка первого уведомления в миллисекундах: целое число 100..10000.'
+          x-restart-required: true
+          minimum: 100
+          maximum: 10000
+        local_progress.interval_ms:
+          type: integer
+          description: 'Интервал уведомлений в миллисекундах: целое число 1000..10000.'
+          x-restart-required: true
+          minimum: 1000
+          maximum: 10000
+        conversation_log.enabled:
+          type: boolean
+          description: 'Логическое: сохранять запросы и ответы в журнал.'
+          x-restart-required: false
+        conversation_log.max_size_mb:
+          type: integer
+          description: 'Максимальный размер файла журнала в МиБ: целое число 1..1024.'
+          x-restart-required: false
+          minimum: 1
+          maximum: 1024
+        conversation_log.max_backups:
+          type: integer
+          description: 'Число архивных журналов: целое число 0..20.'
+          x-restart-required: false
+          minimum: 0
+          maximum: 20
+        conversation_log.max_text_chars:
+          type: integer
+          description: 'Лимит символов записи: целое число 1..64000.'
+          x-restart-required: false
+          minimum: 1
+          maximum: 64000
+        routing.default_route:
+          type: string
+          description: 'Маршрут по умолчанию: classify, yandex, llm или home.'
+          x-restart-required: false
+          enum:
+          - classify
+          - yandex
+          - llm
+          - home
+        routing.classifier.enabled:
+          type: boolean
+          description: 'Логическое: включить LLM-классификатор запросов без совпавшего правила. При false используется
+            маршрут по умолчанию. Если поле отсутствует, действует прежнее поведение default_route.'
+          x-restart-required: false
+        routing.rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingRule'
+          description: 'Массив правил по порядку: name, route (yandex/llm/home), disabled, match с contains_any,
+            contains_all_groups, contains_none, starts_with_any, regex, wake_words (ID слов из station-wakeword).
+            Перед изменением прочитай текущие правила и сохрани остальные.'
+          x-restart-required: false
+        routing.classifier.prompt:
+          type: string
+          description: 'Непустая строка: инструкция классификатора маршрута.'
+          x-restart-required: false
+          minLength: 1
+          pattern: \S
+        routing.classifier.timeout_ms:
+          type: integer
+          description: 'Тайм-аут классификации в миллисекундах: целое число 1..60000.'
+          x-restart-required: false
+          minimum: 1
+          maximum: 60000
+        routing.classifier.on_error:
+          type: string
+          description: 'Маршрут при ошибке классификатора: yandex, llm или home.'
+          x-restart-required: false
+          enum:
+          - yandex
+          - llm
+          - home
+        routing.refusal.enabled:
+          type: boolean
+          description: 'Логическое: передавать запрос LLM после отказа Алисы.'
+          x-restart-required: false
+        routing.refusal.prefixes:
+          type: array
+          items:
+            type: string
+          description: Массив префиксов отказа; при включённом детекторе непустой.
+          x-restart-required: false
+        routing.refusal.contains_any:
+          type: array
+          items:
+            type: string
+          description: Массив фраз отказа; при включённом детекторе непустой.
+          x-restart-required: false
+        assistant_tools.web:
+          type: boolean
+          description: 'Логическое: чтение веб-страниц.'
+          x-restart-required: true
+        assistant_tools.history:
+          type: boolean
+          description: 'Логическое: поиск в журнале диалогов.'
+          x-restart-required: true
+        assistant_tools.time:
+          type: boolean
+          description: 'Логическое: инструмент текущего времени.'
+          x-restart-required: true
+        assistant_tools.updates:
+          type: boolean
+          description: 'Логическое: инструменты проверки и установки обновлений.'
+          x-restart-required: true
+        assistant_tools.play_sound:
+          type: boolean
+          description: 'Логическое: инструменты воспроизведения звука.'
+          x-restart-required: true
+        assistant_tools.timezone:
+          type: string
+          description: 'Строка: часовой пояс IANA, например Europe/Moscow или UTC.'
+          x-restart-required: true
+        assistant_tools.max_rounds:
+          type: integer
+          description: 'Максимум раундов инструментов: целое число 1..5.'
+          x-restart-required: true
+          minimum: 1
+          maximum: 5
+        assistant_tools.max_calls:
+          type: integer
+          description: 'Максимум вызовов инструментов: целое число 1..10.'
+          x-restart-required: true
+          minimum: 1
+          maximum: 10
+        assistant_tools.web_timeout_ms:
+          type: integer
+          description: 'Тайм-аут веб-чтения в миллисекундах: целое число 100..20000.'
+          x-restart-required: true
+          minimum: 100
+          maximum: 20000
+        assistant_tools.web_max_bytes:
+          type: integer
+          description: 'Максимум байт веб-ответа: целое число 1024..2097152.'
+          x-restart-required: true
+          minimum: 1024
+          maximum: 2097152
+        assistant_tools.web_max_chars:
+          type: integer
+          description: 'Максимум символов текста страницы: целое число 100..20000.'
+          x-restart-required: true
+          minimum: 100
+          maximum: 20000
+        assistant_tools.history_max_scan_mb:
+          type: integer
+          description: 'Лимит чтения истории в МиБ: целое число 1..64.'
+          x-restart-required: true
+          minimum: 1
+          maximum: 64
+        airplay.disabled:
+          type: boolean
+          description: 'Логическое: полностью отключить функцию AirPlay; false делает приёмник доступным после
+            перезапуска.'
+          x-restart-required: true
+        airplay.name:
+          type: string
+          description: 'Строка: имя приёмника в списке AirPlay; пустая — имя по умолчанию.'
+          x-restart-required: true
+        airplay.output_delay_ms:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+          maximum: 5000
+          description: 'Задержка вывода аудио в миллисекундах: целое число 0..5000; null — по умолчанию.'
+          x-restart-required: true
+        airplay.initial_volume_db:
+          type:
+          - number
+          - 'null'
+          minimum: -144
+          maximum: 0
+          description: 'Начальная громкость AirPlay в децибелах: число -144..0; null — по умолчанию.'
+          x-restart-required: true
+      additionalProperties: false
+      minProperties: 1
+      maxProperties: 32
+      description: 'Плоский объект: ключи — разрешённые пути с точками, а не вложенные секции. Проверяется
+        весь получившийся конфиг; взаимозависимые параметры меняйте одной транзакцией. null допустим только
+        для двух необязательных AirPlay-параметров. Числовые ограничения заданы в свойствах. Пропущенный путь
+        сохраняет прежнее значение; явный ноль не подставляет значение по умолчанию.'
+    ConfigurationRequest:
+      type: object
+      properties:
+        changes:
+          $ref: '#/components/schemas/ConfigurationChanges'
+      required:
+      - changes
+      additionalProperties: false
+    ApplyRequest:
+      type: object
+      properties:
+        action:
+          type: string
+          enum:
+          - reload
+          - restart
+      required:
+      - action
+      additionalProperties: false
+    SubscriptionEndpoint:
+      type: object
+      properties:
+        endpoint_id:
+          type: string
+        status:
+          type: string
+        brick_status:
+          type: string
+        subscription_status:
+          type: string
+        subscription_mode:
+          type: boolean
+      required:
+      - endpoint_id
+      - status
+      - brick_status
+      - subscription_mode
+      - subscription_status
+    SpeakerSubscription:
+      type: object
+      properties:
+        connection:
+          type: integer
+          minimum: 0
+        device_subscription:
+          type: string
+        alice_pro_subscription:
+          type: string
+        endpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubscriptionEndpoint'
+      required:
+      - connection
+      - device_subscription
+      - alice_pro_subscription
+      - endpoints
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          const: ok
+        mode:
+          type: string
+          enum:
+          - observe
+          - hybrid
+        airplay:
+          $ref: '#/components/schemas/AirPlayHealth'
+        client_frames:
+          type: integer
+          minimum: 0
+        server_frames:
+          type: integer
+          minimum: 0
+        routing_revision:
+          type: string
+        routing_rules:
+          type: integer
+          minimum: 0
+        routing_classifier_enabled:
+          type: boolean
+        routing_default_route:
+          type: string
+        conversation_log_enabled:
+          type: boolean
+        conversation_log_failures:
+          type: integer
+          minimum: 0
+        assistant_tools_enabled:
+          type: boolean
+        dialogue_context_enabled:
+          type: boolean
+        home_assistant_enabled:
+          type: boolean
+        mcp_servers_configured:
+          type: integer
+          minimum: 0
+        music_playback_enabled:
+          type: boolean
+        speaker_subscriptions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpeakerSubscription'
+      required:
+      - status
+      - mode
+      - airplay
+      - client_frames
+      - server_frames
+      - routing_revision
+      - routing_rules
+      - routing_classifier_enabled
+      - routing_default_route
+      - conversation_log_enabled
+      - conversation_log_failures
+      - assistant_tools_enabled
+      - dialogue_context_enabled
+      - home_assistant_enabled
+      - mcp_servers_configured
+      - music_playback_enabled
+      - speaker_subscriptions
+    PanelStatus:
+      allOf:
+      - $ref: '#/components/schemas/Health'
+      - type: object
+        properties:
+          run:
+            type: string
+          version:
+            type: string
+          llm_model:
+            type: string
+          llm_api:
+            type: string
+          uptime_seconds:
+            type: integer
+            format: int64
+            minimum: 0
+          diagnostics:
+            type: object
+            properties:
+              network_access:
+                type: boolean
+              port:
+                type: integer
+                minimum: 1
+                maximum: 65535
+              address:
+                type: string
+            required:
+            - network_access
+            - port
+            - address
+          capabilities:
+            type: object
+            properties:
+              query:
+                type: boolean
+              decide:
+                type: boolean
+              config:
+                type: boolean
+              history:
+                type: boolean
+              airplay:
+                type: boolean
+            required:
+            - query
+            - decide
+            - config
+            - history
+            - airplay
+        required:
+        - run
+        - version
+        - llm_model
+        - llm_api
+        - uptime_seconds
+        - diagnostics
+        - capabilities
+    LogSnapshot:
+      type: object
+      properties:
+        run:
+          type: string
+        cursor:
+          type: integer
+          format: int64
+          minimum: 0
+        reset:
+          type: boolean
+        truncated:
+          type: boolean
+        text:
+          type: string
+          description: Хвост операционного JSON-журнала stderr; это строка с записями, не JSON-массив.
+        version:
+          type: string
+        airplay:
+          $ref: '#/components/schemas/AirPlayHealth'
+      required:
+      - run
+      - cursor
+      - reset
+      - truncated
+      - text
+      - version
+      - airplay
+  responses:
+    Forbidden:
+      description: 'Проверка доступа отклонила запрос: адрес клиента, Host, Origin, Sec-Fetch-Site либо allowed_ips
+        основного listener.'
+      content:
+        text/plain:
+          schema:
+            type: string
+    BadRequest:
+      description: Неверные параметры, JSON, неизвестные поля, недопустимая конфигурация либо ошибка чтения/валидации.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Занят диагностический запрос, конфликт состояния, внешнее изменение конфигурации, необходим
+        перезапуск либо ошибка управления AirPlay.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: Подсистема недоступна либо действие требует standalone-установки.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Timeout:
+      description: Истёк тайм-аут операции.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Cannot encode response — ошибка JSON-сериализации.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooLarge:
+      description: Request body exceeds 256 KiB
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnsupportedMediaType:
+      description: Content-Type must be application/json
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadGateway:
+      description: Diagnostic query failed; inspect the operational log
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    MethodNotAllowed:
+      description: Метод не поддерживается. GET-маршруты ServeMux также обслуживают HEAD.
+      content:
+        text/plain:
+          schema:
+            type: string
+      headers:
+        Allow:
+          schema:
+            type: string
+          description: Разрешённые методы.

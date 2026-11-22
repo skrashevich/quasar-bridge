@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 var request = regexp.MustCompile(`(?i)(?:(?:quasar|qwazar|quazar)[\s-]*bridge|квазар[\s-]*(?:бридж|блич|брич)|(?:настрой[а-яё]*|конфигурац[а-яё]*|перезапуст[а-яё]*|перезапуск)[\sа-яё]{0,40}(?:мост[а-яё]*|бридж[а-яё]*))`)

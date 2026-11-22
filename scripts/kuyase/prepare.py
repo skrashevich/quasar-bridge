@@ -10,20 +10,7 @@ import sys
 import tarfile
 
 
-FIRMWARE = {
-    "yandexmini": (
-        "https://quasar.s3.yandex.net/yandexmini/ota/release/"
-        "d165ea71-76cd-4df5-84f8-0441526d1124/1.373.4.13.4819025044.20261030.zip",
-        "80ca52832f78403335faa45e050c5828d63facdd89dba9f456de5d82fd20c98f",
-        "c057fbafcd960f0f0329400040cf974a749b74f8261be2e858d164ee7087c1c4",
-    ),
-    "station2": (
-        "https://quasar.s3.yandex.net/yandexmidi/ota/user/"
-        "949c532f-f0fe-4363-95c8-5479c410dfd1/0.373.1.13.4819000379.20261030.299.zip",
-        "22e6783c88b6947c8a7a2243e9511dede07f12df083edae89b95a2ee65f0fc2e",
-        "ec7857bd96eed02785596e31b795b2a2154343e1cfbbb2124b157cd42bec4aee",
-    ),
-}
+from firmware import FIRMWARE
 
 
 def checked(data, digest):
@@ -69,7 +56,7 @@ def rootfs_tar(image, directory, board):
     output._set_file_perms = retain_inode
     sys.argv = ["ubireader_extract_files", "-k", "-o", str(directory), str(image)]
     ubireader_extract_files.main()
-    if board == "yandexmini":
+    if FIRMWARE[board].adbd_backup:
         # Mini 1 stores the stock daemon under this backup name.
         source = directory / "usr/bin/adbd_backup"
         shutil.copyfile(source, directory / "usr/bin/adbd")
@@ -99,6 +86,16 @@ def prepare_image(emulator, board, archive, log_path):
         print(log_path.read_text(errors="replace"), end="", flush=True)
 
 
+def read_rootfs(ota, firmware):
+    data = checked(ota.read_bytes(), firmware.ota_sha256)
+    if firmware.wrapper == "xz":
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:xz") as archive:
+            data = archive.extractfile("./yandex_io_ota_enc.swu").read()
+    elif firmware.wrapper != "cpio":
+        raise ValueError(f"unsupported OTA wrapper: {firmware.wrapper}")
+    return checked(cpio_member(data, firmware.member), firmware.member_sha256)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--board", choices=FIRMWARE, required=True)
@@ -107,17 +104,20 @@ def main():
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    url, ota_hash, rootfs_hash = FIRMWARE[args.board]
+    firmware = FIRMWARE[args.board]
     ota = out / "ota.bin"
     subprocess.run(["curl", "--fail", "--location", "--retry", "3", "--max-time",
-                    "180", url, "--output", str(ota)], check=True)
-    data = checked(ota.read_bytes(), ota_hash)
-    if args.board == "yandexmini":
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:xz") as archive:
-            data = archive.extractfile("./yandex_io_ota_enc.swu").read()
-    image = out / "rootfs.ubifs"
-    image.write_bytes(checked(cpio_member(data, "rootfs.ubifs"), rootfs_hash))
-    archive = rootfs_tar(image, out / "rootfs", args.board)
+                    "360", firmware.url, "--output", str(ota)], check=True)
+    image = out / firmware.member
+    image.write_bytes(read_rootfs(ota, firmware))
+    if firmware.member == "rootfs.ubifs":
+        archive = rootfs_tar(image, out / "rootfs", args.board)
+    elif firmware.member == "rootfs.ext4.gz":
+        # KUYASE decodes this exact gzip member and imports ext4 itself.
+        # No mount, decompression to host paths or execution of the OTA updater.
+        archive = image
+    else:
+        raise ValueError(f"unsupported root filesystem: {firmware.member}")
     emulator = args.emulator_dir.resolve()
     # Ensures the portable CLI resolves this directory as its workspace.
     (emulator / "work").mkdir(exist_ok=True)

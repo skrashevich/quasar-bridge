@@ -2,7 +2,7 @@ package bridge
 
 import (
 	"context"
-	"quasarbridge/internal/playback"
+	"github.com/skrashevich/quasar-bridge/internal/playback"
 	"strconv"
 	"strings"
 )

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type completionFunc func(context.Context, []llm.Message, bool) (string, error)
@@ -169,8 +169,17 @@ func (h *followupHome) Handle(_ context.Context, s string) (string, error) {
 	}
 	return "Выключить телевизор или и приставку тоже?", nil
 }
-func (h *followupHome) HandleFollowup(_ context.Context, text, request, question string) (string, error) {
-	h.followups = append(h.followups, [3]string{text, request, question})
+func (h *followupHome) HandleDialogue(ctx context.Context, text string, history []llm.Message) (string, error) {
+	if len(history) == 0 {
+		return h.Handle(ctx, text)
+	}
+	var earlier []string
+	for _, message := range history {
+		if message.Role == "user" {
+			earlier = append(earlier, message.Content)
+		}
+	}
+	h.followups = append(h.followups, [3]string{text, strings.Join(earlier, "\n"), history[len(history)-1].Content})
 	return "Готово: Телевизор.", nil
 }
 
@@ -204,13 +213,5 @@ func TestExplicitRuleAbandonsHomeQuestion(t *testing.T) {
 	r, _ := e.Resolve(t.Context(), "Поставь таймер на 5 минут")
 	if r.Route == "home" || len(h.followups) != 0 {
 		t.Fatalf("timer captured by pending question: %+v", r)
-	}
-}
-
-func TestIsQuestion(t *testing.T) {
-	for s, want := range map[string]bool{"Какой телевизор выключить?": true, "Уточните, пожалуйста, название.": true, "Готово: Телевизор.": false, "Команда отправлена: Телевизор.": false} {
-		if isQuestion(s) != want {
-			t.Errorf("%q", s)
-		}
 	}
 }

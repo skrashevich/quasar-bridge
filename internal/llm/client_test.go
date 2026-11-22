@@ -110,3 +110,15 @@ func TestChatSupportsToolCallsAndToolResults(t *testing.T) {
 		t.Fatalf("answer: %+v %v", msg, err)
 	}
 }
+
+func TestChatCompletionsRejectsErrorFinishReason(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Provider said: HTTP 404"},"finish_reason":"error"}]}`))
+	}))
+	defer s.Close()
+	c := Client{BaseURL: s.URL + "/v1", Model: "fixture-model", APIKey: "fixture-key"}
+	if got, err := c.Complete(t.Context(), []Message{{Role: "user", Content: "Привет"}}, false); err == nil {
+		t.Fatalf("error finish_reason accepted as answer %q", got)
+	}
+}

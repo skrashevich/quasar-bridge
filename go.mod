@@ -1,12 +1,14 @@
-module quasarbridge
+module github.com/skrashevich/quasar-bridge
 
 go 1.27.3
 
 require (
 	github.com/coder/websocket v1.8.15
+	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/skrashevich/go-opus v0.1.1
 	github.com/skrashevich/quasar-go-genproto v0.3.0
-	github.com/skrashevich/station-airplay v0.2.2
+	github.com/skrashevich/station-airplay v0.3.0
 	golang.org/x/net v0.62.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -17,7 +19,6 @@ require (
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/ebitengine/purego v0.11.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/miekg/dns v1.1.59 // indirect
 	github.com/mycophonic/saprobe-alac v1.0.0-rc3.0.20261101182127-4825eef7cbab // indirect

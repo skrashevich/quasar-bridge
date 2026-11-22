@@ -368,3 +368,46 @@ func TestCheckUsesOfficialLatestReleaseRedirectWhenAPIUnavailable(t *testing.T) 
 		})
 	}
 }
+
+func TestExtractTarCountsTrailingBytes(t *testing.T) {
+	// Two empty tar blocks mark the end of the archive.
+	const limit = 1024
+	for _, size := range []int{limit, limit + 1} {
+		err := extractTar(bytes.NewReader(make([]byte, size)), t.TempDir(), limit)
+		if (err == nil) != (size == limit) {
+			t.Fatalf("stream size %d, limit %d: %v", size, limit, err)
+		}
+	}
+}
+
+func TestExtractVerifiesGzipTrailer(t *testing.T) {
+	archive := fixtureArchive(t, map[string]string{"VERSION": "1.2.3"})
+	if err := extract(bytes.NewReader(archive[:len(archive)-1]), t.TempDir()); err == nil {
+		t.Fatal("accepted an incomplete gzip trailer")
+	}
+}
+
+func TestOperationLogReplacesLinkWithoutChangingTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "original")
+	if err := os.WriteFile(target, []byte("previous"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "restart.log")); err != nil {
+		t.Fatal(err)
+	}
+	log, err := openOperationLog(dir, "restart.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	if _, err := io.WriteString(log, "new operation"); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"restart.log": "new operation", "original": "previous"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(data) != want {
+			t.Fatalf("%s = %q, %v", name, data, err)
+		}
+	}
+}

@@ -2,9 +2,9 @@ package bridge
 
 import (
 	"context"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
 	"net/http"
 	"net/url"
-	"quasarbridge/internal/journal"
 	"strings"
 	"sync"
 	"time"

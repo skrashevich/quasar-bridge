@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 	directive "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
 	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
 	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
@@ -13,8 +15,6 @@ import (
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	deferred "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
 	"google.golang.org/protobuf/encoding/protowire"
-	"quasarbridge/internal/reply"
-	"quasarbridge/internal/wire"
 )
 
 // progress starts only after the executor is known. Stop joins the pump so no
@@ -75,7 +75,7 @@ func (n *Native) progress(p *nativeRequest) func() {
 			case <-p.ctx.Done():
 				return
 			case <-ticker.C:
-				if err := n.deferredPart(p, "", false); err != nil {
+				if err := n.deferredPart(p, "", "", false); err != nil {
 					p.cancel()
 					return
 				}
@@ -103,19 +103,18 @@ func (n *Native) beginDeferred(p *nativeRequest) error {
 	if err := n.down(p.ctx, websocket.MessageBinary, b); err != nil {
 		return err
 	}
-	if err := n.deferredPart(p, "", false); err != nil {
+	if err := n.deferredPart(p, "", "", false); err != nil {
 		return err
 	}
 	// Obtain the provider's actual Opus headers; its speech payload is discarded.
 	return n.synthesize(p, "а")
 }
-func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
+func (n *Native) deferredPart(p *nativeRequest, text, voice string, last bool) error {
 	if err := p.ctx.Err(); err != nil {
 		return err
 	}
 	p.partial++
 	base := &deferred.TDeferedAliceResponseProto_TBaseResponse{}
-	voice := text
 	if last {
 		silentPlayback := n.hasSilentPlayback(p)
 		base.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
@@ -144,7 +143,7 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	n.captureDelivered(p, text, last, len(base.Directives) > 0, true)
 	return nil
 }
-func (n *Native) finishDeferred(p *nativeRequest, text, speech string) error {
+func (n *Native) finishDeferred(p *nativeRequest, text, voice, speech string) error {
 	select {
 	case <-p.ctx.Done():
 		return p.ctx.Err()
@@ -154,13 +153,13 @@ func (n *Native) finishDeferred(p *nativeRequest, text, speech string) error {
 		if err := n.finishSilentAudio(p); err != nil {
 			return err
 		}
-		return n.deferredPart(p, text, true)
+		return n.deferredPart(p, text, voice, true)
 	}
 	n.mu.Lock()
 	p.ttsID = newID()
 	n.tts[p.ttsID] = p
 	n.mu.Unlock()
-	if err := n.deferredPart(p, text, true); err != nil {
+	if err := n.deferredPart(p, text, voice, true); err != nil {
 		return err
 	}
 	return n.synthesize(p, speech)

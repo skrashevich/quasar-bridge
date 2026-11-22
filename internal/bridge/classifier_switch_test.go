@@ -5,7 +5,7 @@ import (
 	"encoding/json/v2"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // Decode JSON to test both explicit switches and legacy configs without a flag.
@@ -49,7 +49,7 @@ func TestClassifierSwitchAndIndependentDefault(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			preview := policy.Preview("совершенно новый вопрос")
+			preview := policy.Preview("совершенно новый вопрос", "")
 			wantPreview := tc.route
 			if tc.calls > 0 {
 				wantPreview = "classify"
