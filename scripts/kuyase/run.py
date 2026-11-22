@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test real standalone Bridge builds in an ephemeral kuyase station VM."""
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import json
 import os
 from pathlib import Path
@@ -22,13 +22,29 @@ GUEST = "/data/bridge-ci"
 
 
 def shell(command, timeout=60):
-    # Old station adbd does not propagate shell exit codes to the host.
-    wrapped = "( " + command + " ); rc=$?; printf '\\n__BRIDGE_RC=%s\\n' \"$rc\""
-    output = subprocess.check_output(ADB + ["shell", wrapped], timeout=timeout)
-    output = output.decode(errors="replace").replace("\r", "")
+    # Legacy adbd can close the shell stream before delivering its last bytes.
+    # Publish output and exit status together, then fetch them via ADB file sync.
+    with tempfile.TemporaryDirectory(prefix="quasar-ci-shell-") as tmp:
+        local = Path(tmp) / "result"
+        remote = f"/tmp/{Path(tmp).name}.result"
+        wrapped = (f"{{ ( {command} ); printf '\\n__BRIDGE_RC=%s\\n' \"$?\"; }} "
+                   f">{remote}.part 2>&1 && mv {remote}.part {remote}")
+        try:
+            subprocess.run(ADB + ["shell", wrapped], check=True, timeout=timeout)
+            pull = subprocess.run(ADB + ["pull", remote, str(local)], capture_output=True, timeout=10)
+            if pull.returncode:
+                reason = (pull.stderr + pull.stdout).decode(errors="replace").strip()
+                raise RuntimeError(f"cannot retrieve guest result: {command}\n{reason}")
+            output = local.read_bytes().decode(errors="replace").replace("\r", "")
+        finally:
+            with suppress(subprocess.SubprocessError):
+                subprocess.run(ADB + ["shell", f"rm -f {remote} {remote}.part"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
     match = re.search(r"\n__BRIDGE_RC=(\d+)\s*$", output)
-    if not match or int(match[1]):
-        raise RuntimeError(f"guest command failed: {command}\n{output}")
+    if not match:
+        raise RuntimeError(f"incomplete guest result: {command}\n{output}")
+    if int(match[1]):
+        raise RuntimeError(f"guest command failed (exit {match[1]}): {command}\n{output[:match.start()]}")
     return output[:match.start()].strip()
 
 
@@ -176,7 +192,9 @@ def main():
             time.sleep(1)
         subprocess.run(["adb", "disconnect", "127.0.0.1:15555"], timeout=15)
         subprocess.run(["adb", "connect", "127.0.0.1:15555"], check=True, timeout=15)
-        if shell("hostname") != "qemu-" + args.board:
+        # Verify the target before creating even a temporary result file on it.
+        hostname = subprocess.check_output(ADB + ["shell", "hostname"], timeout=10).decode().strip()
+        if hostname != "qemu-" + args.board:
             raise RuntimeError("connected to wrong station VM")
         (out / "guest.txt").write_text(shell("uname -a; cat /tmp/quasar-emu-hw.json"))
         shell(f"mkdir -p {GUEST}")

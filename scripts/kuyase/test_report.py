@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import shlex
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -31,11 +32,43 @@ class ReportTest(unittest.TestCase):
             self.assertIn("routing | FAIL", summary.read_text())
             self.assertIn("shutdown | PASS", summary.read_text())
 
-    def test_adb_transport_success_does_not_hide_guest_failure(self):
-        for output in (b"all good\n__BRIDGE_RC=1\n", b"no exit marker\n"):
-            with self.subTest(output=output), patch.object(run.subprocess, "check_output", return_value=output):
-                with self.assertRaises(RuntimeError):
-                    run.shell("control -action llm")
+
+class GuestShellTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.adb = Path(directory.name) / "adb.sh"
+        patcher = patch.object(run, "ADB", ["sh", str(self.adb)])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def simulate_legacy_adb(self, pull='cp "$2" "$3"'):
+        # Run the actual wrapper, but lose all shell output and guest exit codes.
+        self.adb.write_text(f'''case "$1" in
+            shell) sh -c "$2" >/dev/null 2>&1; exit 0 ;;
+            pull) {pull} ;;
+            *) exit 2 ;;
+        esac
+        ''')
+
+    def test_lost_shell_output_preserves_result_without_repeating_command(self):
+        self.simulate_legacy_adb()
+        calls = self.adb.with_name("calls")
+        command = f"echo called >>{shlex.quote(str(calls))}; echo output; echo diagnostic >&2"
+        self.assertEqual(run.shell(command), "output\ndiagnostic")
+        self.assertEqual(calls.read_text(), "called\n")
+
+    def test_pass_message_does_not_hide_nonzero_guest_exit(self):
+        self.simulate_legacy_adb()
+        with self.assertRaisesRegex(RuntimeError, r"exit 7"):
+            run.shell("echo PASS text; exit 7")
+
+    def test_missing_exit_status_or_failed_transfer_never_passes(self):
+        for pull, error in [('echo "PASS text" >"$3"', "incomplete guest result"),
+                            ('exit 1', "cannot retrieve guest result")]:
+            with self.subTest(pull=pull), self.assertRaisesRegex(RuntimeError, error):
+                self.simulate_legacy_adb(pull)
+                run.shell("echo PASS text")
 
 
 if __name__ == "__main__":
