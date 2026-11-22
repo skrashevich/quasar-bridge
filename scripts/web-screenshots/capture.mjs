@@ -174,12 +174,18 @@ async function checkAccount(page) {
 async function checkModelPicker(page) {
   let current = "previous-model";
   let loads = 0;
+  let models = [];
   await page.route("**/api/chatgpt", route => route.fulfill({ json: { signed_in: true, uses_chatgpt: true } }));
   await page.route("**/api/chatgpt/models", route => {
-    loads++;
-    if (loads === 2) return route.fulfill({ status: 502, json: { error: "Каталог временно недоступен" } });
-    const models = [{ id: "provider-model", name: "Provider Model" }];
-    if (loads > 2) models.push({ id: "another-model", name: "Another Model" });
+    if (route.request().method() === "POST") {
+      assert.deepEqual(route.request().postDataJSON(), {});
+      loads++;
+      if (loads === 2) return route.fulfill({ status: 502, json: { error: "Каталог временно недоступен" } });
+      models = [{ id: "provider-model", name: "Provider Model" }];
+      if (loads > 2) models.push({ id: "another-model", name: "Another Model" });
+    } else {
+      assert.equal(route.request().method(), "GET");
+    }
     return route.fulfill({ json: { models, active: current, saved: current, writable: true } });
   });
   await page.route("**/api/chatgpt/model", route => {
@@ -189,11 +195,15 @@ async function checkModelPicker(page) {
   });
   await page.getByRole("button", { name: "Обновить", exact: true }).click();
   const picker = page.getByRole("combobox", { name: "Модель подписки ChatGPT" });
+  await page.getByText("Нажмите «Обновить список», чтобы получить модели ChatGPT.").waitFor();
+  assert.equal(loads, 0);
+  assert.ok(await picker.isDisabled());
+  const refresh = page.getByRole("button", { name: "Обновить список" });
+  await refresh.click();
   await picker.getByRole("option", { name: "Provider Model (provider-model)" }).waitFor({ state: "attached" });
   assert.equal(await picker.inputValue(), "");
   const apply = page.getByRole("button", { name: "Применить модель" });
   assert.ok(await apply.isDisabled());
-  const refresh = page.getByRole("button", { name: "Обновить список" });
   await refresh.click();
   await page.getByText("Каталог временно недоступен").waitFor();
   assert.ok(await picker.isDisabled());
@@ -202,6 +212,10 @@ async function checkModelPicker(page) {
   await apply.click();
   await page.getByText("Для следующих запросов выбрана модель another-model.").waitFor();
   assert.ok(await apply.isDisabled());
+  await page.getByRole("button", { name: "Обновить", exact: true }).click();
+  await picker.getByRole("option", { name: "Another Model (another-model)" }).waitFor({ state: "attached" });
+  assert.equal(await picker.inputValue(), "another-model");
+  assert.equal(loads, 3);
 }
 
 async function capture(binary, output) {

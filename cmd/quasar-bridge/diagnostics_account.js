@@ -19,15 +19,20 @@ function clearModelCatalog(text = "") {
   syncModelControls();
 }
 
-async function loadAccountModels() {
+async function loadAccountModels(refresh = false) {
   clearModelCatalog("Загружаем модели…");
   const version = catalogVersion;
   byId("model-refresh").disabled = true;
   message("model-message");
   try {
-    const catalog = await request("api/chatgpt/models", {}, 65000);
+    const catalog = refresh ? await post("api/chatgpt/models", {}, 65000) : await request("api/chatgpt/models");
     if (version !== catalogVersion) return;
     const select = byId("account-model");
+    if (!catalog.models.length) {
+      select.replaceChildren(new Option("Список ещё не загружен", ""));
+      message("model-message", "Нажмите «Обновить список», чтобы получить модели ChatGPT.");
+      return;
+    }
     modelCatalog = catalog;
     select.replaceChildren(...catalog.models.map(({ id, name }) => new Option(name === id ? id : name + " (" + id + ")", id)));
     if (catalog.models.some(model => model.id === catalog.saved)) select.value = catalog.saved;
@@ -80,7 +85,7 @@ async function accountStatus() {
   byId("account-logout").hidden = !signedIn;
   const showModels = signedIn && account.uses_chatgpt;
   byId("account-model-form").hidden = !showModels;
-  if (showModels) loadAccountModels();
+  if (showModels) await loadAccountModels();
   else clearModelCatalog();
 }
 
@@ -157,7 +162,7 @@ async function logoutAccount() {
 function setupAccount() {
   byId("account-model").addEventListener("change", syncModelControls);
   byId("account-model-form").addEventListener("submit", applyAccountModel);
-  byId("model-refresh").addEventListener("click", loadAccountModels);
+  byId("model-refresh").addEventListener("click", () => loadAccountModels(true));
   byId("account-start").addEventListener("click", startAccountLogin);
   byId("account-refresh").addEventListener("click", loadAccount);
   byId("account-finish").addEventListener("submit", finishAccountLogin);

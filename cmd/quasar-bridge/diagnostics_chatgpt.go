@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"quasarbridge/internal/chatgpt"
@@ -21,6 +23,12 @@ type panelChatGPT struct {
 	store   chatgpt.Store
 	mu      sync.Mutex
 	pending []panelLogin
+	catalog atomic.Pointer[panelModelCatalog]
+}
+
+type panelModelCatalog struct {
+	subject, clientID string
+	models            []llm.Model
 }
 
 type panelLogin struct {
@@ -64,7 +72,16 @@ func (p *panelChatGPT) register(mux *http.ServeMux, register func(string, http.H
 		writeDiagnosticResult(w, map[string]any{"signed_in": status.SignedIn, "email": status.Email, "uses_chatgpt": usesChatGPT}, err)
 	})
 	client := &llm.Client{API: "chatgpt", AccessToken: p.store.Token, HTTP: p.store.HTTP}
-	register("GET /diagnostics/api/chatgpt/models", func(w http.ResponseWriter, r *http.Request) {
+	catalog := func(w http.ResponseWriter, r *http.Request) {
+		refresh := r.Method == http.MethodPost
+		if refresh {
+			if !readDiagnosticJSON(w, r, &struct{}{}) {
+				return
+			}
+			// Publish refreshes in order with panel sign-in and sign-out.
+			p.mu.Lock()
+			defer p.mu.Unlock()
+		}
 		if config == nil {
 			writeDiagnosticError(w, http.StatusServiceUnavailable, "Настройки Bridge недоступны.")
 			return
@@ -74,16 +91,37 @@ func (p *panelChatGPT) register(mux *http.ServeMux, register func(string, http.H
 			writeDiagnosticResult(w, nil, err)
 			return
 		}
-		models, err := client.Models(r.Context())
+		account, err := p.store.Status(r.Context())
 		if err != nil {
-			writeDiagnosticError(w, http.StatusBadGateway, "Не удалось получить список моделей ChatGPT. "+err.Error())
+			writeDiagnosticResult(w, nil, err)
 			return
+		}
+		var models []llm.Model
+		if refresh {
+			if !account.SignedIn {
+				writeDiagnosticError(w, http.StatusConflict, "Для обновления списка моделей войдите в ChatGPT.")
+				return
+			}
+			provider := *client
+			provider.AccessToken = func(ctx context.Context) (string, error) {
+				return p.store.TokenForAccount(ctx, &account)
+			}
+			models, err = provider.Models(r.Context())
+			if err != nil {
+				writeDiagnosticError(w, http.StatusBadGateway, "Не удалось получить список моделей ChatGPT. "+err.Error())
+				return
+			}
+			p.catalog.Store(&panelModelCatalog{account.Subject, account.ClientID, models})
+		} else if saved := p.catalog.Load(); saved != nil && account.SignedIn && saved.subject == account.Subject && saved.clientID == account.ClientID {
+			models = saved.models
 		}
 		writeDiagnosticJSON(w, http.StatusOK, struct {
 			chatGPTModelState
 			Models []llm.Model `json:"models"`
 		}{model, models})
-	})
+	}
+	register("GET /diagnostics/api/chatgpt/models", catalog)
+	register("POST /diagnostics/api/chatgpt/models", catalog)
 	register("POST /diagnostics/api/chatgpt/model", func(w http.ResponseWriter, r *http.Request) {
 		var choice struct {
 			Model    string `json:"model"`
@@ -117,6 +155,7 @@ func (p *panelChatGPT) register(mux *http.ServeMux, register func(string, http.H
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.pending = nil
+		p.catalog.Store(nil)
 		writeDiagnosticResult(w, struct{}{}, p.store.Logout(r.Context()))
 	})
 	// The provider navigates across origins to this static landing page.
@@ -183,6 +222,7 @@ func (p *panelChatGPT) complete(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			p.pending = nil
+			p.catalog.Store(nil)
 			writeDiagnosticJSON(w, http.StatusOK, struct{}{})
 			return
 		}

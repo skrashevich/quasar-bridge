@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json/v2"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,7 +158,7 @@ func TestPanelChatGPTSelectsSubscriptionModel(t *testing.T) {
 	client := &llm.Client{API: "chatgpt", Model: "old", SubscriptionModel: c.activeModel, AccessToken: store.Token, HTTP: store.HTTP}
 	mux := http.NewServeMux()
 	registerDiagnosticsAPI(mux, diagnosticControl{Configuration: c, ChatGPT: &panelChatGPT{store: store}})
-	catalog := diagnosticAPIRequest(mux, "GET", "chatgpt/models", "", "")
+	catalog := diagnosticAPIRequest(mux, "POST", "chatgpt/models", "{}", "application/json")
 	if catalog.Code != 200 || !strings.Contains(catalog.Body.String(), `"name":"New Model"`) || strings.Contains(catalog.Body.String(), "hidden") {
 		t.Fatal(catalog.Body.String())
 	}
@@ -179,6 +181,106 @@ func TestPanelChatGPTSelectsSubscriptionModel(t *testing.T) {
 	if answer, err := client.Complete(t.Context(), nil, false); err != nil || answer != "ok" {
 		t.Fatalf("inference after model change: %q, %v", answer, err)
 	}
+}
+
+func TestPanelChatGPTCatalogReadsNeverRefreshCredentials(t *testing.T) {
+	c := configurationFixture(t, `{"llm_api":"chatgpt","llm_model":"old"}`)
+	dir := filepath.Join(t.TempDir(), "private")
+	store := chatgpt.Store{Path: filepath.Join(dir, "account.json")}
+	var calls atomic.Int32
+	store.HTTP = &http.Client{Transport: chatGPTTransport(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if r.URL.Host != "api.openai.com" || r.URL.Path != "/v1/models" {
+			return nil, errors.New("unexpected provider request")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"models":[{"slug":"demo","visibility":"list"}]}`))}, nil
+	})}
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, diagnosticControl{Configuration: c, ChatGPT: &panelChatGPT{store: store}})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	endpoint := server.URL + "/diagnostics/api/chatgpt/models"
+	checkReads := func(wantModels int) {
+		t.Helper()
+		before := calls.Load()
+		for _, method := range []string{"GET", "HEAD"} {
+			req, err := http.NewRequestWithContext(t.Context(), method, endpoint, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || resp.StatusCode != 200 {
+				t.Fatalf("%s catalog: status %d, error %v", method, resp.StatusCode, err)
+			}
+			if method == "HEAD" {
+				if len(body) != 0 {
+					t.Fatal("HEAD returned a body")
+				}
+				continue
+			}
+			var catalog struct {
+				Models []llm.Model `json:"models"`
+			}
+			if err := json.Unmarshal(body, &catalog); err != nil || catalog.Models == nil || len(catalog.Models) != wantModels {
+				t.Fatalf("unexpected cached catalog: %s", body)
+			}
+		}
+		if calls.Load() != before {
+			t.Fatal("reading the catalog contacted the provider")
+		}
+	}
+	checkReads(0)
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("catalog read created the credential directory: %v", err)
+	}
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeCredentials := func(data string) {
+		t.Helper()
+		if err := os.WriteFile(store.Path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expired := strings.Replace(subscriptionFixture, "2100-", "2000-", 1)
+	writeCredentials(expired)
+	checkReads(0)
+	if _, err := os.Stat(store.Path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("cold catalog read created a credential lock")
+	}
+	writeCredentials(subscriptionFixture)
+	for _, input := range []struct {
+		body, mediaType string
+		status          int
+	}{
+		{"{}", "text/plain", 415}, {`{"invalid":true}`, "application/json", 400}, {"", "application/json", 400},
+	} {
+		res := diagnosticAPIRequest(mux, "POST", "chatgpt/models", input.body, input.mediaType)
+		if res.Code != input.status || calls.Load() != 0 {
+			t.Fatalf("invalid refresh accepted: status %d, calls %d", res.Code, calls.Load())
+		}
+	}
+	if res := diagnosticAPIRequest(mux, "POST", "chatgpt/models", "{}", "application/json"); res.Code != 200 || calls.Load() != 1 {
+		t.Fatalf("refresh failed: status %d, calls %d", res.Code, calls.Load())
+	}
+	writeCredentials(expired)
+	checkReads(1)
+	if raw, err := os.ReadFile(store.Path); err != nil || string(raw) != expired {
+		t.Fatal("reading a warm catalog changed expired credentials")
+	}
+	writeCredentials(strings.Replace(expired, "user-fixture", "other-user", 1))
+	checkReads(0)
+	writeCredentials(strings.Replace(expired, "oaiapp_fixture", "other-client", 1))
+	checkReads(0)
+	if err := os.Remove(store.Path); err != nil {
+		t.Fatal(err)
+	}
+	checkReads(0)
 }
 
 func TestPanelChatGPTInstallerModel(t *testing.T) {
