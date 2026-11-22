@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/skrashevich/quasar-bridge/internal/localfile"
 )
 
 type chatGPTModelState struct {
@@ -121,12 +123,8 @@ func readInstallerModelEnv(configPath, model string) *installerModelEnv {
 		return nil
 	}
 	path = filepath.Join(dir, "runtime.env")
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > 1<<20 {
-		return nil
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
+	raw, info, err := localfile.Read(path, localfile.NoFollow, 1<<20)
+	if err != nil || info.Mode().Perm() != 0600 {
 		return nil
 	}
 	lines := strings.Split(string(raw), "\n")
@@ -168,8 +166,8 @@ func readInstallerModelEnv(configPath, model string) *installerModelEnv {
 }
 
 func (e *installerModelEnv) save(model string) error {
-	current, err := os.ReadFile(e.path)
-	if err != nil || !bytes.Equal(current, e.raw) {
+	current, info, err := localfile.Read(e.path, localfile.NoFollow, 1<<20)
+	if err != nil || info.Mode().Perm() != 0600 || !bytes.Equal(current, e.raw) {
 		return errModelChanged
 	}
 	e.lines[e.index] = modelAssignment(model)

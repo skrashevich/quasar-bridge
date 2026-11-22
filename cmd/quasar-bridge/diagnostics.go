@@ -5,8 +5,10 @@ import (
 	_ "embed"
 	"encoding/json/v2"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,7 +125,7 @@ func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() 
 	} {
 		mux.HandleFunc("GET "+asset.path, guard(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", asset.contentType)
-			_, _ = fmt.Fprint(w, asset.body)
+			http.ServeContent(w, r, asset.path, time.Time{}, strings.NewReader(asset.body))
 		}))
 	}
 	mux.HandleFunc("GET /diagnostics/logs", guard(func(w http.ResponseWriter, r *http.Request) {
@@ -140,9 +142,7 @@ func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() 
 		}
 		snapshot := logs.snapshot(after)
 		snapshot.Version, snapshot.AirPlay = update.Version, status()
-		w.Header().Set("Content-Type", "application/json")
-		body, _ := json.Marshal(snapshot)
-		_, _ = w.Write(body)
+		writeDiagnosticJSON(w, http.StatusOK, snapshot)
 	}))
 	mux.HandleFunc("GET /diagnostics/logs/{id}", guard(logs.packetDetails))
 	mux.HandleFunc("GET /diagnostics/download", guard(func(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +150,8 @@ func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() 
 		state, _ := json.Marshal(status())
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="quasar-bridge-diagnostics-`+time.Now().UTC().Format("20060102-150405")+`.txt"`)
-		_, _ = fmt.Fprintf(w, "Quasar Bridge diagnostics\nVersion: %s\nCaptured: %s\nLog truncated: %t\nAirPlay: %s\n\n%s", update.Version, time.Now().UTC().Format(time.RFC3339), snapshot.Truncated, state, snapshot.Text)
+		header := fmt.Sprintf("Quasar Bridge diagnostics\nVersion: %s\nCaptured: %s\nLog truncated: %t\nAirPlay: %s\n\n", update.Version, time.Now().UTC().Format(time.RFC3339), snapshot.Truncated, state)
+		_, _ = io.WriteString(w, header)
+		_, _ = io.WriteString(w, snapshot.Text)
 	}))
 }

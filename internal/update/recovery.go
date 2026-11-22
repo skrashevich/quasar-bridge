@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/skrashevich/quasar-bridge/internal/localfile"
 )
 
 type recoveryFile struct {
@@ -86,37 +88,23 @@ func saveObserve(path string) (restore func() error, err error) {
 
 func readRecoveryFile(path string, optional bool) (*recoveryFile, error) {
 	file := &recoveryFile{path: path}
-	info, err := os.Lstat(path)
+	raw, info, err := localfile.Read(path, localfile.NoFollow, 1<<20)
 	if optional && errors.Is(err, os.ErrNotExist) {
 		return file, nil
 	}
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s must be a regular recovery file, not a symlink", filepath.Base(path))
-	}
-	if info.Size() > 1<<20 {
-		return nil, errors.New("file exceeds recovery size limit")
-	}
-	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, errors.New("cannot read recovery file")
-	}
-	if len(raw) > 1<<20 {
-		return nil, errors.New("file exceeds recovery size limit")
+		return nil, fmt.Errorf("cannot read %s for recovery", filepath.Base(path))
 	}
 	file.info, file.raw = info, raw
 	return file, nil
 }
 
 func recoveryFileUnchanged(path string, expected os.FileInfo, raw []byte) error {
-	info, err := os.Lstat(path)
+	current, info, err := localfile.Read(path, localfile.NoFollow, 1<<20)
 	if expected == nil && errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err != nil || expected == nil || !info.Mode().IsRegular() || !os.SameFile(expected, info) {
-		return errors.New("configuration or runtime environment changed externally during recovery")
-	}
-	current, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(raw, current) {
+	if err != nil || expected == nil || !os.SameFile(expected, info) || !bytes.Equal(raw, current) {
 		return errors.New("configuration or runtime environment changed externally during recovery")
 	}
 	return nil
