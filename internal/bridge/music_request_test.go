@@ -2,7 +2,7 @@ package bridge
 
 import (
 	"context"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 	"testing"
 )
 

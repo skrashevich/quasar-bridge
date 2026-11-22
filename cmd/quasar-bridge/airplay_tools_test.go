@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
 	airplay "github.com/skrashevich/station-airplay"
-	"quasarbridge/internal/assistant"
 )
 
 func TestAirPlayToolsUseLiveReceiver(t *testing.T) {

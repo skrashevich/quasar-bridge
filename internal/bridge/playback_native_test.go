@@ -12,7 +12,7 @@ import (
 	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	"google.golang.org/protobuf/proto"
 
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 type musicLogWriter chan string

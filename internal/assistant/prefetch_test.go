@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 func TestNaturalHistoryHasLocalDateAndRecordsBeforeFirstModelCall(t *testing.T) {

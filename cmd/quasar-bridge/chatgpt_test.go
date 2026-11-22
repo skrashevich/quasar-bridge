@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type chatGPTTransport func(*http.Request) (*http.Response, error)

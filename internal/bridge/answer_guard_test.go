@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type markupChatter struct{ release <-chan struct{} }

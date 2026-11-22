@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 func TestPrivateHistoryBlocksSoundURL(t *testing.T) {

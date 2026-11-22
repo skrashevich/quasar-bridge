@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 func TestConfiguredPromptsProcess(t *testing.T) {

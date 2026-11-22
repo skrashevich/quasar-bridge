@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 func TestAgentLooksUpTTSVoiceAndSound(t *testing.T) {

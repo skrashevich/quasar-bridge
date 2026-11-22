@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 type musicBinding struct {

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"sync"
 
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 // Frame bytes stay in process memory. Only the detail handler decodes a copy

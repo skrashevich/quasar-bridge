@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"quasarbridge/internal/chatgpt"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/chatgpt"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 func TestPanelChatGPTLogin(t *testing.T) {

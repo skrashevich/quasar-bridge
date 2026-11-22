@@ -41,7 +41,7 @@ def build(arch="arm64", output=None, binary=None, tag=None, upx=False,
         if not binary:
             env = dict(os.environ, CGO_ENABLED="0", GOOS="linux",
                        GOARCH="arm" if arch == "armv7" else "arm64", GOARM="7")
-            subprocess.run(["go", "build", "-trimpath", f"-ldflags=-s -w -X quasarbridge/internal/update.Version={version}", "-o",
+            subprocess.run(["go", "build", "-trimpath", f"-ldflags=-s -w -X github.com/skrashevich/quasar-bridge/internal/update.Version={version}", "-o",
                             str(executable), "./cmd/quasar-bridge"], cwd=ROOT, env=env, check=True)
         check_elf(executable, arch)
         # station-airplay embeds both required audio ABIs inside the receiver.

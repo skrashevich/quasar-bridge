@@ -10,12 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     env = dict(os.environ, CGO_ENABLED="0", GOOS="linux", GOARCH="arm64")
     output = subprocess.check_output(
-        ["go", "list", "-deps", "-f", "{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}", "./cmd/quasar-bridge", "github.com/skrashevich/station-airplay/cmd/station-pcm", "github.com/skrashevich/station-airplay/cmd/station-pcm-package"],
+        ["go", "list", "-deps", "-f", "{{with .Module}}{{if not .Main}}{{.Path}}|{{.Version}}|{{.Dir}}{{end}}{{end}}", "./cmd/quasar-bridge", "github.com/skrashevich/station-airplay/cmd/station-pcm", "github.com/skrashevich/station-airplay/cmd/station-pcm-package"],
         cwd=ROOT, env=env, text=True,
     )
     modules = {}
     for line in output.splitlines():
-        if line and not line.startswith("quasarbridge|"):
+        if line:
             name, version, directory = line.split("|", 2)
             modules[name + " " + version] = Path(directory)
     goroot = subprocess.check_output(["go", "env", "GOROOT"], cwd=ROOT, env=env, text=True).strip()

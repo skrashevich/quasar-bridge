@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 func TestNativeSpeechOmitsURLsAndKeepsAnswer(t *testing.T) {

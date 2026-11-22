@@ -20,7 +20,7 @@ import (
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	eventsource "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/data/event_source"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // Diagnostics control must precede a wakeword's LLM rule without carrying its

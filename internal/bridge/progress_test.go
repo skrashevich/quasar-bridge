@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
 	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
@@ -17,7 +18,6 @@ import (
 	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/encoding/protowire"
-	"quasarbridge/internal/wire"
 )
 
 type delayedRoute struct{ release <-chan struct{} }

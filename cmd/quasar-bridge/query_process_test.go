@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 // Removing the CLI speaker/player context or its diagnostic queue breaks this flow.

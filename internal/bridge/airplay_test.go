@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type airPlayFunc func(context.Context, string) (string, error)

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
 )
 
 func TestChatGPTConfigDefaultsAndOverrides(t *testing.T) {

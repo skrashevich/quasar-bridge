@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type inventoryPage struct {

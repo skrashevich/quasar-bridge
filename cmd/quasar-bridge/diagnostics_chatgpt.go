@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"quasarbridge/internal/chatgpt"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/chatgpt"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // Both panel listeners share pending attempts. Only the browser that received

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // CompleteConfiguration permits a factual retry to inspect local settings while
