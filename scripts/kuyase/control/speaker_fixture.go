@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json/v2"
 	"errors"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -13,9 +11,9 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 	alice "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/alice"
 	ipc "github.com/skrashevich/quasar-go-genproto/proto/yandex_io/protos"
-	"google.golang.org/protobuf/proto"
 )
 
 // An offline stand-in for the guest's aliced, with the same native RPC frames.
@@ -70,23 +68,15 @@ var commandUtterance = regexp.MustCompile(`^Код подтверждения к
 
 func mockVocalize(c net.Conn, dir string) error {
 	read := func() (*ipc.Remoting, error) {
-		var n uint32
-		if err := binary.Read(c, binary.LittleEndian, &n); err != nil {
+		frame, err := wire.ReadQuasarMessage(c, 4096)
+		if err != nil {
 			return nil, err
 		}
-		if n == 0 || n > 4096 {
-			return nil, errors.New("invalid test RPC frame length")
-		}
-		raw := make([]byte, n)
-		if _, err := io.ReadFull(c, raw); err != nil {
-			return nil, err
-		}
-		var frame ipc.QuasarMessage
-		var call ipc.Remoting
-		if proto.Unmarshal(raw, &frame) != nil || frame.GetType() != ipc.QuasarMessage_TYPE_REMOTING || proto.Unmarshal(frame.GetPayload(), &call) != nil || call.GetRemoteObjectId() != "AliceCapability" {
+		call := wire.UnwrapRemoting(frame)
+		if frame.GetType() != ipc.QuasarMessage_TYPE_REMOTING || frame.GetRemoting() != nil || call.GetRemoteObjectId() != "AliceCapability" {
 			return nil, errors.New("expected AliceCapability RPC")
 		}
-		return &call, nil
+		return call, nil
 	}
 	sub, err := read()
 	if err != nil || sub.GetCapabilityAddListenerMethod().GetCapabilityId() != "AliceCapability" {
@@ -110,15 +100,11 @@ func mockVocalize(c net.Conn, dir string) error {
 		} else if err := os.WriteFile(filepath.Join(dir, "last-utterance"), []byte(phrase), 0600); err != nil {
 			return err
 		}
-		payload, err := proto.Marshal(&ipc.Remoting{RemoteObjectId: new("AliceCapability"), Method: &ipc.Remoting_AliceCapabilityListenerMethod_{AliceCapabilityListenerMethod: callback}})
-		if err != nil {
-			return err
+		reply := &ipc.Remoting{
+			RemoteObjectId: new("AliceCapability"),
+			Method:         &ipc.Remoting_AliceCapabilityListenerMethod_{AliceCapabilityListenerMethod: callback},
 		}
-		frame, err := proto.Marshal(&ipc.QuasarMessage{Type: ipc.QuasarMessage_TYPE_REMOTING.Enum(), Payload: payload})
-		if err != nil {
-			return err
-		}
-		if _, err = c.Write(append(binary.LittleEndian.AppendUint32(nil, uint32(len(frame))), frame...)); err != nil {
+		if err := wire.WriteRemoting(c, reply, false); err != nil {
 			return err
 		}
 	}
