@@ -454,6 +454,46 @@ func subscriptionDevice(appID, stateID string, status subscription.TSubscription
 	return &environment.TEnvironmentDeviceInfo{Application: &application.TClientInfoProto{DeviceId: new(appID)}, OneOfStates: &environment.TEnvironmentDeviceInfo_SpeakerDeviceState{SpeakerDeviceState: &device.TDeviceState{DeviceId: new(stateID), DeviceSubscriptionState: &subscription.TSubscriptionState{Subscription: status}}}}
 }
 
+func TestPanelSpeakerInfoFollowsConnectedRequester(t *testing.T) {
+	var m SubscriptionMonitor
+	s := m.NewSession(nil, nil, nil)
+	ep := func(id, serial string) *endpoint.TEndpoint {
+		return &endpoint.TEndpoint{Id: id, Meta: &endpoint.TEndpoint_TMeta{DeviceInfo: &endpoint.TEndpoint_TDeviceInfo{
+			Model: "yandexmidi", SwVersion: "1.2.3", SerialNumber: serial,
+		}}}
+	}
+	env := &environment.TEnvironmentState{Endpoints: []*endpoint.TEndpoint{ep("other", "foreign"), ep("local", "demo-serial")}}
+	send := func(id string, env *environment.TEnvironmentState) {
+		t.Helper()
+		frame := subscriptionRequest(t, &device.TDeviceState{DeviceId: new(id)}, id, env, true)
+		if err := s.Client(t.Context(), websocket.MessageBinary, frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("local", env)
+	send("local", nil)
+	if got := m.Speaker(); got != (SpeakerInfo{Model: "yandexmidi", FirmwareVersion: "1.2.3", SerialNumber: "demo-serial"}) {
+		t.Fatalf("wrong requester: %+v", got)
+	}
+	health, err := json.Marshal(m.Snapshot())
+	if err != nil || bytes.Contains(health, []byte("demo-serial")) {
+		t.Fatal("serial number in public health response")
+	}
+	second := m.NewSession(nil, nil, nil)
+	if m.Speaker() != (SpeakerInfo{}) {
+		t.Fatal("ambiguous station displayed")
+	}
+	second.Close()
+	send("new", env)
+	if m.Speaker() != (SpeakerInfo{}) {
+		t.Fatal("inherited a different speaker's details")
+	}
+	s.Close()
+	if m.Speaker() != (SpeakerInfo{}) {
+		t.Fatal("closed speaker displayed")
+	}
+}
+
 func subscriptionRequest(t *testing.T, ds *device.TDeviceState, appID string, env *environment.TEnvironmentState, raw bool) []byte {
 	t.Helper()
 	r := &request.TAliceRequestProto_TRequest{}

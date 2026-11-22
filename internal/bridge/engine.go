@@ -285,6 +285,15 @@ func (e *Engine) RoutingStatus() RoutingStatus {
 }
 func (e *Engine) IsRefusal(text string) bool { return e.policy().isRefusal(text) }
 func IsRefusal(text string) bool             { return builtInRouting.isRefusal(text) }
+
+// DecideWithWakeWord supplies the same activation tag as a speaker session.
+func (e *Engine) DecideWithWakeWord(ctx context.Context, text, word string) RouteDecision {
+	if word != "" {
+		ctx = context.WithValue(ctx, wakewordTagKey{}, stationWakewordTag(word))
+	}
+	return e.Decide(ctx, text)
+}
+
 func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecision) {
 	ctx, snapshot, ticket := e.dialogue().Start(ctx)
 	defer func() {

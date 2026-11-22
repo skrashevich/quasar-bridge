@@ -18,40 +18,39 @@ import (
 	"uuid"
 )
 
-type callbackResult struct {
-	code     string
-	clientID string
-	err      error
+var (
+	ErrLoginDenied    = errors.New("ChatGPT authorization was denied; no credentials were changed")
+	ErrPlanPermission = errors.New("ChatGPT plan permission was not granted; authorize plan usage in ChatGPT settings")
+)
+
+// LoginAttempt keeps the PKCE verifier and identity nonce on the Bridge.
+// The caller owns the attempt lifetime and must consume a matching callback once.
+type LoginAttempt struct {
+	store        *Store
+	initial      credentials
+	redirect     string
+	state        string
+	nonce        string
+	verifier     string
+	clientID     string
+	authorizeURL string
 }
 
-// Login starts a protected loopback callback and supplies an authorization URL
-// to the caller. It never opens a browser automatically or prints retained ID
-// tokens. The caller controls cancellation and how the URL is presented.
-func (s *Store) Login(ctx context.Context, address string, showURL func(string) error) error {
-	if address == "" {
-		address = "127.0.0.1:1455"
-	}
-	host, port, err := net.SplitHostPort(address)
-	n, numberErr := strconv.Atoi(port)
-	if err != nil || host != "127.0.0.1" || numberErr != nil || n < 0 || n > 65535 {
-		return errors.New("ChatGPT callback must listen on 127.0.0.1 with a valid port")
-	}
-	if showURL == nil {
-		return errors.New("ChatGPT login requires an authorization URL handler")
-	}
-	if ctx.Err() != nil {
-		return fmt.Errorf("ChatGPT login: %w", ctx.Err())
+// BeginLogin uses the same loopback redirect for the CLI and the panel. The
+// public port can be the local end of an SSH forward to the panel.
+func (s *Store) BeginLogin(ctx context.Context, port uint16) (*LoginAttempt, error) {
+	if port == 0 {
+		return nil, errors.New("invalid ChatGPT callback port")
 	}
 	initial, err := s.prepareHost(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	listener, err := net.Listen("tcp4", address)
-	if err != nil {
-		return errors.New("cannot start ChatGPT callback listener on 127.0.0.1; choose another port")
+	host := "127.0.0.1"
+	if port != 80 {
+		host = net.JoinHostPort(host, strconv.Itoa(int(port)))
 	}
-	defer listener.Close()
-	redirect := "http://" + listener.Addr().String() + "/auth/callback"
+	redirect := "http://" + host + "/auth/callback"
 	state, nonce, verifier := rand.Text(), rand.Text(), rand.Text()+rand.Text()
 	digest := sha256.Sum256([]byte(verifier))
 	clientID := initial.ClientID
@@ -72,32 +71,65 @@ func (s *Store) Login(ctx context.Context, address string, showURL func(string) 
 	if endpoint == "" {
 		endpoint = issuer + "/api/accounts/authorize"
 	}
-	results := make(chan callbackResult, 1)
+	initial.clearTokens()
+	return &LoginAttempt{
+		store: s, initial: initial, redirect: redirect, state: state, nonce: nonce,
+		verifier: verifier, clientID: clientID, authorizeURL: endpoint + "?" + query.Encode(),
+	}, nil
+}
+
+func (a *LoginAttempt) AuthorizationURL() string { return a.authorizeURL }
+
+// Matches binds a browser return (including a pasted link) to the exact
+// redirect URI and state issued for this attempt. The URL is never fetched.
+func (a *LoginAttempt) Matches(raw string) bool {
+	base, query, ok := strings.Cut(raw, "?")
+	if !ok || base != a.redirect || strings.Contains(query, "#") {
+		return false
+	}
+	values, err := url.ParseQuery(query)
+	return err == nil && len(values["state"]) == 1 && subtle.ConstantTimeCompare([]byte(values.Get("state")), []byte(a.state)) == 1
+}
+
+// Login starts a protected loopback callback and supplies an authorization URL
+// to the caller. It never opens a browser automatically or prints retained ID
+// tokens. The caller controls cancellation and how the URL is presented.
+func (s *Store) Login(ctx context.Context, address string, showURL func(string) error) error {
+	if address == "" {
+		address = "127.0.0.1:1455"
+	}
+	host, port, err := net.SplitHostPort(address)
+	n, numberErr := strconv.Atoi(port)
+	if err != nil || host != "127.0.0.1" || numberErr != nil || n < 0 || n > 65535 {
+		return errors.New("ChatGPT callback must listen on 127.0.0.1 with a valid port")
+	}
+	if showURL == nil {
+		return errors.New("ChatGPT login requires an authorization URL handler")
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("ChatGPT login: %w", ctx.Err())
+	}
+	listener, err := net.Listen("tcp4", address)
+	if err != nil {
+		return errors.New("cannot start ChatGPT callback listener on 127.0.0.1; choose another port")
+	}
+	defer listener.Close()
+	attempt, err := s.BeginLogin(ctx, uint16(listener.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		return err
+	}
+	results := make(chan string, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth/callback", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		values := r.URL.Query()
-		if subtle.ConstantTimeCompare([]byte(values.Get("state")), []byte(state)) != 1 {
+		raw := attempt.redirect + "?" + r.URL.RawQuery
+		if !attempt.Matches(raw) {
 			http.Error(w, "Invalid sign-in state.", http.StatusBadRequest)
 			return
 		}
-		result := callbackResult{code: values.Get("code"), clientID: values.Get("client_id")}
-		if values.Has("error") {
-			result.err = errors.New("ChatGPT authorization was denied; no credentials were changed")
-		} else if result.code == "" {
-			result.err = errors.New("ChatGPT callback did not contain an authorization code")
-		} else if clientID == dynamicClient {
-			if result.clientID == "" || result.clientID == dynamicClient {
-				result.err = errors.New("ChatGPT registration did not return an issued client ID")
-			}
-		} else if result.clientID != "" && result.clientID != clientID {
-			result.err = errors.New("ChatGPT callback changed the selected account registration")
-		} else {
-			result.clientID = clientID
-		}
 		select {
-		case results <- result:
+		case results <- raw:
 			fmt.Fprintln(w, "Sign-in response received. Return to the terminal to check the result.")
 		default:
 			http.Error(w, "Sign-in callback already received.", http.StatusConflict)
@@ -107,39 +139,58 @@ func (s *Store) Login(ctx context.Context, address string, showURL func(string) 
 	defer server.Close()
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- server.Serve(listener) }()
-	if err := showURL(endpoint + "?" + query.Encode()); err != nil {
+	if err := showURL(attempt.AuthorizationURL()); err != nil {
 		return errors.New("cannot present ChatGPT authorization URL")
 	}
-	var result callbackResult
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("ChatGPT login: %w", ctx.Err())
 	case <-serveErrors:
 		return errors.New("ChatGPT callback listener stopped")
-	case result = <-results:
+	case raw := <-results:
+		return attempt.Complete(ctx, raw)
 	}
-	if result.err != nil {
-		return result.err
+}
+
+func (a *LoginAttempt) Complete(ctx context.Context, raw string) error {
+	if !a.Matches(raw) {
+		return errors.New("invalid ChatGPT callback address or state")
 	}
+	_, query, _ := strings.Cut(raw, "?")
+	values, _ := url.ParseQuery(query)
+	code, clientID := values.Get("code"), values.Get("client_id")
+	switch {
+	case values.Has("error"):
+		return ErrLoginDenied
+	case code == "" || len(values["code"]) != 1:
+		return errors.New("ChatGPT callback did not contain an authorization code")
+	case a.clientID == dynamicClient && (clientID == "" || clientID == dynamicClient):
+		return errors.New("ChatGPT registration did not return an issued client ID")
+	case a.clientID != dynamicClient && clientID != "" && clientID != a.clientID:
+		return errors.New("ChatGPT callback changed the selected account registration")
+	case a.clientID != dynamicClient:
+		clientID = a.clientID
+	}
+	s, initial := a.store, a.initial
 	if initial.ClientID == "" {
 		// Registration survives a failed code exchange or missing plan grant.
 		// No token or unverified account identity is made active here.
-		if err := s.retainRegistration(ctx, initial, result.clientID); err != nil {
+		if err := s.retainRegistration(ctx, initial, clientID); err != nil {
 			return err
 		}
-		initial.ClientID = result.clientID
+		initial.ClientID = clientID
 	}
-	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {result.clientID}, "code": {result.code}, "code_verifier": {verifier}, "redirect_uri": {redirect}, "resource": {resource}}
+	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {code}, "code_verifier": {a.verifier}, "redirect_uri": {a.redirect}, "resource": {resource}}
 	token, err := s.exchange(ctx, form)
 	if err != nil {
 		return err
 	}
-	identity, err := s.validateIDToken(ctx, token.IDToken, result.clientID, nonce)
+	identity, err := s.validateIDToken(ctx, token.IDToken, clientID, a.nonce)
 	if err != nil {
 		return err
 	}
 	if !hasPlanScope(token.Scope) {
-		return errors.New("ChatGPT plan permission was not granted; authorize plan usage in ChatGPT settings")
+		return ErrPlanPermission
 	}
 	if initial.Subject != "" && identity.Subject != initial.Subject {
 		return errors.New("ChatGPT sign-in identity differs from the selected account; choose a different credential file")
@@ -157,7 +208,7 @@ func (s *Store) Login(ctx context.Context, address string, showURL func(string) 
 		return errors.New("ChatGPT registration changed during sign-in; try again")
 	}
 	current.Issuer, current.Subject, current.Email = issuer, identity.Subject, identity.Email
-	current.ClientID = result.clientID
+	current.ClientID = clientID
 	current.AccessToken, current.RefreshToken, current.IDToken = token.AccessToken, token.RefreshToken, token.IDToken
 	current.Scope = token.Scope
 	current.ExpiresAt = time.Now().UTC().Add(time.Duration(token.ExpiresIn) * time.Second)

@@ -26,7 +26,7 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "command", "upstream or command")
+	mode := flag.String("mode", "command", "upstream, catalog, or command")
 	listen := flag.String("listen", "127.0.0.1:18444", "Loopback mock upstream address")
 	bridge := flag.String("bridge", "http://127.0.0.1:8443", "Loopback Bridge HTTP URL")
 	action := flag.String("action", "start", "start, stop, or an E2E scenario")
@@ -51,6 +51,23 @@ func main() {
 			if errors.Is(err, http.ErrServerClosed) {
 				err = nil
 			}
+		}
+	case "catalog":
+		// The isolated VM maps only the provider catalog name to this loopback fixture.
+		catalog := http.NewServeMux()
+		catalog.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
+			if r.Host != "api.openai.com" || r.Header.Get("Authorization") != "Bearer kuyase-subscription" {
+				http.Error(w, "invalid fixture credentials", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"models":[{"slug":"kuyase-fast","display_name":"Быстрая","visibility":"list"},{"slug":"kuyase-deep","display_name":"Рассуждения","visibility":"list"},{"slug":"kuyase-hidden","visibility":"hidden"}]}`)
+		})
+		srv := &http.Server{Addr: "127.0.0.1:443", Handler: catalog, ReadHeaderTimeout: 5 * time.Second}
+		context.AfterFunc(ctx, func() { srv.Close() })
+		err = srv.ListenAndServeTLS("catalog.crt", "catalog.key")
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
 		}
 	case "command":
 		ctx, stop := context.WithTimeout(ctx, *timeout)

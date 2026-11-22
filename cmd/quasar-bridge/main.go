@@ -23,6 +23,7 @@ import (
 
 	"quasarbridge/internal/assistant"
 	"quasarbridge/internal/bridge"
+	"quasarbridge/internal/chatgpt"
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/home"
 	"quasarbridge/internal/journal"
@@ -219,6 +220,9 @@ func main() {
 		return "Аварийный откат запланирован после этого ответа. После успешного восстановления подключения к Яндексу колонка перезагрузится.", nil
 	}
 	configuration := &configurationControl{path: *path, active: cfg, engine: engine, logs: logs}
+	if cfg.LLMAPI == "chatgpt" {
+		lc.SubscriptionModel = configuration.activeModel
+	}
 	yandexQuery := func(ctx context.Context, text string, dialog *queryDialog) (string, error) {
 		configuration.mu.Lock()
 		timezone := configuration.active.AssistantTools.Timezone
@@ -396,15 +400,21 @@ func main() {
 		state := engine.RoutingStatus()
 		return map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()}
 	}
+	localSpeaker := readSpeakerInfo(*speakerConfig, "/proc/cmdline")
 	panelStatus := func() map[string]any {
 		result := status()
+		speaker := localSpeaker
+		if speaker == (bridge.SpeakerInfo{}) {
+			speaker = subscriptions.Speaker()
+		}
+		result["speaker"] = speaker
 		result["run"] = diagnosticLogs.run
-		result["version"], result["llm_model"], result["llm_api"] = update.Version, cfg.LLMModel, cfg.LLMAPI
+		result["version"], result["llm_model"], result["llm_api"] = update.Version, configuration.activeModel(), cfg.LLMAPI
 		result["uptime_seconds"] = int64(time.Since(startedAt).Seconds())
 		result["diagnostics"] = map[string]any{"network_access": configuration.diagnosticsNetworkAccess(), "port": cfg.Diagnostics.Port, "address": panel.Address()}
 		return result
 	}
-	panelControl := diagnosticControl{Configuration: configuration, Engine: engine, Logs: logs, MusicQueue: musicQueue, Status: panelStatus, AirPlay: airPlay, Network: configuration.diagnosticsNetworkAccess, QueryBusy: new(atomic.Bool), YandexQuery: yandexQuery, Dialogs: newQueryDialogs(time.Duration(cfg.DialogueContext.TTLSeconds) * time.Second)}
+	panelControl := diagnosticControl{ChatGPT: &panelChatGPT{store: chatgpt.Store{Path: cfg.LLMChatGPTAuthFile}}, Configuration: configuration, Engine: engine, Logs: logs, MusicQueue: musicQueue, Status: panelStatus, AirPlay: airPlay, Network: configuration.diagnosticsNetworkAccess, QueryBusy: new(atomic.Bool), YandexQuery: yandexQuery, Dialogs: newQueryDialogs(time.Duration(cfg.DialogueContext.TTLSeconds) * time.Second)}
 	registerPanel := func(m *http.ServeMux) {
 		registerDiagnostics(m, diagnosticLogs, func() map[string]any { return airPlayHealth(airPlay) }, configuration.diagnosticsNetworkAccess)
 		registerDiagnosticsAPI(m, panelControl)
