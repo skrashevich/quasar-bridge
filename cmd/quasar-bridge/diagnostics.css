@@ -353,6 +353,9 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 .setting-editor>.raw-state { margin-top:10px; }
 .test-decision:only-child { grid-column:1/-1; }
 .rule-id { color:var(--muted); margin-left:8px; font-size:11px; font-weight:400; }
+.rule-kind { margin-left:8px; vertical-align:2px; }
+.rule-kind.own { background:var(--tint); color:var(--accent); }
+#rule-builtin-note { margin:-4px 0 16px; }
 #rule-extra { border-top:1px solid var(--line); padding-top:14px; }
 #routing-live { margin-top:14px; }
 #routing-live summary { cursor:pointer; font-size:13px; color:var(--accent); }
