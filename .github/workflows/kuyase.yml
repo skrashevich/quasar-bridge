@@ -15,6 +15,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Plan pinned firmware and package matrix
+        id: matrix
+        run: python3 scripts/kuyase/firmware.py --event "$GITHUB_EVENT_NAME" --ref "$GITHUB_REF"
+
   build-emulator:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -70,14 +83,12 @@ jobs:
 
   emulator:
     name: E2E (${{ matrix.board }}, ${{ matrix.arch }})
-    needs: [build, build-emulator]
+    needs: [plan, build, build-emulator]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix:
-        board: [yandexmini, station2]
-        arch: [arm64, armv7]
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
