@@ -430,3 +430,20 @@ func TestHomeAnswerNamesDevicesWithoutEntityIDs(t *testing.T) {
 		})
 	}
 }
+
+// User story: a sensor value like 27.26 was read aloud as a clock time
+// ("двадцать семь двадцать шесть"). Home answers use a decimal comma, while
+// firmware versions and IP addresses keep their dots.
+func TestHomeAnswerReadsDecimalsAsNumbers(t *testing.T) {
+	entities := []Entity{{ID: "sensor.bedroom_temperature", Name: "Температура в спальне"}}
+	for _, tc := range []struct{ answer, want string }{
+		{"В спальне 27.26 градуса.", "В спальне 27,26 градуса."},
+		{"sensor.bedroom_temperature показывает 21.5", "Температура в спальне показывает 21,5"},
+		{"Прошивка 2024.10.1, адрес 192.168.1.5.", "Прошивка 2024.10.1, адрес 192.168.1.5."},
+		{"Температура в спальне (sensor.bedroom_temperature): 0.04, версия 0.373.1", "Температура в спальне: 0,04, версия 0.373.1"},
+	} {
+		if got := spokenAnswer(tc.answer, entities); got != tc.want {
+			t.Errorf("spokenAnswer(%q)=%q want %q", tc.answer, got, tc.want)
+		}
+	}
+}
