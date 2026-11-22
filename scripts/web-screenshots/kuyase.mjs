@@ -310,6 +310,16 @@ async function logs(page) {
   const search = page.getByRole("searchbox", { name: "Поиск в журнале" });
   await search.fill("нет-такого-события-куясэ");
   await page.getByText("По выбранным фильтрам событий нет.").waitFor();
+  await search.fill("broken_script");
+  await lines.filter({ hasText: "Запущена внешняя команда «broken_script»" }).waitFor();
+  const levels = page.getByRole("combobox", { name: "Уровень" });
+  await levels.selectOption("ERROR");
+  const failure = lines.filter({ hasText: "Ошибка внешней команды «broken_script»" });
+  await failure.waitFor();
+  assert.match(await failure.innerText(), /код выхода 2.*stderr:.*syntax error/i);
+  await levels.selectOption("");
+  await search.fill("voice_note");
+  await lines.filter({ hasText: "Выполнена внешняя команда «voice_note»" }).first().waitFor();
   await search.fill("native_route");
   await lines.first().waitFor();
   const [download] = await Promise.all([
@@ -320,6 +330,20 @@ async function logs(page) {
   const content = await readFile(await download.path(), "utf8");
   assert.match(content, /^Quasar Bridge diagnostics\nVersion:/);
   assert.match(content, /native_route/);
+  const events = content.split("\n").flatMap(line => {
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+  const started = events.find(e => e.msg === "routing_command_started" && e.command === "broken_script");
+  const failed = events.find(e => e.msg === "routing_command_failed" && e.command === "broken_script");
+  assert.ok(started && failed);
+  assert.equal(failed.request, started.request);
+  assert.equal(failed.pid, started.pid);
+  assert.equal(failed.exit_code, 2);
+  assert.equal(failed.rule, "script_error");
+  assert.equal(failed.source, "rule");
+  assert.equal(failed.stdout_bytes, 0);
+  assert.ok(failed.stderr_bytes > 0);
+  assert.match(failed.stderr, /unterminated quoted string/i);
 }
 
 async function account(page) {

@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
-	"github.com/skrashevich/quasar-bridge/internal/configvoice"
-	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/skrashevich/quasar-bridge/internal/configvoice"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
 	"github.com/skrashevich/quasar-bridge/internal/llm"
 	"github.com/skrashevich/quasar-bridge/internal/playback"
 	"github.com/skrashevich/quasar-bridge/internal/reply"
@@ -109,7 +110,10 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	switch route {
 	case "command":
 		if decision.handler == nil {
-			return result, errors.New("routing command is unavailable")
+			err := errors.New("routing command is unavailable")
+			origin, _ := ctx.Value(commandOriginKey{}).(commandOrigin)
+			slog.Error("routing_command_failed", "command", decision.Command, "source", decision.Source, "rule", decision.Rule, "request", origin.logTag, "stage", "resolve", "error", err)
+			return result, err
 		}
 		answer, err := decision.handler.run(ctx, text, decision)
 		if !e.dialogue().Current(ctx, ticket) {

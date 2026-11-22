@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"os/exec"
@@ -74,6 +75,7 @@ type commandOriginKey struct{}
 type commandOrigin struct {
 	RequestID string `json:"request_id,omitempty"`
 	InputType string `json:"input_type,omitempty"`
+	logTag    string
 }
 
 type commandInput struct {
@@ -93,11 +95,13 @@ var errCommandOutputLimit = errors.New("routing command stdout exceeds 16 KiB")
 
 type commandOutput struct {
 	data     []byte
+	total    int64
 	overflow bool
 	cancel   context.CancelFunc
 }
 
 func (out *commandOutput) Write(p []byte) (int, error) {
+	out.total += int64(len(p))
 	if len(p) > maxCommandOutput-len(out.data) {
 		out.overflow = true
 		out.cancel()
@@ -109,15 +113,28 @@ func (out *commandOutput) Write(p []byte) (int, error) {
 
 func (c *RoutingCommand) run(ctx context.Context, text string, decision RouteDecision) (string, error) {
 	origin, _ := ctx.Value(commandOriginKey{}).(commandOrigin)
+	// For web and CLI requests there is no native message ID. Give each call
+	// its own tag so concurrent runs of the same registration stay distinguishable.
+	invocation := origin.logTag
+	if invocation == "" {
+		invocation = requestTag(newID())
+	}
+	timeoutMS := cmp.Or(c.TimeoutMS, 10000)
+	log := slog.With("request", invocation, "command", decision.Command, "source", decision.Source, "program", c.Path, "argc", len(c.Args), "timeout_ms", timeoutMS)
+	if decision.Rule != "" {
+		log = log.With("rule", decision.Rule)
+	}
+	start := time.Now()
 	tag, _ := ctx.Value(wakewordTagKey{}).(string)
 	input, err := json.Marshal(commandInput{
 		Version: 1, Text: text, Command: decision.Command, Source: decision.Source, Rule: decision.Rule,
 		SpeakerKey: dialogue.SpeakerKey(ctx), WakeWordTag: tag, commandOrigin: origin,
 	})
 	if err != nil {
+		log.Error("routing_command_failed", "stage", "stdin", "error", "cannot encode routing command input")
 		return "", errors.New("cannot encode routing command input")
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(cmp.Or(c.TimeoutMS, 10000))*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.Path, c.Args...)
 	cmd.Env = []string{}
@@ -138,23 +155,63 @@ func (c *RoutingCommand) run(ctx context.Context, text string, decision RouteDec
 	cmd.Stdin = bytes.NewReader(append(input, '\n'))
 	out := commandOutput{cancel: cancel}
 	cmd.Stdout = &out
-	err = cmd.Run()
+	var stderr commandStderr
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		cause := ctx.Err()
+		if cause == nil {
+			cause = errors.New("could not start process")
+			if errno, ok := errors.AsType[syscall.Errno](err); ok {
+				cause = fmt.Errorf("cannot start process: %w", errno)
+			}
+		}
+		log.Error("routing_command_failed", "stage", "start", "elapsed_ms", time.Since(start).Milliseconds(), "error", cause)
+		return "", cause
+	}
+	log = log.With("pid", cmd.Process.Pid)
+	log.Info("routing_command_started")
+	err = cmd.Wait()
+	log = log.With("elapsed_ms", time.Since(start).Milliseconds(), "stdout_bytes", out.total, "stderr_bytes", stderr.total)
+	if state := cmd.ProcessState; state != nil {
+		if code := state.ExitCode(); code >= 0 {
+			log = log.With("exit_code", code)
+		} else if status, ok := state.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			log = log.With("signal", status.Signal().String())
+		}
+	}
+	answer, stage, err := commandResult(ctx, &out, err)
+	if err != nil {
+		if stderr.total != 0 {
+			log = log.With("stderr", stderr.excerpt(text, c.Args, origin.RequestID, dialogue.SpeakerKey(ctx), tag), "stderr_truncated", stderr.total > int64(len(stderr.data)))
+		}
+		log.Error("routing_command_failed", "stage", stage, "error", err)
+		return "", err
+	}
+	log.Info("routing_command_finished")
+	return answer, nil
+}
+
+// The error may reach the web chat. Child output belongs only in diagnostics.
+func commandResult(ctx context.Context, out *commandOutput, err error) (answer, stage string, cause error) {
 	switch {
 	case out.overflow:
-		return "", errCommandOutputLimit
+		return "", "stdout", errCommandOutputLimit
 	case ctx.Err() != nil:
-		return "", ctx.Err()
+		return "", "wait", ctx.Err()
 	case err != nil:
 		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
-			return "", fmt.Errorf("routing command exited with status %d", exit.ExitCode())
+			if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				return "", "wait", fmt.Errorf("routing command terminated by signal %s", status.Signal())
+			}
+			return "", "wait", fmt.Errorf("routing command exited with status %d", exit.ExitCode())
 		}
-		return "", errors.New("routing command could not complete")
+		return "", "wait", fmt.Errorf("waiting for routing command: %w", err)
 	case !utf8.Valid(out.data) || bytes.IndexByte(out.data, 0) >= 0:
-		return "", errors.New("routing command stdout must be UTF-8 text")
+		return "", "stdout", errors.New("routing command stdout must be UTF-8 text without NUL")
 	}
-	answer := string(bytes.TrimSpace(out.data))
+	answer = string(bytes.TrimSpace(out.data))
 	if answer == "" {
-		return "", errors.New("routing command returned empty stdout")
+		return "", "stdout", errors.New("routing command returned empty stdout")
 	}
-	return answer, nil
+	return answer, "", nil
 }

@@ -29,7 +29,8 @@ var phrases = map[string]string{
 	"llm": "спроси нейросеть: первый вопрос", "followup": "а вчера?",
 	"llm_urls":     "спроси нейросеть: когда Бавария играет с Кёльном",
 	"command_rule": "Запиши заметку купить кофе", "command_classifier": "Добавь в блокнот купить кофе",
-	"reset": "начни новый разговор", "clean": "спроси нейросеть: проверка после сброса",
+	"command_failure": "Запусти тестовый скрипт",
+	"reset":           "начни новый разговор", "clean": "спроси нейросеть: проверка после сброса",
 	"isolation": "спроси нейросеть: проверка другой колонки",
 	"home":      "Включи свет в кабинете", "state": "Горит ли свет в кабинете?",
 	"failure": "спроси нейросеть: ошибка провайдера",
@@ -69,6 +70,8 @@ func scenario(ctx context.Context, base, fixtures, name, notesPath string) error
 		turns = []turn{{"llm_urls", "voice-urls", llmURLsAnswer, false, local}}
 	case "command_rule", "command_classifier":
 		return voiceNoteScenario(ctx, base, fixtures, name, notesPath)
+	case "command_failure":
+		turns = []turn{{name, name, "Не удалось получить ответ от внешней команды.", false, counters{Voice: 1, TTS: 1}}}
 	case "text":
 		turns = []turn{{"llm", "text-llm", first.answer, true, counters{LLM: 1, TTS: 1}}}
 	case "dialogue":

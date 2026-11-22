@@ -264,9 +264,12 @@ def main():
                     "commands": {
                         "voice_note": {"path": f"{GUEST}/commands/voice-note", "args": [notes], "timeout_ms": 5000},
                         "echo_input": {"path": "/bin/cat"},
+                        "broken_script": {"path": "/bin/sh", "args": ["-c", "echo '"]},
                     },
                     "rules": [{"name": "notes", "route": "command", "command": "voice_note",
-                               "match": {"starts_with_any": ["запиши заметку"]}}, *default_rules],
+                               "match": {"starts_with_any": ["запиши заметку"]}},
+                              {"name": "script_error", "route": "command", "command": "broken_script",
+                               "match": {"contains_any": ["запусти тестовый скрипт"]}}, *default_rules],
                     "classifier": {"enabled": True, "commands": {"voice_note": "Сохранить голосовую заметку в блокнот"}},
                 },
                 "assistant_tools": {"enabled": False},
@@ -291,7 +294,7 @@ def main():
             if before["airplay"]["state"] != "stopped":
                 raise RuntimeError(f"unexpected initial AirPlay state: {before}")
             report.check(arch, "health", health)
-            for action in ("weather", "music", "timer", "llm", "llm_urls", "command_rule", "command_classifier", "text", "dialogue",
+            for action in ("weather", "music", "timer", "llm", "llm_urls", "command_rule", "command_classifier", "command_failure", "text", "dialogue",
                            "isolation", "reset", "home", "failure", "start", "stop"):
                 def check_action():
                     output = shell(f"{GUEST}/control -action {action} -notes {notes} -timeout 90s", timeout=100)
