@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <title>Панель управления — Quasar Bridge</title>
   <link rel="stylesheet" href="app.css">
+  <script src="theme.js"></script>
   <script src="routing.js" defer></script>
   <script src="account.js" defer></script>
   <script src="app.js" defer></script>
@@ -28,7 +29,13 @@
     <div class="sidebar-note">Управление колонкой<br><span id="version">Версия загружается…</span></div>
   </aside>
   <main id="content" tabindex="-1">
-    <header class="page-header"><div><p class="page-context">Панель управления</p><h1 id="page-title">Обзор</h1></div><div id="connection-state" class="connection-state"><span class="status-dot" aria-hidden="true"></span><span id="connection-text">Подключаемся…</span></div></header>
+    <header class="page-header">
+      <div><p class="page-context">Панель управления</p><h1 id="page-title">Обзор</h1></div>
+      <div class="header-tools">
+        <div id="connection-state" class="connection-state"><span class="status-dot" aria-hidden="true"></span><span id="connection-text">Подключаемся…</span></div>
+        <label class="theme-picker">Тема <select id="panel-theme"><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label>
+      </div>
+    </header>
     <p id="global-message" class="notice" role="status" hidden></p>
     <section id="overview" class="page" aria-labelledby="overview-title">
       <h2 id="overview-title" class="visually-hidden">Состояние Bridge</h2>

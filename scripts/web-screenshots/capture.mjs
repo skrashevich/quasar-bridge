@@ -31,6 +31,26 @@ async function unusedPort() {
   return port;
 }
 
+async function checkTheme(page, output) {
+  const picker = page.getByRole("combobox", { name: "Тема", exact: true });
+  const expectScheme = scheme => page.waitForFunction(expected => getComputedStyle(document.documentElement).colorScheme === expected, scheme);
+  assert.equal(await picker.inputValue(), "system");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expectScheme("dark");
+  await page.screenshot({ path: path.join(output, "web-panel-overview-dark.png"), animations: "disabled" });
+
+  await picker.selectOption("light");
+  await page.reload();
+  await expectScheme("light");
+  assert.equal(await picker.inputValue(), "light");
+  await picker.selectOption("system");
+  await expectScheme("dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expectScheme("light");
+  await picker.selectOption("dark");
+  await expectScheme("dark");
+}
+
 async function checkRouting(page, output) {
   await page.getByRole("link", { name: "Маршрутизация", exact: true }).click();
   await page.getByRole("button", { name: "Добавить правило" }).click();
@@ -96,6 +116,7 @@ async function checkAccount(page) {
   await page.getByRole("link", { name: "Decline" }).click();
   await page.locator("#result").filter({ hasText: "Вход отменён" }).waitFor();
   assert.equal(new URL(page.url()).search, "");
+  assert.equal(await page.locator("html").evaluate(root => getComputedStyle(root).colorScheme), "dark");
   await page.getByRole("link", { name: "Вернуться в панель" }).click();
   await page.getByText("Вход не выполнен", { exact: true }).waitFor();
 
@@ -197,14 +218,17 @@ async function capture(binary, output) {
     await page.locator("#overview-model").filter({ hasText: MODEL }).waitFor();
     await page.screenshot({ path: path.join(output, "web-panel-overview.png"), animations: "disabled" });
 
+    await checkTheme(page, output);
     await checkRouting(page, output);
     await checkAccount(page);
     await page.setViewportSize({ width: 390, height: 844 });
     for (const section of ["overview", "routing", "account"]) {
       await page.goto(url + "#" + section);
       await page.locator("#" + section).waitFor();
+      assert.equal(await page.getByRole("combobox", { name: "Тема", exact: true }).inputValue(), "dark");
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), section + " exceeds mobile width");
     }
+    await page.getByRole("combobox", { name: "Тема", exact: true }).selectOption("system");
     await page.setViewportSize({ width: 1040, height: 1150 });
     await page.getByRole("link", { name: "Чат", exact: true }).click();
     const input = page.getByRole("textbox", { name: "Сообщение" });
