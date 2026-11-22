@@ -159,10 +159,14 @@ func TestHistoryQuestionNeverExecutesQuotedHomeCommand(t *testing.T) {
 type followupHome struct {
 	calls     []string
 	followups [][3]string
+	question  string
 }
 
 func (h *followupHome) Handle(_ context.Context, s string) (string, error) {
 	h.calls = append(h.calls, s)
+	if h.question != "" {
+		return h.question, nil
+	}
 	return "Выключить телевизор или и приставку тоже?", nil
 }
 func (h *followupHome) HandleFollowup(_ context.Context, text, request, question string) (string, error) {

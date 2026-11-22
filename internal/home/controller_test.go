@@ -239,9 +239,11 @@ func TestStateQuestionCannotPlanPhysicalActions(t *testing.T) {
 		}
 		return "Свет выключен.", nil
 	})}
-	answer, err := c.Handle(t.Context(), "Горит ли свет в кабинете?")
-	if err != nil || answer != "Свет выключен." || f.actions != 0 {
-		t.Fatalf("answer=%q err=%v actions=%d", answer, err, f.actions)
+	for _, text := range []string{"Горит ли свет в кабинете?", "Какая сейчас температура на кухне?"} {
+		answer, err := c.Handle(t.Context(), text)
+		if err != nil || answer != "Свет выключен." || f.actions != 0 {
+			t.Fatalf("%q: answer=%q err=%v actions=%d", text, answer, err, f.actions)
+		}
 	}
 }
 
@@ -281,8 +283,12 @@ func TestDegreesScopeWaterHeaterNotSpeakers(t *testing.T) {
 	for text, want := range map[string][]string{
 		"Сделай колонку 40 градусов": {"climate"},
 		"Сделай колонку 37":          {"climate"},
+		"Выставь котёл на 40":        {"climate"},
 		"Сделай колонку погромче":    {"climate", "media_player"},
 		"Включи телевизор":           {"media_player"},
+		"Включи котёл в кухне":       {"climate", "switch"},
+		"Включи горячую воду":        {"climate", "switch"},
+		"Включи газовую колонку":     {"climate", "switch"},
 	} {
 		if got := controlDomains(text); !slices.Equal(got, want) {
 			t.Errorf("%q: %v", text, got)
@@ -290,6 +296,17 @@ func TestDegreesScopeWaterHeaterNotSpeakers(t *testing.T) {
 	}
 	if _, ok := serviceFields["media_player.turn_on"]; !ok {
 		t.Error("TV cannot be switched on")
+	}
+}
+
+func TestHeatSetpointSurvivesRoomAndDeviceClarifications(t *testing.T) {
+	for _, reply := range []string{"на кухне", "колонка слева"} {
+		if got := controlDomains(reply, "Сделай колонку 37", "на первом этаже"); !slices.Equal(got, []string{"climate"}) {
+			t.Errorf("%q: domains=%v", reply, got)
+		}
+	}
+	if got := controlDomains("котёл слева", "Выключи отопление"); !slices.Equal(got, []string{"climate", "switch"}) {
+		t.Errorf("alternate heating switch lost after clarification: domains=%v", got)
 	}
 }
 

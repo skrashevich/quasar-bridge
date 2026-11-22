@@ -132,7 +132,7 @@ func (c *Controller) handle(ctx context.Context, text, request, question string)
 	scope := strings.TrimSpace(request + " " + text)
 	inventory := Controller{Tools: c.Tools, Planner: c.Planner, Domains: c.Domains}
 	if len(inventory.Domains) == 0 {
-		inventory.Domains = controlDomains(scope)
+		inventory.Domains = controlDomains(text, strings.Split(request, "\n")...)
 	}
 	entities, err := inventory.Entities(ctx)
 	if err != nil {
@@ -184,8 +184,9 @@ func (c *Controller) handle(ctx context.Context, text, request, question string)
 	if len(data) > 24000 {
 		return "Уточните комнату и тип устройства: найдено слишком много устройств.", nil
 	}
-	if stateQuestion(text) {
-		answer, err := c.Planner.Complete(ctx, []llm.Message{{Role: "system", Content: "Ответь на вопрос о состоянии умного дома по текущему списку HA. Только 1–2 коротких предложения по-русски. Никаких действий. Для освещения учитывай группы и отдельные светильники; переключатели Adaptive Lighting — настройки автоматики, а не источники света. unavailable/unknown означает отсутствие данных. Не придумывай значения и единицы измерения. Называй устройства по friendly_name, никогда не упоминай entity_id в ответе: его читают вслух."}, {Role: "user", Content: "Устройства: " + string(data) + "\nВопрос: " + text}}, false)
+	originalRequest, _, _ := strings.Cut(request, "\n")
+	if stateQuestion(text) || stateQuestion(originalRequest) {
+		answer, err := c.Planner.Complete(ctx, []llm.Message{{Role: "system", Content: "Ответь на вопрос о состоянии умного дома по текущему списку HA. Только 1–2 коротких предложения по-русски. Никаких действий. Для освещения учитывай группы и отдельные светильники; переключатели Adaptive Lighting — настройки автоматики, а не источники света. unavailable/unknown означает отсутствие данных. Не придумывай значения и единицы измерения. Называй устройства по friendly_name, никогда не упоминай entity_id в ответе: его читают вслух."}, {Role: "user", Content: "Устройства: " + string(data) + followupContext(request, question) + "\nВопрос: " + text}}, false)
 		if err != nil {
 			return "", err
 		}
@@ -346,10 +347,12 @@ func followupContext(request, question string) string {
 	return "\nПредыдущий запрос: " + request + "\nТвой уточняющий вопрос: " + question
 }
 
-var bareWaterHeaterSetpoint = regexp.MustCompile(`(?i)(?:^|\s)(?:сделай|установи|выставь|поставь)\s+(?:газовую\s+)?колонк[а-яё]*\s+(?:на\s+)?[0-9]+(?:[.,][0-9]+)?[.!?]?\s*$`)
+var bareHeatSetpoint = regexp.MustCompile(`(?i)(?:^|\s)(?:сделай|установи|выставь|поставь)\s+(?:(?:газовую\s+)?колонк[а-яё]*|кот[её]л[а-яё]*|горяч[а-яё]*\s+вод[а-яё]*|отоплен[а-яё]*)\s+(?:на\s+)?[0-9]+(?:[.,][0-9]+)?[.!?]?\s*$`)
 
-func controlDomains(text string) []string {
-	s := strings.ToLower(text)
+func controlDomains(text string, earlier ...string) []string {
+	// A room or device name supplied later must not change a bare numeric setpoint.
+	setpoint := bareHeatSetpoint.MatchString(text) || slices.ContainsFunc(earlier, bareHeatSetpoint.MatchString)
+	s := strings.ToLower(strings.Join(append(slices.Clone(earlier), text), " "))
 	domains := []string{}
 	add := func(values ...string) {
 		for _, v := range values {
@@ -379,10 +382,11 @@ func controlDomains(text string) []string {
 	if strings.Contains(s, "телевизор") {
 		add("media_player")
 	}
-	// Only a bare setpoint command ("сделай колонку 37") selects climate;
-	// volume percentages and numbers in device names must not exclude speakers.
-	if strings.Contains(s, "градус") || bareWaterHeaterSetpoint.MatchString(s) || strings.Contains(s, "котел") || strings.Contains(s, "котёл") || strings.Contains(s, "отоплен") || strings.Contains(s, "горяч") {
+	if strings.Contains(s, "градус") || setpoint {
 		add("climate")
+	} else if strings.Contains(s, "котел") || strings.Contains(s, "котёл") || strings.Contains(s, "котл") || strings.Contains(s, "отоплен") || (strings.Contains(s, "горяч") && strings.Contains(s, "вод")) || (strings.Contains(s, "газов") && strings.Contains(s, "колонк")) {
+		// Some boilers expose power as a switch instead of a climate entity.
+		add("climate", "switch")
 	} else if strings.Contains(s, "колонк") {
 		add("climate", "media_player")
 	}
@@ -496,6 +500,8 @@ func (c *Controller) Warm(ctx context.Context, area string) error {
 	return nil
 }
 
+var environmentStateQuestion = regexp.MustCompile(`(?i)(?:какая|какова)\s+(?:[\p{L}-]+\s+){0,4}(?:температур|влажност)`)
+
 func stateQuestion(text string) bool {
 	s := strings.ToLower(text)
 	for _, word := range []string{"включи ", "выключи ", "сделай ", "поставь ", "установи ", "открой ", "закрой ", "прибавь ", "убавь "} {
@@ -503,7 +509,10 @@ func stateQuestion(text string) bool {
 			return false
 		}
 	}
-	for _, part := range []string{"горит ли", "включен ли", "включён ли", "включена ли", "включено ли", "выключен ли", "выключена ли", "какая температур", "какая влажност", "что включено", "что сейчас включено", "состояние", "проверь свет"} {
+	if environmentStateQuestion.MatchString(s) {
+		return true
+	}
+	for _, part := range []string{"горит ли", "работает ли", "включен ли", "включён ли", "включена ли", "включено ли", "выключен ли", "выключена ли", "выключено ли", "что включено", "что сейчас включено", "состояние", "проверь свет"} {
 		if strings.Contains(s, part) {
 			return true
 		}

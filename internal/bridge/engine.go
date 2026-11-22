@@ -6,10 +6,13 @@ import (
 	"errors"
 	"quasarbridge/internal/configvoice"
 	"quasarbridge/internal/dialogue"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"quasarbridge/internal/llm"
 	"quasarbridge/internal/playback"
@@ -24,7 +27,7 @@ type HomeHandler interface {
 	Handle(context.Context, string) (string, error)
 }
 
-// Optional: a handler that can resume its own clarifying question.
+// Only a handler that implements this interface starts a pending clarification.
 type HomeFollowupHandler interface {
 	HandleFollowup(ctx context.Context, text, request, question string) (string, error)
 }
@@ -234,22 +237,27 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		text = e.stripModelPrefix(text)
 		var answer string
 		var err error
+		followup, supportsFollowup := e.Home.(HomeFollowupHandler)
 		q, current := e.takeHomeQuestion(ctx, ticket)
 		if !current {
 			return result, context.Canceled
 		}
-		if f, ok := e.Home.(HomeFollowupHandler); ok && q != nil && decision.Source == "home_followup" {
-			answer, err = f.HandleFollowup(ctx, text, q.request, q.question)
+		if decision.Source == "home_followup" {
+			if q == nil || !supportsFollowup {
+				result.Answer = "Повтори команду целиком, чтобы я мог её выполнить."
+				return result, nil
+			}
+			answer, err = followup.HandleFollowup(ctx, text, q.request, q.question)
 		} else {
 			answer, err = e.Home.Handle(ctx, text)
 		}
 		if !e.homeRequestCurrent(ctx, ticket) {
 			return result, context.Canceled
 		}
-		if err == nil && isQuestion(answer) {
+		if err == nil && supportsFollowup && isQuestion(answer) {
 			request := text
 			if q != nil && decision.Source == "home_followup" {
-				request = q.request + ". " + text
+				request = q.request + "\n" + text
 			}
 			if !e.rememberHomeQuestion(ctx, ticket, request, answer) {
 				return result, context.Canceled
@@ -342,19 +350,19 @@ func (e *Engine) rememberHomeQuestion(ctx context.Context, ticket dialogue.Ticke
 	return true
 }
 
-func (e *Engine) peekHomeQuestion(ctx context.Context, ticket dialogue.Ticket) bool {
+func (e *Engine) peekHomeQuestion(ctx context.Context, ticket dialogue.Ticket) *homeQuestion {
 	e.homeMu.Lock()
 	defer e.homeMu.Unlock()
 	session := e.homeSessionLocked(ctx, ticket)
 	if session == nil {
-		return false
+		return nil
 	}
 	q := session.pending
 	if q != nil && time.Since(q.at) >= homeFollowupTTL {
 		session.pending = nil
-		return false
+		return nil
 	}
-	return q != nil
+	return q
 }
 
 // takeHomeQuestion consumes the pending question: it answers exactly one turn.
@@ -377,6 +385,55 @@ func (e *Engine) takeHomeQuestion(ctx context.Context, ticket dialogue.Ticket) (
 func isQuestion(answer string) bool {
 	a := strings.ToLower(answer)
 	return strings.Contains(a, "?") || strings.Contains(a, "уточни")
+}
+
+var homeActionWords = regexp.MustCompile(`(?:^|[\s\p{P}])(?:` +
+	`включи(?:ть)?|выключи(?:ть)?|включай|выключай|погаси|погасить|открой|открыть|закрой|закрыть|` +
+	`установи(?:ть)?|выставь|выставить|поставь|поставить|сделай|сделать|подними|поднять|опусти(?:ть)?|` +
+	`прибавь|убавь|запусти(?:ть)?|останови(?:ть)?|проиграй|проиграть|воспроизведи|воспроизвести|` +
+	`сыграй|проверь|проверить|покажи|найди|расскажи|объясни|напомни|закажи)(?:те)?(?:$|[\s\p{P}])`)
+var homeReplySelection = regexp.MustCompile(`^(?:(?:да|нет)[\s,]+)?(?:только|кроме|вместе с|в|на|у|без)\s+\p{L}`)
+var homeReplyNumber = regexp.MustCompile(`^[+-]?[0-9]+(?:[.,][0-9]+)?(?:\s*(?:градус[а-я]*|процент[а-я]*|%))?$`)
+
+// Only a selection, location, numeric value or an option in the question
+// may inherit an earlier command and its target.
+func isHomeClarificationReply(text, question string) bool {
+	answer := dialogue.Normalize(text)
+	if answer == "" || homeActionWords.MatchString(answer) {
+		return false
+	}
+	switch answer {
+	case "да", "нет", "оба", "обе", "все", "все сразу", "первый", "второй", "первая", "вторая":
+		return true
+	}
+	const maxAnswerWords = 6
+	if len(strings.Fields(answer)) > maxAnswerWords {
+		return false
+	}
+	if homeReplyNumber.MatchString(answer) || homeReplySelection.MatchString(answer) {
+		return true
+	}
+	// Compare named choices across inflections such as «приставку» and «приставка».
+	words := func(text string) []string {
+		return strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	}
+	stem := func(word string) string {
+		if utf8.RuneCountInString(word) > 4 {
+			return strings.TrimRight(word, "аоуыеиюя")
+		}
+		return word
+	}
+	options := map[string]bool{}
+	for _, word := range words(dialogue.Normalize(question)) {
+		options[stem(word)] = true
+	}
+	answerWords := words(answer)
+	for _, word := range answerWords {
+		if !options[stem(word)] {
+			return false
+		}
+	}
+	return len(answerWords) > 0
 }
 
 func containsOne(text string, needles []string) bool {
@@ -425,7 +482,7 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 			decision.Route = "yandex"
 			decision.Source = "home_disabled"
 		}
-		if decision.Route != "home" {
+		if decision.Route != "home" || decision.Source != "home_followup" {
 			e.takeHomeQuestion(ctx, ticket)
 		}
 		decision.ticket = ticket
@@ -454,20 +511,21 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}
 	}
-	// An explicit non-home rule (timer, music, …) abandons the pending question.
-	if d, ok := p.match(text); ok {
-		if d.Route == "home" && e.peekHomeQuestion(ctx, ticket) {
+	d, matched := p.match(text)
+	var pending *homeQuestion
+	if !matched || d.Route == "home" {
+		pending = e.peekHomeQuestion(ctx, ticket)
+		if pending != nil && isHomeClarificationReply(text, pending.question) {
 			return RouteDecision{Route: "home", Source: "home_followup"}
 		}
+	}
+	if matched {
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
 			d.Route = "music"
 		}
 		return d
 	}
-	if e.peekHomeQuestion(ctx, ticket) {
-		return RouteDecision{Route: "home", Source: "home_followup"}
-	}
-	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
+	if pending == nil && len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue"}
 	}
 	if !p.classifierEnabled {

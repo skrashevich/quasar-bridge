@@ -79,6 +79,143 @@ func TestEarlyRoutesAbandonHomeQuestion(t *testing.T) {
 	}
 }
 
+func TestIndependentHomeCommandDoesNotAnswerPendingQuestion(t *testing.T) {
+	for _, next := range []string{"Выключи свет", "А в кухне выключи свет", "Можешь включить свет на кухне?", "Горит ли свет в кабинете?", "Какая сейчас температура на кухне?"} {
+		t.Run(next, func(t *testing.T) {
+			e := followupTestEngine(true)
+			h := &followupHome{}
+			e.Home = h
+			for _, text := range []string{"Выключи телевизор", next} {
+				if _, err := e.Resolve(t.Context(), text); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(h.calls) != 2 || h.calls[1] != next || len(h.followups) != 0 {
+				t.Fatalf("home calls=%v, followups=%v", h.calls, h.followups)
+			}
+			if _, err := e.Resolve(t.Context(), "оба"); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.followups) != 1 || h.followups[0][1] != next {
+				t.Fatalf("a previous question survived: %v", h.followups)
+			}
+		})
+	}
+}
+
+func TestExpiredHomeQuestionDoesNotResume(t *testing.T) {
+	for _, expiredBeforeDecision := range []bool{true, false} {
+		t.Run(fmt.Sprint(expiredBeforeDecision), func(t *testing.T) {
+			e := followupTestEngine(false)
+			h := &followupHome{}
+			e.Home = h
+			ctx := t.Context()
+			if _, err := e.Resolve(ctx, "Выключи телевизор"); err != nil {
+				t.Fatal(err)
+			}
+			var decision RouteDecision
+			if !expiredBeforeDecision {
+				decision = e.Decide(ctx, "оба")
+				if decision.Source != "home_followup" {
+					t.Fatalf("active clarification not recognized: %+v", decision)
+				}
+			}
+			e.homeMu.Lock()
+			e.homeSessions[dialogue.SpeakerKey(ctx)].pending.at = time.Now().Add(-homeFollowupTTL)
+			e.homeMu.Unlock()
+			if expiredBeforeDecision {
+				decision = e.Decide(ctx, "оба")
+				if decision.Route != "yandex" {
+					t.Fatalf("expired clarification used for routing: %+v", decision)
+				}
+			}
+			result, err := e.ResolveDecision(ctx, "оба", decision)
+			if err != nil || len(h.calls) != 1 || len(h.followups) != 0 {
+				t.Fatalf("result=%+v err=%v calls=%v followups=%v", result, err, h.calls, h.followups)
+			}
+			if !expiredBeforeDecision && result.Answer == "" {
+				t.Fatal("no response after the clarification expired between routing and execution")
+			}
+		})
+	}
+}
+
+func TestHomeHandlerWithoutFollowupKeepsStandaloneContract(t *testing.T) {
+	e := followupTestEngine(true)
+	var calls []string
+	e.Home = homeFunc(func(_ context.Context, text string) (string, error) {
+		calls = append(calls, text)
+		return "Какой телевизор выключить?", nil
+	})
+	if _, err := e.Resolve(t.Context(), "Выключи телевизор"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := e.Resolve(t.Context(), "оба")
+	if err != nil || result.Route != "yandex" || len(calls) != 1 {
+		t.Fatalf("unhandled clarification consumed: result=%+v err=%v calls=%v", result, err, calls)
+	}
+}
+
+func TestStandaloneMusicRequestDoesNotAnswerHomeQuestion(t *testing.T) {
+	e := followupTestEngine(true)
+	h := &followupHome{}
+	e.Home = h
+	if _, err := e.Resolve(t.Context(), "Выключи телевизор"); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Включи фиксики-часики", "оба"} {
+		result, err := e.Resolve(t.Context(), text)
+		if err != nil || result.Route != "yandex" || len(h.calls) != 1 || len(h.followups) != 0 {
+			t.Fatalf("%q consumed by Home: result=%+v err=%v calls=%v followups=%v", text, result, err, h.calls, h.followups)
+		}
+	}
+}
+
+func TestClarificationDoesNotCaptureUnmatchedNewAction(t *testing.T) {
+	e := followupTestEngine(true)
+	e.LLM = completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		return `{"route":"home"}`, nil
+	})
+	h := &followupHome{}
+	e.Home = h
+	for _, text := range []string{"Выключи телевизор", "Погаси свет на кухне"} {
+		if _, err := e.Resolve(t.Context(), text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(h.calls) != 2 || h.calls[1] != "Погаси свет на кухне" || len(h.followups) != 0 {
+		t.Fatalf("unmatched new command captured: calls=%v followups=%v", h.calls, h.followups)
+	}
+}
+
+func TestHomeSelectionCanMatchASharedDeviceRule(t *testing.T) {
+	e := followupTestEngine(true)
+	h := &followupHome{question: "Какой датчик выбрать: датчик температуры или датчик влажности?"}
+	e.Home = h
+	if _, err := e.Resolve(t.Context(), "Проверь датчики в кабинете"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Resolve(t.Context(), "Только датчик температуры"); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.calls) != 1 || len(h.followups) != 1 || h.followups[0][1] != h.calls[0] {
+		t.Fatalf("genuine selection lost Home context: calls=%v followups=%v", h.calls, h.followups)
+	}
+}
+
+func TestHomeClarificationReplyRecognizesContextualFragments(t *testing.T) {
+	for _, reply := range []string{"приставка", "на кухне", "только телевизор", "оба", "37,5 градуса"} {
+		if !isHomeClarificationReply(reply, "Телевизор или приставку?") {
+			t.Errorf("%q did not match a clarification", reply)
+		}
+	}
+	for _, reply := range []string{"включи оба", "на кухне подними шторы", "Погаси свет", "включи фиксики-часики", "приставка 3"} {
+		if isHomeClarificationReply(reply, "Телевизор или приставку 2?") {
+			t.Errorf("%q matched as a clarification", reply)
+		}
+	}
+}
+
 func TestLateHomeAnswerCannotRestoreSupersededQuestion(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("history=%v", enabled), func(t *testing.T) {
