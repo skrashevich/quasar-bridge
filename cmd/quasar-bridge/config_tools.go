@@ -165,9 +165,15 @@ func (c *configurationControl) Get(ctx context.Context, section string) (any, er
 func (c *configurationControl) Set(ctx context.Context, changes map[string]jsontext.Value) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	for path := range changes {
+		if !slices.ContainsFunc(voiceSettings, func(s voiceSetting) bool { return s.Path == path }) {
+			return nil, errors.New("unknown or unavailable configuration path")
+		}
+	}
 	return c.setLocked(ctx, changes, nil)
 }
 
+// Callers pass either approved settings or fixed paths owned by a dedicated editor.
 func (c *configurationControl) setLocked(ctx context.Context, changes map[string]jsontext.Value, expected []byte) (any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -202,11 +208,11 @@ func (c *configurationControl) setLocked(ctx context.Context, changes map[string
 	paths := slices.Sorted(maps.Keys(changes))
 	for _, path := range paths {
 		i := slices.IndexFunc(voiceSettings, func(s voiceSetting) bool { return s.Path == path })
-		if i < 0 {
+		if i < 0 && path != "routing.commands" {
 			return nil, errors.New("unknown or unavailable configuration path")
 		}
-		setting := voiceSettings[i]
-		if setting.Environment != "" {
+		if i >= 0 && voiceSettings[i].Environment != "" {
+			setting := voiceSettings[i]
 			if _, ok := os.LookupEnv(setting.Environment); ok {
 				return nil, fmt.Errorf("%s is overridden by %s; edit runtime environment manually", path, setting.Environment)
 			}

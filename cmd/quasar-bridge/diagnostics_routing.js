@@ -29,6 +29,7 @@ function showRouting() {
   byId("routing-options").querySelector("fieldset").disabled = locked;
   byId("routing-pending").hidden = !data?.pending;
   byId("rule-list").inert = locked;
+  showCommandList(data, locked);
   if (!data) {
     byId("rule-list").replaceChildren();
     return;
@@ -281,27 +282,31 @@ function saveRule(event) {
 
 async function changeRouting(endpoint, body) {
   if (routingView.busy) return;
-  const dialog = byId("rule-dialog");
+  const dialog = document.querySelector("#routing dialog[open]");
   routingView.busy = true;
-  const form = dialog.open ? dialog : byId("routing-options");
+  const form = dialog || byId("routing-options");
   form.inert = true;
   byId("refresh-routing").disabled = true;
   byId("rule-new").disabled = true;
   byId("rule-list").inert = true;
+  byId("command-new").disabled = true;
+  byId("command-list").inert = true;
   byId("routing-options").querySelector("fieldset").disabled = true;
-  const errorId = dialog.open ? "rule-error" : "routing-message";
+  const errorId = dialog?.id === "command-dialog" ? "command-error" : dialog ? "rule-error" : "routing-message";
   message(errorId);
   let applied = false;
   try {
-    await post("api/routing/" + endpoint, body);
+    if (endpoint === "command") await commandRequest("", body);
+    else await post("api/routing/" + endpoint, body);
     applied = true;
-    if (dialog.open) dialog.close();
+    dialog?.close();
     resetRouteTest();
     routingView.data = await request("api/routing");
     message("routing-message", "Изменения сохранены и уже действуют.");
     loadConfig(false);
     loadStatus();
   } catch (error) {
+    if (endpoint === "command" && error.status === 401) requireCommandKey();
     const text = error.status === 409 ? "Настройки изменились. Закройте редактор, обновите список и проверьте изменения перед повторным сохранением." : ruleErrorText(error);
     if (applied) routingView.data = null;
     message(applied ? "routing-message" : errorId, applied ? "Изменения применены. Обновите список, чтобы получить текущее состояние." : text, true);
@@ -313,6 +318,7 @@ async function changeRouting(endpoint, body) {
 }
 
 function setupRouting() {
+  setupCommandEditor();
   routeOptions(byId("default-route"), ["yandex", "llm", "home"]);
   routeOptions(byId("rule-route"), ["yandex", "llm", "home", "command"]);
   byId("rule-route").addEventListener("change", showCommandField);

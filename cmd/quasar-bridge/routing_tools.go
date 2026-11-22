@@ -31,7 +31,7 @@ type routingView struct {
 
 func publicRouting(cfg bridge.RoutingConfig) routingView {
 	ids := slices.Sorted(maps.Keys(cfg.Commands))
-	cfg.Commands = nil // Deployment paths and argv stay out of the panel and LLM tools.
+	cfg.Commands = nil // Only the command editor reads executable paths and arguments.
 	return routingView{cfg, ids}
 }
 
@@ -65,32 +65,40 @@ func (c *configurationControl) GetRouting(ctx context.Context) (any, error) {
 	}{publicRouting(c.active.Routing), publicRouting(next.Routing), active.Revision(), saved.Revision(), !reflect.DeepEqual(c.active.Routing, next.Routing), "first enabled matching rule wins; Bridge configuration administration has priority over these rules", effectiveRoutingBehavior(c.active.Routing), effectiveRoutingBehavior(next.Routing)}, nil
 }
 
-func (c *configurationControl) MutateRouting(ctx context.Context, mutation assistant.RoutingMutation) (any, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *configurationControl) routingForEdit(ctx context.Context, revision string) (config, []byte, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return config{}, nil, err
 	}
 	if c.restartPending() {
-		return nil, errors.New("restart already scheduled; wait for the new process")
+		return config{}, nil, errors.New("restart already scheduled; wait for the new process")
 	}
 	raw, err := os.ReadFile(c.path)
 	if err != nil {
-		return nil, errors.New("cannot read configuration file")
+		return config{}, nil, errors.New("cannot read configuration file")
 	}
 	cfg, err := parseConfig(raw, false)
 	if err != nil {
-		return nil, err
+		return config{}, nil, err
 	}
 	policy, err := bridge.CompileRouting(cfg.Routing)
 	if err != nil {
-		return nil, err
+		return config{}, nil, err
 	}
-	if mutation.ExpectedRevision == "" || mutation.ExpectedRevision != policy.Revision() {
-		return nil, errors.New("routing revision changed; read get_quasar_bridge_routing again before retrying")
+	if revision == "" || revision != policy.Revision() {
+		return config{}, nil, errors.New("routing revision changed; read get_quasar_bridge_routing again before retrying")
 	}
 	if !reflect.DeepEqual(cfg.Routing, c.active.Routing) {
-		return nil, errors.New("routing has unapplied saved changes; explicitly apply or discard them before editing an individual rule")
+		return config{}, nil, errors.New("routing has unapplied saved changes; explicitly apply or discard them first")
+	}
+	return cfg, raw, nil
+}
+
+func (c *configurationControl) MutateRouting(ctx context.Context, mutation assistant.RoutingMutation) (any, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cfg, raw, err := c.routingForEdit(ctx, mutation.ExpectedRevision)
+	if err != nil {
+		return nil, err
 	}
 	rules := cfg.Routing.Rules
 	name := mutation.Name
@@ -178,35 +186,15 @@ func (c *configurationControl) applyRoutingChangesLocked(ctx context.Context, cf
 func (c *configurationControl) ConfigureRouting(ctx context.Context, options assistant.RoutingOptions) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if c.restartPending() {
-		return nil, errors.New("restart already scheduled; wait for the new process")
-	}
 	if options.ClassifierEnabled == nil && options.DefaultRoute == nil && options.ClassifierCommands == nil {
 		return nil, errors.New("at least one routing option is required")
 	}
 	if options.DefaultRoute != nil && !slices.Contains([]string{"llm", "yandex", "home"}, *options.DefaultRoute) {
 		return nil, errors.New("default_route must be llm, yandex or home")
 	}
-	raw, err := os.ReadFile(c.path)
-	if err != nil {
-		return nil, errors.New("cannot read configuration file")
-	}
-	cfg, err := parseConfig(raw, false)
+	cfg, raw, err := c.routingForEdit(ctx, options.ExpectedRevision)
 	if err != nil {
 		return nil, err
-	}
-	policy, err := bridge.CompileRouting(cfg.Routing)
-	if err != nil {
-		return nil, err
-	}
-	if options.ExpectedRevision == "" || options.ExpectedRevision != policy.Revision() {
-		return nil, errors.New("routing revision changed; read get_quasar_bridge_routing again before retrying")
-	}
-	if !reflect.DeepEqual(cfg.Routing, c.active.Routing) {
-		return nil, errors.New("routing has unapplied saved changes; explicitly apply or discard them first")
 	}
 	changes := map[string]jsontext.Value{}
 	if options.ClassifierEnabled != nil || options.DefaultRoute != nil {

@@ -80,6 +80,13 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	if len(cfg.Routing.Commands) == 0 {
 		cfg.Routing.Commands = nil
 	}
+	// An empty argv is omitted when the panel serializes a command catalog.
+	for id, cmd := range cfg.Routing.Commands {
+		if cmd.Args != nil && len(cmd.Args) == 0 {
+			cmd.Args = nil
+			cfg.Routing.Commands[id] = cmd
+		}
+	}
 	if len(cfg.Routing.Classifier.Commands) == 0 {
 		cfg.Routing.Classifier.Commands = nil
 	}

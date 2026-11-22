@@ -9,6 +9,7 @@
 | Обзор колонки в светлой и тёмной темах | `web-panel-overview.png`, `web-panel-overview-dark.png` |
 | Настройки Bridge | `web-panel-settings.png` |
 | Проверка маршрута и пробная фраза внутри редактора правила | `web-panel-routing.png`, `web-panel-rule-editor.png` |
+| Создание внешней команды для голосовых заметок | `web-panel-command-editor.png` |
 | Вход в ChatGPT по адресу колонки и выбор модели подписки | `web-panel-chatgpt-login.png`, `web-panel-chatgpt-model.png` |
 | Чат с ответом на уточняющий вопрос | `web-panel-chat.png` |
 | История на компьютере и телефоне | `web-panel-history.png`, `web-panel-history-mobile.png` |

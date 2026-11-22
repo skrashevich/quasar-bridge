@@ -24,6 +24,9 @@ var diagnosticsJS string
 //go:embed diagnostics_routing.js
 var routingJS string
 
+//go:embed diagnostics_commands.js
+var commandsJS string
+
 //go:embed diagnostics_account.js
 var accountJS string
 
@@ -118,6 +121,7 @@ func registerDiagnostics(mux *http.ServeMux, logs *diagnosticLog, status func() 
 		{"/diagnostics/{$}", "text/html; charset=utf-8", diagnosticsHTML},
 		{"/diagnostics/app.js", "text/javascript; charset=utf-8", diagnosticsJS},
 		{"/diagnostics/routing.js", "text/javascript; charset=utf-8", routingJS},
+		{"/diagnostics/commands.js", "text/javascript; charset=utf-8", commandsJS},
 		{"/diagnostics/account.js", "text/javascript; charset=utf-8", accountJS},
 		{"/diagnostics/callback.js", "text/javascript; charset=utf-8", callbackJS},
 		{"/diagnostics/theme.js", "text/javascript; charset=utf-8", themeJS},

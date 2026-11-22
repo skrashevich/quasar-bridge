@@ -144,6 +144,24 @@ async function checkRouting(page, output) {
   await page.getByRole("button", { name: "Изменить правило Свет в мастерской" }).waitFor({ state: "detached" });
 }
 
+async function captureCommandEditor(page, output) {
+  await page.getByRole("button", { name: "Добавить команду" }).click();
+  const dialog = page.getByRole("dialog", { name: "Новая внешняя команда" });
+  await dialog.getByLabel("ID команды").fill("voice_note");
+  await dialog.getByLabel("Тайм-аут").fill("5");
+  await dialog.getByLabel("Путь к программе").fill("/data/opt/quasar-bridge/commands/voice-note");
+  await dialog.getByRole("button", { name: "Добавить аргумент" }).click();
+  await dialog.getByLabel("Аргумент программы").fill("/data/opt/quasar-bridge/notes.jsonl");
+  await dialog.getByLabel("Когда выбирать эту команду").fill("Сохранить голосовую заметку в блокнот");
+  await dialog.getByRole("heading").click();
+  await dialog.screenshot({ path: path.join(output, "web-panel-command-editor.png"), animations: "disabled" });
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await dialog.evaluate(d => d.scrollWidth <= d.clientWidth + 1), "mobile command editor overflow");
+  await dialog.getByRole("button", { name: "Закрыть редактор команды" }).click();
+  await page.setViewportSize(viewport);
+}
+
 async function checkAccount(page, output) {
   await page.getByRole("link", { name: "ChatGPT", exact: true }).click();
   await page.getByText("Вход не выполнен", { exact: true }).waitFor();
@@ -384,6 +402,7 @@ async function capture(binary, output) {
     await page.getByRole("link", { name: "Редактор правил маршрутизации" }).waitFor();
     await page.screenshot({ path: path.join(output, "web-panel-settings.png"), animations: "disabled" });
     await checkRouting(page, output);
+    await captureCommandEditor(page, output);
     await checkAccount(page, output);
     await checkModelPicker(page, output);
     await page.setViewportSize({ width: 390, height: 844 });

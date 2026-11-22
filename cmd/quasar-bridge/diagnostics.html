@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="app.css">
   <script src="theme.js"></script>
   <script src="routing.js" defer></script>
+  <script src="commands.js" defer></script>
   <script src="account.js" defer></script>
   <script src="app.js" defer></script>
 </head>
@@ -74,6 +75,10 @@
       <p id="routing-message" class="notice" role="status" hidden></p>
       <p id="routing-pending" class="notice" hidden>В файле есть неприменённые изменения маршрутизации. Проверка сравнит обе версии. <a href="#settings" data-settings-filter="routing">Открыть сохранённые настройки</a></p>
       <ol id="rule-list" class="rules"></ol>
+      <section aria-labelledby="commands-title">
+        <div class="section-heading"><div><h2 id="commands-title">Внешние команды</h2><p class="muted small">Программы на устройстве с Bridge, которые можно назначить правилу или классификатору.</p></div><button id="command-new" type="button" disabled>Добавить команду</button></div>
+        <ul id="command-list" class="rules"></ul>
+      </section>
       <form id="routing-options" class="surface"><h2>Если правила не подошли</h2><fieldset disabled><label class="switch-label"><input id="classifier-enabled" type="checkbox"> Поручить выбор обработчика модели</label>
         <label>Маршрут при выключенном классификаторе<select id="default-route"></select></label><p id="classifier-help" class="muted small"></p>
         <div id="classifier-commands" hidden><h3>Внешние команды для классификатора</h3>
@@ -85,7 +90,7 @@
         <form id="rule-editor">
         <div class="rule-grid"><label>Название<input id="rule-name" required></label><label>Обработчик<select id="rule-route"></select></label></div>
         <div id="rule-command-fields" hidden><label>Внешняя команда<select id="rule-command" aria-describedby="rule-command-help"></select></label>
-          <p class="muted small" id="rule-command-help">Зарегистрируйте программу в <code>routing.commands</code> файла <code>config.json</code> и примените настройки. Bridge передаст запрос в stdin и озвучит текст из stdout.</p>
+          <p class="muted small" id="rule-command-help">Добавить или изменить программу можно в разделе «Внешние команды» на этой странице.</p>
         </div>
         <div class="rule-grid"><label>Место в списке<select id="rule-before"></select></label><label class="switch-label"><input type="checkbox" id="rule-enabled" checked> Правило включено</label></div>
         <h3>Условия совпадения</h3><p class="muted small">Заполните хотя бы одно условие для совпадения. Разные условия должны выполняться одновременно. В списках пишите каждую фразу с новой строки.</p>
@@ -102,6 +107,29 @@
         </form>
         <p id="rule-error" class="notice error" role="alert" hidden></p>
         <div class="dialog-actions"><button id="rule-delete" type="button" class="quiet delete-button" hidden>Удалить правило…</button><button id="rule-save" form="rule-editor" type="submit" class="primary">Сохранить и применить</button></div>
+      </dialog>
+      <dialog id="command-dialog" aria-labelledby="command-title">
+        <header class="section-heading"><h2 id="command-title">Новая внешняя команда</h2><button id="command-close" type="button" class="quiet" aria-label="Закрыть редактор команды">Закрыть</button></header>
+        <p id="command-loading" class="muted" role="status" hidden>Загружаем команду…</p>
+        <form id="command-unlock" hidden>
+          <p>Для управления программами по сети нужен ключ владельца. На колонке он хранится рядом с <code>config.json</code> в файле <code>command-editor.key</code>. Через SSH-туннель редактор открывается сразу.</p>
+          <label>Ключ редактора<input id="command-key" type="password" autocomplete="current-password" required></label>
+          <button type="submit" class="primary">Открыть редактор</button>
+        </form>
+        <form id="command-editor" hidden>
+          <div class="rule-grid">
+            <label>ID команды<input id="command-id" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}" title="От 1 до 64 латинских букв, цифр, точек, дефисов и подчёркиваний. Первый символ — буква или цифра." placeholder="voice_note" spellcheck="false"></label>
+            <label>Тайм-аут, секунды<input id="command-timeout" type="number" min="0.001" max="60" step="0.001" placeholder="10" aria-describedby="command-timeout-help"><small id="command-timeout-help" class="muted">По умолчанию 10, максимум 60.</small></label>
+          </div>
+          <label>Путь к программе<input id="command-path" required pattern="/.*" title="Укажите абсолютный путь на устройстве с Bridge." placeholder="/data/opt/quasar-bridge/commands/voice-note" spellcheck="false" autocapitalize="none"></label>
+          <fieldset class="command-arguments"><legend>Аргументы</legend><p class="muted small">Каждая строка передаётся программе как один аргумент. Пробелы внутри сохраняются.</p>
+            <div id="command-args"></div><button id="command-arg-add" type="button" class="quiet">Добавить аргумент</button>
+          </fieldset>
+          <label>Когда выбирать эту команду <span class="optional">(необязательно)</span><textarea id="command-description" rows="2" placeholder="Например, пользователь просит записать заметку"></textarea></label>
+          <p class="muted small">Это описание получает классификатор. Пустое поле оставляет команду доступной только для правил.</p>
+          <div class="dialog-actions"><button id="command-delete" type="button" class="quiet delete-button" hidden>Удалить команду…</button><button type="submit" class="primary">Сохранить и применить</button></div>
+        </form>
+        <p id="command-error" class="notice error" role="alert" hidden></p>
       </dialog>
     </section>
     <section id="account" class="page" aria-label="Подписка ChatGPT" hidden>

@@ -301,9 +301,19 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 .rule-off .rule-copy strong,.rule-off .rule-target { color:var(--muted); }
 #routing-options fieldset { border:0; margin:0; padding:0; max-width:480px; }
 #classifier-help { margin:10px 0 16px; }
-#rule-dialog { padding:22px 24px; border:1px solid var(--line); border-radius:12px; background:var(--surface); color:var(--ink); width:min(680px,94vw); max-height:92dvh; }
-#rule-dialog::backdrop { background:rgba(15,40,53,.55); }
-#rule-dialog .section-heading { margin-bottom:16px; }
+#routing dialog { padding:22px 24px; border:1px solid var(--line); border-radius:12px; background:var(--surface); color:var(--ink); width:min(680px,94vw); max-height:92dvh; }
+#routing dialog::backdrop { background:rgba(15,40,53,.55); }
+#routing dialog .section-heading { margin-bottom:16px; }
+.command-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:13px 18px; }
+.command-row+.command-row { border-top:1px solid var(--line); }
+.command-row .rule-copy { min-width:0; }
+.command-arguments { border:0; margin:18px 0; padding:0; }
+.command-arguments legend { font-size:14px; font-weight:600; }
+.command-arguments p,#command-editor>p { margin:4px 0 12px; }
+.command-arg { display:flex; gap:8px; align-items:center; margin:0 0 8px; }
+.command-arg textarea { flex:1; min-width:0; }
+#command-unlock button { margin-top:14px; }
+#command-timeout-help { display:block; margin-top:4px; font-weight:400; }
 #rule-preview { margin-top:18px; padding:14px; border:1px solid var(--notice-line); border-radius:8px; background:var(--tint); }
 #rule-preview h3 { margin:0; }
 #rule-preview .small { margin:4px 0 12px; }
@@ -345,7 +355,7 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
   .rule-row button { grid-column:3; grid-row:2; font-size:12px; padding:6px 10px; }
   .rule-target { grid-column:3; grid-row:1; }
   .rule-order { grid-column:1; grid-row:1/3; }
-  #rule-dialog { padding:16px; }
+  #routing dialog { padding:16px; }
   .rule-group-row { align-items:start; flex-direction:column; }
   .rule-group-row label { width:100%; }
 }

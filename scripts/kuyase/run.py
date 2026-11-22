@@ -259,9 +259,20 @@ def main():
                     if shell(f"cat {notes}") != before:
                         raise RuntimeError("routing preview executed the voice-note command")
 
-                for name in ("overview", "routing", "settings", "chat", "history", "airplay", "logs", "account", "access"):
-                    report.check(arch, "web-" + name, check_routing_panel if name == "routing"
-                                 else lambda: browser_case(name, panel, out, arch))
+                def check_commands_panel():
+                    before = shell(f"cat {notes}").splitlines()
+                    browser_case("commands", panel, out, arch)
+                    after = shell(f"cat {notes}").splitlines()
+                    if len(after) != len(before) + 1 or after[:-1] != before:
+                        raise RuntimeError("expected a single note from the edited web command")
+                    note = json.loads(after[-1])
+                    if (note["text"], note["command"], note["rule"]) != ("Запись из панели купить кофе", "web_note_edited", "Заметки из панели"):
+                        raise RuntimeError(f"unexpected note from the web chat: {note}")
+
+                report.check(arch, "web-routing", check_routing_panel)
+                report.check(arch, "web-commands", check_commands_panel)
+                for name in ("overview", "settings", "chat", "history", "airplay", "logs", "account", "access"):
+                    report.check(arch, "web-" + name, lambda: browser_case(name, panel, out, arch))
 
             report.check(arch, "web-models", lambda: check_model_picker(arch, out, launch))
 

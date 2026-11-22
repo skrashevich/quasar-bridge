@@ -120,6 +120,85 @@ async function settings(page) {
   }
 }
 
+async function commands(page) {
+  await nav(page, "Маршрутизация");
+  const example = (await api(page, "routing/command?id=voice_note")).command;
+  const dialog = page.getByRole("dialog");
+  const save = () => dialog.getByRole("button", { name: "Сохранить и применить" }).click();
+  const createID = "web_note";
+  const editedID = "web_note_edited";
+  const rule = "Заметки из панели";
+  const phrase = "Запись из панели купить кофе";
+  await page.getByRole("button", { name: "Добавить команду" }).click();
+  await dialog.getByLabel("ID команды").fill(createID);
+  await dialog.getByLabel("Путь к программе").fill("/bin/cat");
+  await dialog.getByLabel("Когда выбирать эту команду", { exact: false }).fill("Добавить заметку из панели");
+  await save();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal((await api(page, "routing/command?id=" + createID)).command.path, "/bin/cat");
+
+  await page.getByRole("button", { name: "Добавить правило" }).click();
+  await dialog.getByLabel("Название").fill(rule);
+  await dialog.getByLabel("Обработчик").selectOption("command");
+  await dialog.getByLabel("Внешняя команда").selectOption(createID);
+  await dialog.getByLabel("Начинается с одной из фраз").fill("запись из панели");
+  await save();
+  await dialog.waitFor({ state: "hidden" });
+
+  await page.getByRole("button", { name: "Изменить команду " + createID }).click();
+  await dialog.getByLabel("ID команды").fill(editedID);
+  await dialog.getByLabel("Путь к программе").fill(example.path);
+  await dialog.getByLabel("Тайм-аут", { exact: false }).fill("2.5");
+  const args = [example.args[0], "аргумент с пробелами", ""];
+  for (const arg of args) {
+    await dialog.getByRole("button", { name: "Добавить аргумент" }).click();
+    await dialog.getByRole("textbox", { name: "Аргумент программы" }).last().fill(arg);
+  }
+  await save();
+  await dialog.waitFor({ state: "hidden" });
+  await page.reload();
+  const edit = page.getByRole("button", { name: "Изменить команду " + editedID });
+  await edit.click();
+  await dialog.getByLabel("Путь к программе").waitFor();
+  assert.equal(await dialog.getByLabel("Путь к программе").inputValue(), example.path);
+  assert.deepEqual(await dialog.getByRole("textbox", { name: "Аргумент программы" }).evaluateAll(fields => fields.map(f => f.value)), args);
+  const saved = await api(page, "routing/command?id=" + editedID);
+  assert.deepEqual(saved.command, { path: example.path, args, timeout_ms: 2500 });
+  const { active, pending } = await api(page, "routing");
+  assert.equal(pending, false);
+  assert.equal(active.command_ids.includes(createID), false);
+  assert.equal(active.rules.find(r => r.name === rule).command, editedID);
+  assert.equal(active.classifier.commands[editedID], "Добавить заметку из панели");
+  assert.equal(active.classifier.commands[createID], undefined);
+  const remove = async () => {
+    page.once("dialog", d => d.accept());
+    await dialog.getByRole("button", { name: "Удалить команду…" }).click();
+  };
+  await remove();
+  await dialog.getByRole("alert").filter({ hasText: rule }).waitFor();
+  await dialog.getByRole("button", { name: "Закрыть редактор команды" }).click();
+
+  await nav(page, "Чат");
+  await page.getByRole("textbox", { name: "Сообщение" }).fill(phrase);
+  const [response] = await Promise.all([
+    page.waitForResponse(r => r.url().endsWith("/api/query")),
+    page.getByRole("button", { name: "Отправить" }).click()
+  ]);
+  assert.equal((await response.json()).route, "command");
+  await page.locator("#chat-messages .from-assistant").getByText("Заметка сохранена.", { exact: true }).waitFor();
+  await nav(page, "Маршрутизация");
+  await page.getByRole("button", { name: "Изменить правило " + rule }).click();
+  page.once("dialog", d => d.accept());
+  await dialog.getByRole("button", { name: "Удалить правило…" }).click();
+  await dialog.waitFor({ state: "hidden" });
+  await edit.click();
+  await remove();
+  await dialog.waitFor({ state: "hidden" });
+  const final = (await api(page, "routing")).active;
+  assert.equal(final.command_ids.includes(editedID), false);
+  assert.equal(final.classifier.commands?.[editedID], undefined);
+}
+
 async function chat(page) {
   await nav(page, "Чат");
   const messages = page.locator("#chat-messages");
@@ -256,7 +335,7 @@ async function access(page, panelResponse) {
   assert.deepEqual((await api(page, "config")).settings.find(s => s.path === original.path), original);
 }
 
-const scenarios = { overview, routing, settings, chat, history, airplay, logs, account, models, access };
+const scenarios = { overview, routing, commands, settings, chat, history, airplay, logs, account, models, access };
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage({ locale: "ru-RU" });
