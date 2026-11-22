@@ -91,7 +91,7 @@ def check_lan_command_editor(panel):
         if not data:
             return False
         view = json.loads(data)
-        return bool(view.get("csrf_token")) and view.get("command_directory") == f"{GUEST}/commands"
+        return bool(view.get("csrf_token"))
 
     def network(enabled):
         for path, data in (("config", {"changes": {"diagnostics.network_access": enabled}}),
@@ -238,6 +238,14 @@ def main():
             raise RuntimeError("connected to wrong station VM")
         (out / "guest.txt").write_text(shell("uname -a; cat /tmp/quasar-emu-hw.json"))
         shell(f"mkdir -p {GUEST}/commands && chmod 700 {GUEST} {GUEST}/commands")
+        # Only this verified VM replaces its local audio sink. The HTTP client
+        # must recover the number from the actual PCM written by Bridge.
+        speaker = f"{GUEST}/test-speaker"
+        shell(f"mkdir -p {speaker} && chmod 700 {speaker}")
+        player = out / "aplay"
+        player.write_text(f"#!/bin/sh\nset -eu\numask 077\ncat > {speaker}/prompt.part\nmv {speaker}/prompt.part {speaker}/prompt.pcm\n")
+        push(player, speaker + "/aplay")
+        shell(f"chmod 700 {speaker}/aplay")
         push(build / "kuyase-control", GUEST + "/control")
         push(ROOT / "docs/examples/voice-note", GUEST + "/commands/voice-note")
         shell(f"chmod 755 {GUEST}/control {GUEST}/commands/voice-note")
@@ -279,7 +287,7 @@ def main():
                 shell(f"kill $(cat {GUEST}/mock.pid)")
                 mock.wait(timeout=15)
                 continue
-            command = ("export GOMAXPROCS=2 QUASAR_HOME_MCP_URL=http://127.0.0.1:18444/mcp; "
+            command = (f"export PATH={speaker}:$PATH GOMAXPROCS=2 QUASAR_HOME_MCP_URL=http://127.0.0.1:18444/mcp; "
                        f"echo $$ >{GUEST}/bridge.pid; exec {GUEST}/quasar-bridge "
                        f"-config {GUEST}/config.json >{GUEST}/bridge.log 2>&1")
             bridge = launch(ADB + ["shell", command], f"{arch}-transport.log")

@@ -83,6 +83,7 @@ var voiceSettings = []voiceSetting{
 }
 
 type configurationControl struct {
+	approvals        commandApprovals
 	mu               sync.Mutex
 	path             string
 	active           config

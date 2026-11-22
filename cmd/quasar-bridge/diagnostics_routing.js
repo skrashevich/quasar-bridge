@@ -296,8 +296,18 @@ async function changeRouting(endpoint, body) {
   message(errorId);
   let applied = false;
   try {
-    if (endpoint === "command") await commandRequest("", body);
-    else await post("api/routing/" + endpoint, body);
+    if (endpoint === "command") {
+      if (body.command) {
+        byId("command-loading").textContent = "Проверяем команду. Если требуется код, его произнесёт колонка…";
+        byId("command-loading").hidden = false;
+      }
+      const result = await commandRequest("", body);
+      if (result.status === "confirmation_required") {
+        showCommandConfirmation(result, body);
+        return;
+      }
+      commandEditor.ticket = "";
+    } else await post("api/routing/" + endpoint, body);
     applied = true;
     dialog?.close();
     resetRouteTest();
@@ -312,6 +322,10 @@ async function changeRouting(endpoint, body) {
   } finally {
     routingView.busy = false;
     form.inert = false;
+    if (endpoint === "command") {
+      byId("command-loading").hidden = true;
+      if (commandEditor.ticket) byId("command-code").focus();
+    }
     showRouting();
   }
 }

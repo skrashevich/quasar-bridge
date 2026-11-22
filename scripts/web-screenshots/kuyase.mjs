@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { declineAccountLogin } from "./account.mjs";
@@ -120,6 +122,17 @@ async function settings(page) {
   }
 }
 
+function heardCode() {
+  const reader = fileURLToPath(new URL("../kuyase/read-command-prompt.py", import.meta.url));
+  return execFileSync("python3", [reader], { encoding: "utf8", timeout: 15000 }).trim();
+}
+
+async function confirmCommand(dialog) {
+  const input = dialog.getByLabel("Код с колонки");
+  await input.waitFor();
+  await input.fill(heardCode());
+  await dialog.getByRole("button", { name: "Подтвердить", exact: true }).click();
+}
 async function commands(page) {
   await nav(page, "Маршрутизация");
   const example = (await api(page, "routing/command?id=voice_note")).command;
@@ -133,11 +146,14 @@ async function commands(page) {
   await page.getByRole("button", { name: "Добавить команду" }).click();
   assert.equal(await dialog.locator('input[type="password"]').count(), 0);
   await dialog.getByLabel("ID команды").fill(createID);
-  await dialog.getByLabel("Путь к программе").fill("/bin/cat");
+  await dialog.getByLabel("Путь к программе").fill("/bin/date");
   await dialog.getByLabel("Когда выбирать эту команду", { exact: false }).fill(description);
   await save();
+  await dialog.getByLabel("Код с колонки").waitFor();
+  assert.ok(!(await api(page, "routing")).active.command_ids.includes(createID));
+  await confirmCommand(dialog);
   await dialog.waitFor({ state: "hidden" });
-  assert.equal((await api(page, "routing/command?id=" + createID)).command.path, "/bin/cat");
+  assert.equal((await api(page, "routing/command?id=" + createID)).command.path, "/bin/date");
   await page.locator("#command-list").getByText(description, { exact: true }).waitFor();
 
   await page.getByRole("button", { name: "Добавить правило" }).click();
@@ -158,6 +174,7 @@ async function commands(page) {
     await dialog.getByRole("textbox", { name: "Аргумент программы" }).last().fill(arg);
   }
   await save();
+  await confirmCommand(dialog);
   await dialog.waitFor({ state: "hidden" });
   await page.reload();
   const edit = page.getByRole("button", { name: "Изменить команду " + editedID });
@@ -370,7 +387,17 @@ async function access(page, panelResponse) {
     assert.ok(other.csrf_token && other.csrf_token !== before.csrf_token);
     const headers = { ...header, Origin: editor.origin };
     assert.equal((await second.request.post(editor.href, { headers, data: command })).status(), 403);
-    assert.equal((await page.request.post(editor.href, { headers, data: command })).status(), 200);
+    const pending = await page.request.post(editor.href, { headers, data: command });
+    assert.equal(pending.status(), 202);
+    const ticket = await pending.json();
+    assert.deepEqual(Object.keys(ticket).sort(), ["challenge_id", "expires_in", "status"]);
+    assert.equal((await api(page, "routing/command")).revision, before.revision);
+    const confirm = { action: "confirm", challenge_id: ticket.challenge_id, code: heardCode() };
+    const otherHeaders = { Origin: editor.origin, "X-Quasar-CSRF": other.csrf_token };
+    assert.equal((await second.request.post(editor.href, { headers: otherHeaders, data: confirm })).status(), 410);
+    assert.equal((await page.request.post(editor.href, { headers: { Origin: editor.origin }, data: confirm })).status(), 403);
+    assert.equal((await page.request.post(editor.href, { headers, data: confirm })).status(), 200);
+    assert.equal((await page.request.post(editor.href, { headers, data: confirm })).status(), 410);
     const saved = await second.request.get(editor.href + "?id=" + command.id);
     assert.equal(saved.status(), 200);
     const view = await saved.json();

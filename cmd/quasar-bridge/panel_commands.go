@@ -12,11 +12,8 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/skrashevich/quasar-bridge/internal/bridge"
 )
@@ -35,9 +32,8 @@ func (c *configurationControl) commandEditor() http.HandlerFunc {
 			return
 		}
 		token := commandFormToken(w, r, secret)
-		_, local := diagnosticClient(r)
 		if r.Method != http.MethodPost {
-			value, err := c.commandForPanel(r.URL.Query().Get("id"), token, local)
+			value, err := c.commandForPanel(r.URL.Query().Get("id"), token)
 			writeDiagnosticResult(w, value, err)
 			return
 		}
@@ -46,11 +42,47 @@ func (c *configurationControl) commandEditor() http.HandlerFunc {
 			writeDiagnosticError(w, http.StatusForbidden, "Откройте редактор заново и повторите сохранение.")
 			return
 		}
-		var edit commandEdit
-		if readDiagnosticJSON(w, r, &edit) {
-			value, err := c.editCommand(r.Context(), edit, local)
-			writeDiagnosticResult(w, value, err)
+		var form struct {
+			commandEdit
+			ChallengeID string `json:"challenge_id,omitempty"`
+			Code        string `json:"code,omitempty"`
 		}
+		if !readDiagnosticJSON(w, r, &form) {
+			return
+		}
+		if form.Action == "confirm" || form.Action == "cancel" {
+			if form.commandEdit != (commandEdit{Action: form.Action}) || form.ChallengeID == "" || (form.Action == "cancel" && form.Code != "") {
+				writeDiagnosticError(w, http.StatusBadRequest, "При подтверждении можно передать только номер запроса и код.")
+				return
+			}
+			edit, err := c.approvals.finish(c.path, token, form.ChallengeID, form.Code, form.Action == "cancel")
+			if err != nil {
+				writeApprovalError(w, err)
+				return
+			}
+			if form.Action == "cancel" {
+				writeDiagnosticJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+				return
+			}
+			value, err := c.editCommand(r.Context(), edit, true)
+			writeDiagnosticResult(w, value, err)
+			return
+		}
+		if form.Code != "" || form.ChallengeID != "" {
+			writeDiagnosticError(w, http.StatusBadRequest, "Подтвердите изменение отдельным запросом.")
+			return
+		}
+		value, err := c.editCommand(r.Context(), form.commandEdit, false)
+		if errors.Is(err, errCommandApprovalRequired) {
+			challenge, err := c.approvals.begin(r.Context(), c.path, token, form.commandEdit)
+			if err != nil {
+				writeApprovalError(w, err)
+				return
+			}
+			writeDiagnosticJSON(w, http.StatusAccepted, challenge)
+			return
+		}
+		writeDiagnosticResult(w, value, err)
 	}
 }
 
@@ -85,78 +117,22 @@ type commandEdit struct {
 	ExpectedRevision string                 `json:"expected_revision"`
 }
 
-func (c *configurationControl) commandDirectory() (string, error) {
-	return filepath.Abs(filepath.Join(filepath.Dir(c.path), "commands"))
-}
-
-// Local installation grants a helper its web-callable interface. For programs
-// elsewhere, the panel can reuse an invocation already present in the configuration.
-func (c *configurationControl) validatePanelProgram(cmd bridge.RoutingCommand) error {
-	dir, err := c.commandDirectory()
-	if err != nil {
-		return err
-	}
-	if filepath.Dir(cmd.Path) == dir && filepath.Clean(cmd.Path) == cmd.Path {
-		for _, path := range []string{filepath.Dir(dir), dir, cmd.Path} {
-			info, err := os.Lstat(path)
-			if err != nil || info.Mode().Perm()&0022 != 0 {
-				return fmt.Errorf("Проверьте, что программа установлена в %s и только владелец может её изменять.", dir)
-			}
-			owner := info.Sys().(*syscall.Stat_t).Uid
-			if owner != 0 && owner != uint32(os.Geteuid()) {
-				return errors.New("Программа и её каталог должны принадлежать владельцу службы или root.")
-			}
-			if path == cmd.Path {
-				if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-					return errors.New("Выберите обычный исполняемый файл в каталоге программ.")
-				}
-			} else if !info.IsDir() {
-				return errors.New("Каталог программ должен быть обычным каталогом.")
-			}
-		}
-		return nil
-	}
-	for _, configured := range c.active.Routing.Commands {
-		if configured.Path == cmd.Path && slices.Equal(configured.Args, cmd.Args) {
-			return nil
-		}
-	}
-	return fmt.Errorf("Установите программу в %s или зарегистрируйте этот путь и аргументы через SSH-туннель.", dir)
-}
-
-func (c *configurationControl) commandForPanel(id, csrfToken string, local bool) (any, error) {
+func (c *configurationControl) commandForPanel(id, csrfToken string) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r := c.active.Routing
 	view := struct {
 		Revision    string                 `json:"revision"`
 		CSRFToken   string                 `json:"csrf_token"`
-		Directory   string                 `json:"command_directory,omitempty"`
 		Programs    []string               `json:"programs,omitempty"`
 		Command     *bridge.RoutingCommand `json:"command,omitempty"`
 		Description string                 `json:"description,omitempty"`
 	}{Revision: c.engine.RoutingStatus().Revision, CSRFToken: csrfToken}
-	if !local {
-		dir, err := c.commandDirectory()
-		if err != nil {
-			return nil, err
-		}
-		view.Directory = dir
-		for _, command := range r.Commands {
-			view.Programs = append(view.Programs, command.Path)
-		}
-		if info, err := os.Lstat(dir); err == nil && info.IsDir() {
-			files, _ := os.ReadDir(dir)
-			for _, file := range files {
-				program := bridge.RoutingCommand{Path: filepath.Join(dir, file.Name())}
-				if c.validatePanelProgram(program) == nil {
-					view.Programs = append(view.Programs, program.Path)
-				}
-			}
-		}
-		slices.Sort(view.Programs)
-		view.Programs = slices.Compact(view.Programs)
+	for _, command := range r.Commands {
+		view.Programs = append(view.Programs, command.Path)
 	}
+	slices.Sort(view.Programs)
+	view.Programs = slices.Compact(view.Programs)
 	if id != "" {
 		command, ok := r.Commands[id]
 		if !ok {
@@ -167,7 +143,7 @@ func (c *configurationControl) commandForPanel(id, csrfToken string, local bool)
 	return view, nil
 }
 
-func (c *configurationControl) editCommand(ctx context.Context, edit commandEdit, local bool) (any, error) {
+func (c *configurationControl) editCommand(ctx context.Context, edit commandEdit, confirmed bool) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	cfg, raw, err := c.routingForEdit(ctx, edit.ExpectedRevision)
@@ -210,11 +186,6 @@ func (c *configurationControl) editCommand(ctx context.Context, edit commandEdit
 	} else {
 		if edit.Command == nil {
 			return nil, errors.New("Укажите программу для запуска.")
-		}
-		if !local {
-			if err := c.validatePanelProgram(*edit.Command); err != nil {
-				return nil, err
-			}
 		}
 		if len(edit.Command.Args) == 0 {
 			edit.Command.Args = nil
@@ -260,6 +231,15 @@ func (c *configurationControl) editCommand(ctx context.Context, edit commandEdit
 	changes["routing.commands"], _ = json.Marshal(r.Commands)
 	if !maps.Equal(c.active.Routing.Classifier.Commands, r.Classifier.Commands) {
 		changes["routing.classifier.commands"], _ = json.Marshal(r.Classifier.Commands)
+	}
+	if edit.Command != nil && !confirmed {
+		previous := c.active.Routing.Commands[edit.OriginalID]
+		if edit.Action == "create" || previous.Path != edit.Command.Path || !slices.Equal(previous.Args, edit.Command.Args) {
+			if _, err := bridge.CompileRouting(*r); err != nil {
+				return nil, err
+			}
+			return nil, errCommandApprovalRequired
+		}
 	}
 	return c.applyRoutingChangesLocked(ctx, cfg, raw, changes)
 }

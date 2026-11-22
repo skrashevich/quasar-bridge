@@ -2,13 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json/v2"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/skrashevich/quasar-bridge/internal/bridge"
 )
@@ -21,7 +26,9 @@ func TestCommandEditorBrowserAccess(t *testing.T) {
 	const origin = "http://192.0.2.1:2704"
 	const client = "192.0.2.2:3456"
 	revision := c.engine.RoutingStatus().Revision
-	example := c.active.Routing.Commands["note"]
+	var heard int
+	c.approvals.speak = func(_ context.Context, n int) error { heard = n; return nil }
+	example := bridge.RoutingCommand{Path: "/usr/bin/date", Args: []string{"+%F"}}
 	body, err := json.Marshal(commandEdit{Action: "create", ID: "example", Command: &example, ExpectedRevision: revision})
 	if err != nil {
 		t.Fatal(err)
@@ -129,31 +136,56 @@ func TestCommandEditorBrowserAccess(t *testing.T) {
 	if after, err := os.ReadFile(c.path); err != nil || !bytes.Equal(after, before) || c.engine.RoutingStatus().Revision != revision {
 		t.Fatal("a rejected request modified the configuration", err)
 	}
-	if w := request("POST", "192.0.2.9:9221", origin, h); w.Code != http.StatusOK || c.engine.RoutingStatus().Revision == revision {
-		t.Fatalf("same browser could not save after an address change: %d", w.Code)
+	if heard != 0 {
+		t.Fatal("CSRF rejection played a code")
 	}
+	w := request("POST", "192.0.2.9:9221", origin, h)
+	var ticket commandTicket
+	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &ticket) != nil || ticket.ID == "" || heard < 100 || heard > 999 {
+		t.Fatalf("expected spoken confirmation on LAN, got %d", w.Code)
+	}
+	if after, err := os.ReadFile(c.path); err != nil || !bytes.Equal(after, before) || c.engine.RoutingStatus().Revision != revision {
+		t.Fatal("draft took effect before confirmation", err)
+	}
+	confirm := map[string]string{"action": "confirm", "challenge_id": ticket.ID, "code": strconv.Itoa(heard)}
+	body, _ = json.Marshal(confirm)
+	otherHeaders := h.Clone()
+	otherHeaders.Set("Cookie", otherCookie)
+	otherHeaders.Set("X-Quasar-CSRF", otherToken)
+	if w := request("POST", client, origin, otherHeaders); w.Code != http.StatusGone {
+		t.Fatal("another session confirmed the command")
+	}
+	confirm["id"] = "substitution"
+	body, _ = json.Marshal(confirm)
+	if w := request("POST", client, origin, h); w.Code != http.StatusBadRequest {
+		t.Fatal("confirmation accepted a modified draft")
+	}
+	delete(confirm, "id")
+	body, _ = json.Marshal(confirm)
 	network = false
 	if w := request("POST", client, origin, h); w.Code != http.StatusForbidden {
-		t.Fatalf("disabled network access allowed editor write: %d", w.Code)
-	}
-	// A new system invocation stays available through the local operator panel.
-	localOrigin := "http://127.0.0.1:2704"
-	localToken, localCookie := openEditor("127.0.0.1:4444", localOrigin)
-	edit := commandEdit{Action: "create", ID: "local_report", Command: &bridge.RoutingCommand{Path: "/opt/report"},
-		ExpectedRevision: c.engine.RoutingStatus().Revision}
-	body, err = json.Marshal(edit)
-	if err != nil {
-		t.Fatal(err)
+		t.Fatal("confirmation available with network disabled")
 	}
 	network = true
-	if w := request("POST", client, origin, h); w.Code != http.StatusBadRequest || c.engine.RoutingStatus().Revision != edit.ExpectedRevision {
-		t.Fatalf("LAN client defined a new system invocation: %d", w.Code)
+	if w := request("POST", "192.0.2.9:2222", origin, h); w.Code != http.StatusOK || c.engine.RoutingStatus().Revision == revision {
+		t.Fatalf("could not confirm from the same browser after changing address: %d", w.Code)
 	}
+	got := c.active.Routing.Commands["example"]
+	if got.Path != example.Path || !slices.Equal(got.Args, example.Args) {
+		t.Fatal("authorized invocation was not applied")
+	}
+	if w := request("POST", client, origin, h); w.Code != http.StatusGone {
+		t.Fatal("accepted a used challenge")
+	}
+	localOrigin := "http://127.0.0.1:2704"
+	localToken, localCookie := openEditor("127.0.0.1:4444", localOrigin)
 	h.Set("Origin", localOrigin)
 	h.Set("Cookie", localCookie)
 	h.Set("X-Quasar-CSRF", localToken)
-	if w := request("POST", "127.0.0.1:4444", localOrigin, h); w.Code != http.StatusOK {
-		t.Fatalf("local operator could not register an invocation: %d", w.Code)
+	example.Args = []string{"+%Z"}
+	body, _ = json.Marshal(commandEdit{Action: "update", ID: "example", OriginalID: "example", Command: &example, ExpectedRevision: c.engine.RoutingStatus().Revision})
+	if w := request("POST", "127.0.0.1:4444", localOrigin, h); w.Code != http.StatusAccepted || slices.Equal(c.active.Routing.Commands["example"].Args, example.Args) {
+		t.Fatal("changing only arguments on loopback also requires confirmation")
 	}
 }
 
@@ -171,15 +203,11 @@ func TestCommandEditorRejectsInvalidAndStaleEdits(t *testing.T) {
 	if raw, err := os.ReadFile(c.path); err != nil || string(raw) != string(before) {
 		t.Fatal("invalid edit changed the file", err)
 	}
-	dir := filepath.Join(filepath.Dir(c.path), "commands")
-	if err := os.Mkdir(dir, 0700); err != nil {
-		t.Fatal(err)
+	edit.Command.Path = "/opt/helpers/voice-note"
+	if _, err := c.editCommand(t.Context(), edit, false); !errors.Is(err, errCommandApprovalRequired) {
+		t.Fatal("valid but unconfirmed program", err)
 	}
-	edit.Command.Path = filepath.Join(dir, "voice-note")
-	if err := os.WriteFile(edit.Command.Path, []byte("#!/bin/sh\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.editCommand(t.Context(), edit, false); err != nil {
+	if _, err := c.editCommand(t.Context(), edit, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.editCommand(t.Context(), edit, false); err == nil || !strings.Contains(err.Error(), "revision changed") {
@@ -199,38 +227,117 @@ func TestCommandEditorRejectsInvalidAndStaleEdits(t *testing.T) {
 	}
 }
 
-func TestPanelCommandPrograms(t *testing.T) {
-	c := configurationFixture(t, `{"routing":{"commands":{"existing":{"path":"/opt/report","args":["daily"]}}}}`)
-	dir := filepath.Join(filepath.Dir(c.path), "commands")
-	if err := os.Mkdir(dir, 0700); err != nil {
+func TestSpokenCodeLimitsSurviveRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	now := time.Now()
+	var heard, plays int
+	speaker := func(context.Context, int) error { return errors.New("speaker unavailable") }
+	a := &commandApprovals{now: func() time.Time { return now }, speak: speaker}
+	edit := commandEdit{ID: "date"}
+	if _, err := a.begin(t.Context(), path, "owner", edit); !errors.Is(err, errAudioUnavailable) || a.pending != nil {
+		t.Fatal("failed playback left an approvable edit")
+	}
+	now = now.Add(issueInterval)
+	a.speak = func(_ context.Context, n int) error { heard = n; plays++; return nil }
+	ticket, err := a.begin(t.Context(), path, "owner", edit)
+	if err != nil {
 		t.Fatal(err)
 	}
-	program := filepath.Join(dir, "note")
-	if err := os.WriteFile(program, []byte("#!/bin/sh\n"), 0700); err != nil {
+	if dup, err := a.begin(t.Context(), path, "owner", edit); err != nil || dup.ID != ticket.ID || plays != 1 {
+		t.Fatal("a retried draft replayed the number", err)
+	}
+	if _, err := a.begin(t.Context(), path, "new-cookie", edit); err == nil || plays != 1 {
+		t.Fatal("another browser could replace a pending challenge")
+	}
+	if _, err := a.begin(t.Context(), path, "owner", commandEdit{ID: "other"}); err == nil {
+		t.Fatal("another draft could reuse an approval")
+	}
+	if _, err := a.finish(path, "owner", ticket.ID, strconv.Itoa(heard), true); err != nil {
 		t.Fatal(err)
 	}
-	check := func(path string, args []string, allow bool) {
-		t.Helper()
-		err := c.validatePanelProgram(bridge.RoutingCommand{Path: path, Args: args})
-		if (err == nil) != allow {
-			t.Fatalf("path %s with args %q: allow=%v, err=%v", path, args, allow, err)
-		}
+	if _, err := a.finish(path, "owner", ticket.ID, strconv.Itoa(heard), false); !errors.Is(err, errExpiredChallenge) {
+		t.Fatal("cancelled code accepted")
 	}
-	check(program, []string{"argument with spaces"}, true)
-	check("/opt/report", []string{"daily"}, true)
-	check("/opt/report", []string{"different"}, false)
-	check("/bin/cat", nil, false)
-	check(filepath.Join(dir, "missing"), nil, false)
-	check(dir+"/../commands/note", nil, false)
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(program, link); err != nil {
+	if _, err := a.begin(t.Context(), path, "other", edit); err == nil {
+		t.Fatal("cancel reset audio rate limit")
+	}
+	now = now.Add(issueInterval)
+	ticket, err = a.begin(t.Context(), path, "owner", edit)
+	if err != nil {
 		t.Fatal(err)
 	}
-	check(link, nil, false)
-	for _, mode := range []os.FileMode{0600, 0777} {
-		if err := os.Chmod(program, mode); err != nil {
+	now = now.Add(codeLifetime)
+	if _, err := a.finish(path, "owner", ticket.ID, strconv.Itoa(heard), false); !errors.Is(err, errExpiredChallenge) {
+		t.Fatal("expired code accepted")
+	}
+	for i := 0; i < 3; i++ {
+		// A restart loses the number but keeps the station-wide guess budget.
+		a = &commandApprovals{now: a.now, speak: a.speak}
+		now = now.Add(issueInterval)
+		ticket, err = a.begin(t.Context(), path, strconv.Itoa(i), edit)
+		if err != nil {
 			t.Fatal(err)
 		}
-		check(program, nil, false)
+		_, err = a.finish(path, strconv.Itoa(i), ticket.ID, strconv.Itoa(100+((heard-100+1)%900)), false)
+		if i < 2 && !errors.Is(err, errWrongCode) {
+			t.Fatal("wrong code accepted", err)
+		}
+		if i == 2 {
+			if wait, ok := errors.AsType[approvalWait](err); !ok || wait.after != 24*time.Hour {
+				t.Fatal("missing daily lockout")
+			}
+		}
+	}
+	a = &commandApprovals{now: a.now, speak: a.speak}
+	now = now.Add(23 * time.Hour)
+	if _, err := a.begin(t.Context(), path, "new-session", edit); err == nil {
+		t.Fatal("restart or new session bypassed the limit")
+	}
+	now = now.Add(time.Hour)
+	if _, err := a.begin(t.Context(), path, "new-session", edit); err != nil {
+		t.Fatal("lockout failed to expire", err)
+	}
+	info, err := os.Stat(path + ".command-limits")
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("attempt counter is not private")
+	}
+}
+
+func TestCommandConfirmationRechecksRevisionAndIsSingleUse(t *testing.T) {
+	c := configurationFixture(t, `{"routing":{"commands":{"note":{"path":"/opt/note"}}}}`)
+	var heard string
+	c.approvals.speak = func(_ context.Context, n int) error { heard = strconv.Itoa(n); return nil }
+	before := c.engine.RoutingStatus().Revision
+	edit := commandEdit{Action: "create", ID: "report", Command: &bridge.RoutingCommand{Path: "/opt/report"}, ExpectedRevision: before}
+	ticket, err := c.approvals.begin(t.Context(), c.path, "browser", edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	description := "Записать заметку"
+	nameOnly := commandEdit{Action: "update", ID: "notes", OriginalID: "note", Command: &bridge.RoutingCommand{Path: "/opt/note"}, Description: &description, ExpectedRevision: before}
+	if _, err := c.editCommand(t.Context(), nameOnly, false); err != nil {
+		t.Fatal("metadata-only edit required a code", err)
+	}
+	check := make(chan error, 2)
+	for range 2 {
+		go func() {
+			saved, err := c.approvals.finish(c.path, "browser", ticket.ID, heard, false)
+			if err == nil {
+				_, err = c.editCommand(t.Context(), saved, true)
+			}
+			check <- err
+		}()
+	}
+	var expired, stale bool
+	for range 2 {
+		err := <-check
+		if err == nil {
+			t.Fatal("draft replaced a newer routing configuration")
+		}
+		expired = expired || errors.Is(err, errExpiredChallenge)
+		stale = stale || strings.Contains(err.Error(), "routing revision changed")
+	}
+	if !expired || !stale || len(c.active.Routing.Commands) != 1 || c.active.Routing.Commands["notes"].Path != "/opt/note" {
+		t.Fatal("concurrent confirmations must consume once and preserve the new revision")
 	}
 }

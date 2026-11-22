@@ -312,6 +312,8 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 .command-arguments p,#command-editor>p { margin:4px 0 12px; }
 .command-arg { display:flex; gap:8px; align-items:center; margin:0 0 8px; }
 .command-arg textarea { flex:1; min-width:0; }
+#command-confirm-invocation { display:block; white-space:pre-wrap; overflow-wrap:anywhere; padding:10px 12px; margin-bottom:16px; background:var(--tint); border-radius:6px; }
+#command-code { display:block; width:7ch; margin:8px 0 10px; font-size:22px; letter-spacing:.14em; font-variant-numeric:tabular-nums; }
 #command-timeout-help { display:block; margin-top:4px; font-weight:400; }
 #rule-preview { margin-top:18px; padding:14px; border:1px solid var(--notice-line); border-radius:8px; background:var(--tint); }
 #rule-preview h3 { margin:0; }

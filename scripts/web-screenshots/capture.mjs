@@ -146,7 +146,7 @@ async function checkRouting(page, output) {
 
 async function captureCommandEditor(page, output) {
   await page.getByRole("button", { name: "Добавить команду" }).click();
-  const dialog = page.getByRole("dialog", { name: "Новая внешняя команда" });
+  const dialog = page.locator("#command-dialog");
   await dialog.getByLabel("ID команды").fill("voice_note");
   await dialog.getByLabel("Тайм-аут").fill("5");
   await dialog.getByLabel("Путь к программе").fill("/data/opt/quasar-bridge/commands/voice-note");
@@ -158,6 +158,11 @@ async function captureCommandEditor(page, output) {
   const viewport = page.viewportSize();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await dialog.evaluate(d => d.scrollWidth <= d.clientWidth + 1), "mobile command editor overflow");
+  await dialog.getByRole("button", { name: "Сохранить и применить" }).click();
+  await dialog.getByLabel("Код с колонки").waitFor();
+  assert.equal(await dialog.getByLabel("Код с колонки").inputValue(), "");
+  assert.ok(await dialog.evaluate(d => d.scrollWidth <= d.clientWidth + 1), "mobile confirmation overflow");
+  await dialog.screenshot({ path: path.join(output, "web-panel-command-confirm.png"), animations: "disabled" });
   await dialog.getByRole("button", { name: "Закрыть редактор команды" }).click();
   await page.setViewportSize(viewport);
 }
@@ -359,7 +364,9 @@ async function capture(binary, output) {
       conversation_log: { enabled: true, path: journal },
       routing: { default_route: "llm" },
     }), { mode: 0o600 });
-    bridge = spawn(binary, ["-config", config, "-speaker-config", speakerConfig], { cwd: temp, env: { ...process.env, QUASAR_LLM_CHATGPT_AUTH_FILE: credentials }, stdio: ["ignore", "inherit", "inherit"] });
+    // The screenshot fixture discards the local prompt. No code is entered or saved.
+    await writeFile(path.join(temp, "aplay"), "#!/bin/sh\ncat >/dev/null\n", { mode: 0o700 });
+    bridge = spawn(binary, ["-config", config, "-speaker-config", speakerConfig], { cwd: temp, env: { ...process.env, PATH: temp + path.delimiter + process.env.PATH, QUASAR_LLM_CHATGPT_AUTH_FILE: credentials }, stdio: ["ignore", "inherit", "inherit"] });
     const spawned = once(bridge, "spawn");
     await spawned;
 

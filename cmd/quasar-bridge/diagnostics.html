@@ -118,13 +118,21 @@
           </div>
           <label>Путь к программе<input id="command-path" list="command-programs" required pattern="/.*" title="Укажите абсолютный путь на устройстве с Bridge." placeholder="/data/opt/quasar-bridge/commands/voice-note" aria-describedby="command-path-help" spellcheck="false" autocapitalize="none"></label>
           <datalist id="command-programs"></datalist>
-          <p id="command-path-help" class="muted small" hidden>Новые программы для сети устанавливаются в каталог <code>commands</code> рядом с <code>config.json</code>. Для программы вне каталога выберите аргументы уже настроенного вызова.</p>
+          <p id="command-path-help" class="muted small">Укажите абсолютный путь на колонке. При добавлении команды и при смене пути или аргументов колонка произнесёт код подтверждения.</p>
           <fieldset class="command-arguments"><legend>Аргументы</legend><p class="muted small">Каждая строка передаётся программе как один аргумент. Пробелы внутри сохраняются.</p>
             <div id="command-args"></div><button id="command-arg-add" type="button" class="quiet">Добавить аргумент</button>
           </fieldset>
           <label>Когда выбирать эту команду <span class="optional">(необязательно)</span><textarea id="command-description" rows="2" placeholder="Например, пользователь просит записать заметку"></textarea></label>
           <p class="muted small">Это описание получает классификатор. Пустое поле оставляет команду доступной только для правил.</p>
           <div class="dialog-actions"><button id="command-delete" type="button" class="quiet delete-button" hidden>Удалить команду…</button><button type="submit" class="primary">Сохранить и применить</button></div>
+        </form>
+        <form id="command-confirm" hidden>
+          <p>Введите трёхзначное число, которое произнесла колонка, чтобы разрешить запуск команды <strong id="command-confirm-id"></strong>.</p>
+          <code id="command-confirm-invocation"></code>
+          <label for="command-code">Код с колонки</label>
+          <input id="command-code" type="text" inputmode="numeric" pattern="[1-9][0-9]{2}" maxlength="3" autocomplete="one-time-code" required aria-describedby="command-code-help">
+          <p id="command-code-help" class="muted small"></p>
+          <div class="dialog-actions"><button id="command-back" type="button" class="quiet">Вернуться к команде</button><button id="command-submit-code" type="submit" class="primary">Подтвердить</button></div>
         </form>
         <p id="command-error" class="notice error" role="alert" hidden></p>
       </dialog>

@@ -1,6 +1,6 @@
 "use strict";
 
-const commandEditor = { id: "", revision: "", csrfToken: "", load: 0 };
+const commandEditor = { id: "", revision: "", csrfToken: "", ticket: "", expiryTimer: 0, load: 0 };
 
 function showCommandList(data, locked) {
   const list = byId("command-list");
@@ -60,6 +60,7 @@ function addCommandArg(value = "") {
 async function loadCommand() {
   const load = ++commandEditor.load;
   const id = commandEditor.id;
+  byId("command-loading").textContent = "Загружаем команду…";
   byId("command-loading").hidden = false;
   message("command-error");
   try {
@@ -69,8 +70,6 @@ async function loadCommand() {
     commandEditor.csrfToken = view.csrf_token;
     byId("command-id").value = id;
     byId("command-path").value = view.command?.path || "";
-    byId("command-path-help").hidden = !view.command_directory;
-    if (view.command_directory) byId("command-path").placeholder = view.command_directory + "/voice-note";
     byId("command-programs").replaceChildren(...(view.programs || []).map(path => new Option(path, path)));
     byId("command-timeout").value = view.command?.timeout_ms ? view.command.timeout_ms / 1000 : "";
     byId("command-description").value = view.description || "";
@@ -85,6 +84,35 @@ async function loadCommand() {
   } finally {
     if (load === commandEditor.load) byId("command-loading").hidden = true;
   }
+}
+
+function showCommandConfirmation(ticket, edit) {
+  commandEditor.ticket = ticket.challenge_id;
+  byId("command-title").textContent = "Подтверждение команды";
+  byId("command-editor").hidden = true;
+  byId("command-confirm").hidden = false;
+  byId("command-confirm-id").textContent = edit.id;
+  byId("command-confirm-invocation").textContent = [edit.command.path, ...(edit.command.args || [])].map(arg => JSON.stringify(arg)).join(" ");
+  byId("command-code").value = "";
+  byId("command-submit-code").disabled = false;
+  byId("command-code-help").textContent = "Код действует 90 секунд. Если пропустили число, вернитесь к команде и запросите код ещё раз.";
+  clearTimeout(commandEditor.expiryTimer);
+  // Use the server's remaining lifetime even if the phone clock is inaccurate.
+  commandEditor.expiryTimer = setTimeout(() => {
+    byId("command-submit-code").disabled = true;
+    byId("command-code-help").textContent = "Время истекло. Вернитесь к команде и запросите новый код.";
+  }, ticket.expires_in * 1000);
+}
+
+function leaveCommandConfirmation() {
+  const id = commandEditor.ticket;
+  commandEditor.ticket = "";
+  byId("command-title").textContent = commandEditor.id ? "Редактирование команды" : "Новая внешняя команда";
+  clearTimeout(commandEditor.expiryTimer);
+  byId("command-code").value = "";
+  byId("command-confirm").hidden = true;
+  byId("command-editor").hidden = false;
+  return id;
 }
 
 function openCommand(id) {
@@ -102,7 +130,28 @@ function setupCommandEditor() {
   dialog.addEventListener("cancel", event => { if (routingView.busy) event.preventDefault(); });
   dialog.addEventListener("close", () => {
     commandEditor.load++;
+    const id = leaveCommandConfirmation();
+    if (id) commandRequest("", { action: "cancel", challenge_id: id }).catch(() => {});
     commandEditor.csrfToken = "";
+  });
+  byId("command-confirm").addEventListener("submit", event => {
+    event.preventDefault();
+    const code = byId("command-code").value;
+    byId("command-code").value = "";
+    changeRouting("command", { action: "confirm", challenge_id: commandEditor.ticket, code });
+  });
+  byId("command-back").addEventListener("click", async () => {
+    const id = leaveCommandConfirmation();
+    message("command-error");
+    dialog.inert = true;
+    try {
+      await commandRequest("", { action: "cancel", challenge_id: id });
+    } catch (error) {
+      if (error.status !== 410) message("command-error", error.message, true);
+    } finally {
+      dialog.inert = false;
+      byId("command-path").focus();
+    }
   });
   byId("command-arg-add").addEventListener("click", () => addCommandArg().focus());
   byId("command-editor").addEventListener("submit", event => {
