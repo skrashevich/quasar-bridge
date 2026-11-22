@@ -14,6 +14,20 @@ curl --fail --location --retry 3 --max-time 180 \
 echo "9e8b96c1f40c3f0e0468ada34570dab37687f8bc1ec50408771b777912b9cc00  $output/source.tar.gz" | sha256sum --check --strict
 tar -xzf "$output/source.tar.gz" --strip-components=1 -C "$source_dir"
 
+# Block guest egress while retaining the existing loopback hostfwd rules.
+# The pinned KUYASE CLI does not expose this QEMU user-network option.
+python3 - "$source_dir/kuyase/src/session.rs" <<'PYTHON'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text()
+old = '"user,id=net0,hostfwd='
+if source.count(old) != 1:
+    raise SystemExit("KUYASE user-network format changed; review guest isolation")
+path.write_text(source.replace(old, '"user,id=net0,restrict=on,hostfwd='))
+PYTHON
+
 # Use the headless release's ARM guest bridge and kernel; build the host CLI locally.
 curl --fail --location --retry 3 --max-time 180 \
   https://github.com/vypivshiy/kuyase/releases/download/1.5.0/kuyase-headless-linux64.tar.gz \

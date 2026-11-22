@@ -11,6 +11,7 @@ import subprocess
 import tarfile
 import time
 
+from firmware import FIRMWARE
 from report import Report
 
 
@@ -52,7 +53,7 @@ def stop(process):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--board", choices=("yandexmini", "station2"), required=True)
+    parser.add_argument("--board", choices=FIRMWARE, required=True)
     parser.add_argument("--arch", choices=("arm64", "armv7"), help="Test one package (default: both)")
     parser.add_argument("--emulator-dir", type=Path, required=True)
     parser.add_argument("--build-dir", type=Path, required=True)
