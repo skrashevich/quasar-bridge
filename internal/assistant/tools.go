@@ -12,6 +12,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/mcpoauth"
 	"quasarbridge/internal/update"
 	"quasarbridge/internal/webaddress"
 )
@@ -31,6 +32,7 @@ type Tools struct {
 	Configuration BridgeConfiguration
 	TTSMarkup     bool
 	Now           func() time.Time
+	MCPOAuth      *mcpoauth.Source
 }
 
 func definition(name, description string, properties map[string]any, required []string) llm.Tool {

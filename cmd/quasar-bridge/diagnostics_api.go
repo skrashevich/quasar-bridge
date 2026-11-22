@@ -26,6 +26,7 @@ import (
 
 type diagnosticControl struct {
 	ChatGPT       *panelChatGPT
+	MCPOAuth      *panelMCPAuth
 	Configuration *configurationControl
 	Engine        *bridge.Engine
 	Logs          *journal.Writer
@@ -50,6 +51,9 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 	}
 	if control.ChatGPT != nil {
 		control.ChatGPT.register(mux, register, control.Configuration)
+	}
+	if control.MCPOAuth != nil {
+		control.MCPOAuth.register(register)
 	}
 	register("GET /diagnostics/api/status", func(w http.ResponseWriter, r *http.Request) {
 		state := map[string]any{}
@@ -386,7 +390,7 @@ func writeDiagnosticError(w http.ResponseWriter, status int, message string) {
 	writeDiagnosticJSON(w, status, map[string]string{"error": message})
 }
 
-func writeDiagnosticJSON(w http.ResponseWriter, status int, value any) {
+func writeDiagnosticJSON(w http.ResponseWriter, status int, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		status = http.StatusInternalServerError
@@ -394,5 +398,6 @@ func writeDiagnosticJSON(w http.ResponseWriter, status int, value any) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = w.Write(data)
+	_, err = w.Write(data)
+	return err
 }

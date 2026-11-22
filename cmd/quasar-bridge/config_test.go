@@ -10,6 +10,32 @@ import (
 	"quasarbridge/internal/bridge"
 )
 
+func TestConfigAcceptsMCPOAuthWithoutCredentials(t *testing.T) {
+	const config = `{"assistant_tools":{"enabled":true,"mcp_servers":[{"name":"catalog","url":"https://mcp.example.invalid/mcp","oauth":{"client_id":"https://client.example.invalid/oauth/client.json","issuer":"https://auth.example.invalid","scopes":["catalog:read"]}}]}}`
+	if _, err := readConfigForCommand(configFile(t, config), true); err != nil {
+		t.Fatalf("public MCP OAuth configuration rejected: %v", err)
+	}
+	invalid := strings.Replace(config, `"scopes":`, `"client_secret":"fixture-secret","scopes":`, 1)
+	if _, err := readConfigForCommand(configFile(t, invalid), true); err == nil {
+		t.Fatal("accepted unsupported OAuth client_secret")
+	}
+}
+
+func TestMCPOAuthExampleConfig(t *testing.T) {
+	cfg, err := readConfigForCommand("../../config.mcp-oauth.example.json", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AssistantTools.MCPServers) != 1 {
+		t.Fatal("expected one example MCP server")
+	}
+	oauth := cfg.AssistantTools.MCPServers[0].OAuth
+	if oauth == nil || !reflect.DeepEqual(oauth.Scopes, []string{"catalog:read"}) ||
+		oauth.ClientID != "https://client.example.com/quasar-bridge/client.json" {
+		t.Fatal("expected the example to identify a public HTTPS client and request only a read scope")
+	}
+}
+
 func TestReadConfigLLMAPISettings(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

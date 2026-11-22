@@ -389,6 +389,8 @@ sh /data/opt/quasar-bridge/app/uninstall.sh
   сборка из исходников, все настройки и диагностика.
 - [Пример настроек](config.example.json) и
   [пример с дополнительными MCP-серверами](config.mcp.example.json).
+- [OAuth для MCP](docs/guide.md#mcp-oauth): вход через CLI, обновление токенов и
+  проверка списка инструментов без их вызова.
 - [Как устроен проект](docs/design.md) и [результаты проверок](docs/validation.md).
 - [E2E-проверки в КУЯСЭ](scripts/kuyase/README.md) охватывают голосовые сценарии и веб-панель
   в Chromium. На pull request проверяются пять профилей колонок с пакетами ARM64 и ARMv7.

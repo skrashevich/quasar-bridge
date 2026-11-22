@@ -1,0 +1,17 @@
+{
+  "assistant_tools": {
+    "enabled": true,
+    "mcp_servers": [
+      {
+        "name": "catalog",
+        "transport": "streamable_http",
+        "url": "https://mcp.example.com/mcp",
+        "oauth": {
+          "client_id": "https://client.example.com/quasar-bridge/client.json",
+          "issuer": "https://auth.example.com",
+          "scopes": ["catalog:read"]
+        }
+      }
+    ]
+  }
+}

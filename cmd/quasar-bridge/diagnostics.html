@@ -9,6 +9,7 @@
   <script src="theme.js"></script>
   <script src="routing.js" defer></script>
   <script src="account.js" defer></script>
+  <script src="mcp-account.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -19,7 +20,7 @@
     <nav aria-label="Разделы панели">
       <a href="#overview" class="nav-link active" aria-current="page"><span aria-hidden="true">◉</span> Обзор</a>
       <a href="#routing" class="nav-link"><span aria-hidden="true">⑂</span> Маршрутизация</a>
-      <a href="#account" class="nav-link"><span aria-hidden="true">◎</span> ChatGPT</a>
+      <a href="#account" class="nav-link"><span aria-hidden="true">◎</span> Аккаунт</a>
       <a href="#settings" class="nav-link"><span aria-hidden="true">≡</span> Настройки <span id="nav-dirty" class="nav-count" hidden></span></a>
       <a href="#query" class="nav-link"><span aria-hidden="true">↗</span> Чат</a>
       <a href="#airplay" class="nav-link"><span aria-hidden="true">♫</span> AirPlay</a>
@@ -97,7 +98,7 @@
         <div class="dialog-actions"><button id="rule-delete" type="button" class="quiet delete-button" hidden>Удалить правило…</button><button id="rule-save" form="rule-editor" type="submit" class="primary">Сохранить и применить</button></div>
       </dialog>
     </section>
-    <section id="account" class="page" aria-label="Подписка ChatGPT" hidden>
+    <section id="account" class="page" aria-label="Аккаунт" hidden>
       <section class="surface account-surface"><h2>Аккаунт ChatGPT</h2><p class="muted">Войдите в аккаунт, чтобы Bridge мог обращаться к модели по вашей подписке ChatGPT.</p>
         <dl class="detail-list" id="account-state"></dl><p id="account-message" class="notice" role="status" hidden></p>
         <div class="actions"><button id="account-start" class="primary" type="button" disabled>Войти через ChatGPT</button><button id="account-logout" type="button" hidden>Выйти из аккаунта…</button><button id="account-refresh" type="button" class="quiet">Обновить</button></div>
@@ -115,10 +116,31 @@
         </form>
         <a href="#settings" data-settings-filter="llm">Открыть настройки модели</a>
       </section>
+      <section id="mcp-accounts" class="surface account-surface" aria-labelledby="mcp-account-title">
+        <h2 id="mcp-account-title">Аккаунты MCP</h2>
+        <p class="muted">Для входа используйте локальную панель или SSH-туннель.</p>
+        <p id="mcp-account-message" class="notice" role="status">Загружаем список MCP-серверов…</p>
+        <div id="mcp-account-controls" hidden>
+          <label for="mcp-account-server">MCP-сервер</label>
+          <select id="mcp-account-server"></select>
+          <dl class="detail-list"><div><dt>Состояние входа</dt><dd id="mcp-account-status"></dd></div></dl>
+          <div class="actions"><button id="mcp-account-start" type="button" class="primary">Войти</button><button id="mcp-account-logout" type="button">Выйти…</button><button id="mcp-account-refresh" type="button" class="quiet">Обновить</button></div>
+        </div>
+        <section id="mcp-account-manual" class="account-manual" hidden>
+          <h3>Завершение входа в MCP</h3>
+          <p>Подтвердите доступ у провайдера, затем скопируйте полный адрес из строки браузера. Он начинается с <code>http://127.0.0.1:19876/callback</code>. Если страница не открылась, это нормально. Попытка действует 10 минут.</p>
+          <a id="mcp-account-authorize" class="button" target="_blank" rel="noopener noreferrer">Открыть в новой вкладке</a>
+          <form id="mcp-account-finish" class="account-finish" autocomplete="off">
+            <label>Адрес после входа<input id="mcp-account-callback" type="password" autocomplete="off" spellcheck="false" maxlength="8192" required></label>
+            <button type="submit" class="primary">Завершить вход</button>
+          </form>
+        </section>
+        <div class="actions" id="mcp-account-attempt-actions" hidden><button id="mcp-account-cancel" type="button" class="quiet">Отменить попытку</button></div>
+      </section>
     </section>
     <section id="settings" class="page" aria-labelledby="settings-title" hidden>
       <h2 id="settings-title" class="visually-hidden">Настройки Bridge</h2>
-      <p class="settings-links"><a href="#routing">Редактор правил маршрутизации</a> <a href="#account">Вход в ChatGPT</a></p>
+      <p class="settings-links"><a href="#routing">Редактор правил маршрутизации</a> <a href="#account">Вход в ChatGPT и MCP</a></p>
       <p class="intro">Измените нужные параметры и сохраните их в файл. Затем примените изменения: часть настроек требует перезапуска Bridge.</p>
       <div class="settings-tools"><label class="search-field"><span class="visually-hidden">Поиск настроек</span><input id="settings-search" type="search" placeholder="Найти настройку или её описание" autocomplete="off"></label><button id="refresh-config" type="button" class="quiet">Обновить значения</button></div>
       <p id="config-message" class="notice" role="status" hidden></p><p id="config-summary" class="muted small">Загружаем каталог настроек…</p>

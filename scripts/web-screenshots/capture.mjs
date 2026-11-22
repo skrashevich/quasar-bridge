@@ -145,12 +145,14 @@ async function checkRouting(page, output) {
 }
 
 async function checkAccount(page, output) {
-  await page.getByRole("link", { name: "ChatGPT", exact: true }).click();
-  await page.getByText("Вход не выполнен", { exact: true }).waitFor();
+  await page.getByRole("link", { name: "Аккаунт", exact: true }).click();
+  const chatGPT = page.locator("#account .account-surface").first();
+  const callbackInput = chatGPT.getByLabel("Адрес после входа");
+  await chatGPT.getByText("Вход не выполнен", { exact: true }).waitFor();
   await declineAccountLogin(page);
   assert.equal(await page.locator("html").evaluate(root => getComputedStyle(root).colorScheme), "dark");
   await page.getByRole("link", { name: "Вернуться в панель" }).click();
-  await page.getByText("Вход не выполнен", { exact: true }).waitFor();
+  await chatGPT.getByText("Вход не выполнен", { exact: true }).waitFor();
 
   // Present a second loopback Host to simulate a panel opened by a remote
   // browser. The real API selects the manual return and validates its state.
@@ -166,13 +168,13 @@ async function checkAccount(page, output) {
   const authorization = new URL(await accountLink.getAttribute("href"));
   const callback = new URL(authorization.searchParams.get("redirect_uri"));
   assert.equal(callback.port, "1455");
-  assert.equal(await page.getByLabel("Адрес после входа").inputValue(), "");
-  await page.locator("#account .account-surface").first().screenshot({ path: path.join(output, "web-panel-chatgpt-login.png"), animations: "disabled" });
+  assert.equal(await callbackInput.inputValue(), "");
+  await chatGPT.screenshot({ path: path.join(output, "web-panel-chatgpt-login.png"), animations: "disabled" });
   callback.search = new URLSearchParams({ state: authorization.searchParams.get("state"), error: "access_denied" });
-  await page.getByLabel("Адрес после входа").fill(callback.href);
-  await page.getByRole("button", { name: "Завершить вход" }).click();
+  await callbackInput.fill(callback.href);
+  await chatGPT.getByRole("button", { name: "Завершить вход" }).click();
   await page.locator("#account-message").filter({ hasText: "Вход отменён" }).waitFor();
-  assert.equal(await page.getByLabel("Адрес после входа").inputValue(), "");
+  assert.equal(await callbackInput.inputValue(), "");
 }
 
 async function checkModelPicker(page, output) {
@@ -225,7 +227,7 @@ async function checkModelPicker(page, output) {
   await apply.click();
   await page.getByText("Для следующих запросов выбрана модель demo-reasoning.").waitFor();
   assert.ok(await apply.isDisabled());
-  await page.getByRole("button", { name: "Обновить", exact: true }).click();
+  await page.locator("#account-refresh").click();
   await picker.getByRole("option", { name: "Модель рассуждений (demo-reasoning)" }).waitFor({ state: "attached" });
   assert.equal(await picker.inputValue(), "demo-reasoning");
   assert.equal(loads, 3);
