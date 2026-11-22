@@ -400,8 +400,14 @@ func main() {
 		state := engine.RoutingStatus()
 		return map[string]any{"status": "ok", "mode": cfg.Mode, "airplay": airPlayHealth(airPlay), "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "routing_classifier_enabled": state.ClassifierEnabled, "routing_default_route": state.DefaultRoute, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil, "speaker_subscriptions": subscriptions.Snapshot()}
 	}
+	localSpeaker := readSpeakerInfo(*speakerConfig, "/proc/cmdline")
 	panelStatus := func() map[string]any {
 		result := status()
+		speaker := localSpeaker
+		if speaker == (bridge.SpeakerInfo{}) {
+			speaker = subscriptions.Speaker()
+		}
+		result["speaker"] = speaker
 		result["run"] = diagnosticLogs.run
 		result["version"], result["llm_model"], result["llm_api"] = update.Version, configuration.activeModel(), cfg.LLMAPI
 		result["uptime_seconds"] = int64(time.Since(startedAt).Seconds())

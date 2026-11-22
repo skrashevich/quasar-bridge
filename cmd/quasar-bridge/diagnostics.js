@@ -103,12 +103,24 @@ function renderAirPlay(airplay = {}) {
   byId("set-volume").disabled = state.airplayBusy || !available || !airplay.connected;
   byId("volume-level").disabled = state.airplayBusy || !available || !airplay.connected;
 }
+const stationModels = new Map([
+  ["yandexstation", "Яндекс Станция"], ["yandexstation_2", "Яндекс Станция Макс"],
+  ["yandexmidi", "Яндекс Станция 2"], ["orion", "Яндекс Станция 3"], ["cucumber", "Яндекс Станция Миди"],
+  ["yandexmini", "Яндекс Станция Мини"], ["yandexmini_2", "Яндекс Станция Мини 2"],
+  ["bergamot", "Яндекс Станция Мини 3"], ["pickle", "Яндекс Станция Мини 3 Про"],
+  ["yandexmicro", "Яндекс Станция Лайт"], ["plum", "Яндекс Станция Лайт 2"],
+  ["yandexplum", "Яндекс Станция Лайт 2"], ["mango", "Яндекс Станция Стрит"]
+]);
 function renderStatus(data) {
   state.status = data;
   setConnected(true);
   if (data.version) byId("version").textContent = "Версия " + data.version;
   byId("overview-mode").textContent = ({ hybrid: "Гибридный режим", observe: "Наблюдение", proxy: "Прокси" })[data.mode] || data.mode || "Работает";
   byId("routing-observe").hidden = data.mode !== "observe";
+  const speaker = data.speaker || {};
+  byId("station-model").textContent = stationModels.get(speaker.model) || speaker.model || "Нет данных";
+  byId("station-serial").textContent = speaker.serial_number || "Нет данных";
+  byId("station-firmware").textContent = speaker.firmware_version || "Нет данных";
   byId("frames-up").textContent = data.client_frames?.toLocaleString("ru-RU") ?? "—";
   byId("frames-down").textContent = data.server_frames?.toLocaleString("ru-RU") ?? "—";
   byId("channel-uptime").textContent = uptimeText(data.uptime_seconds);

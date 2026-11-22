@@ -242,6 +242,8 @@ async function capture(binary, output) {
     let panelPort = await unusedPort();
     while (panelPort === bridgePort) panelPort = await unusedPort();
     const config = path.join(temp, "config.json");
+    const speakerConfig = path.join(temp, "quasar.cfg");
+    await writeFile(speakerConfig, JSON.stringify({ common: { deviceType: "yandexmidi", softwareVersion: "1.2.3.4" } }));
     const credentials = path.join(temp, "account.json");
     await writeFile(config, JSON.stringify({
       listen: `${HOST}:${bridgePort}`,
@@ -255,7 +257,7 @@ async function capture(binary, output) {
       conversation_log: { enabled: false },
       routing: { default_route: "llm" },
     }), { mode: 0o600 });
-    bridge = spawn(binary, ["-config", config], { cwd: temp, env: { ...process.env, QUASAR_LLM_CHATGPT_AUTH_FILE: credentials }, stdio: ["ignore", "inherit", "inherit"] });
+    bridge = spawn(binary, ["-config", config, "-speaker-config", speakerConfig], { cwd: temp, env: { ...process.env, QUASAR_LLM_CHATGPT_AUTH_FILE: credentials }, stdio: ["ignore", "inherit", "inherit"] });
     const spawned = once(bridge, "spawn");
     await spawned;
 
@@ -277,7 +279,17 @@ async function capture(binary, output) {
     const page = await browser.newPage({ viewport: { width: 1040, height: 925 }, deviceScaleFactor: 1, locale: "ru-RU", timezoneId: "UTC" });
     const pageErrors = [];
     page.on("pageerror", error => pageErrors.push(error.message));
+    // The demo runs off-device. Use a fictitious bootloader serial in public screenshots.
+    await page.route("**/diagnostics/api/status", async route => {
+      const status = await route.fetch();
+      const data = await status.json();
+      data.speaker.serial_number = "DEMO0000000001";
+      await route.fulfill({ response: status, json: data });
+    });
     await page.goto(url);
+    await page.locator("#station-model").filter({ hasText: "Яндекс Станция 2" }).waitFor();
+    assert.equal(await page.locator("#station-serial").textContent(), "DEMO0000000001");
+    assert.equal(await page.locator("#station-firmware").textContent(), "1.2.3.4");
     await page.locator("#overview-model").filter({ hasText: MODEL }).waitFor();
     await page.screenshot({ path: path.join(output, "web-panel-overview.png"), animations: "disabled" });
 

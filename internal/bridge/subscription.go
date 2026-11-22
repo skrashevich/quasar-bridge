@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
+	application "github.com/skrashevich/quasar-go-genproto/proto/alice/library/client/protos"
 	subscription "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common/subscription_state"
 	device "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/common/device_state"
 	environment "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/common/environment_state"
@@ -36,6 +37,12 @@ type SpeakerSubscription struct {
 	Endpoints            []SubscriptionEndpoint `json:"endpoints"`
 }
 
+type SpeakerInfo struct {
+	Model           string `json:"model,omitempty"`
+	SerialNumber    string `json:"serial_number,omitempty"`
+	FirmwareVersion string `json:"firmware_version,omitempty"`
+}
+
 type SubscriptionEndpoint struct {
 	EndpointID         string `json:"endpoint_id"`
 	Status             string `json:"status"`
@@ -50,6 +57,7 @@ type subscriptionSession struct {
 	up, down             Sender
 	delegate             Session
 	deviceID             string
+	speaker              SpeakerInfo
 	deviceSubscription   string
 	aliceProSubscription string
 	endpoints            map[string]SubscriptionEndpoint
@@ -82,6 +90,19 @@ func (m *SubscriptionMonitor) Snapshot() []SpeakerSubscription {
 	}
 	slices.SortFunc(out, func(a, b SpeakerSubscription) int { return cmp.Compare(a.Connection, b.Connection) })
 	return out
+}
+
+// Speaker returns metadata only when one connected speaker can be identified.
+// It is used by the diagnostics panel, separately from the public health response.
+func (m *SubscriptionMonitor) Speaker() SpeakerInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.sessions) == 1 {
+		for _, session := range m.sessions {
+			return session.speaker
+		}
+	}
+	return SpeakerInfo{}
 }
 
 func (s *subscriptionSession) Client(ctx context.Context, kind websocket.MessageType, data []byte) error {
@@ -124,6 +145,9 @@ func (s *subscriptionSession) Client(ctx context.Context, kind websocket.Message
 				}
 			}
 			if identityMatches {
+				if deviceID != "" {
+					s.observeSpeaker(deviceID, req.GetApplication(), env.GetEndpoints())
+				}
 				sub := ds.GetDeviceSubscriptionState()
 				if sub == nil && deviceID != "" {
 					for _, info := range env.GetDevices() {
@@ -169,11 +193,29 @@ func (s *subscriptionSession) Client(ctx context.Context, kind websocket.Message
 	return nil
 }
 
+func (s *subscriptionSession) observeSpeaker(id string, app *application.TClientInfoProto, endpoints []*endpoint.TEndpoint) {
+	var hw *endpoint.TEndpoint_TDeviceInfo
+	for _, ep := range endpoints {
+		if ep.GetId() == id {
+			hw = ep.GetMeta().GetDeviceInfo()
+			break
+		}
+	}
+	s.monitor.mu.Lock()
+	defer s.monitor.mu.Unlock()
+	if s.deviceID == id {
+		s.speaker.Model = cmp.Or(app.GetDeviceModelName(), app.GetDeviceModel(), hw.GetModel(), s.speaker.Model)
+		s.speaker.FirmwareVersion = cmp.Or(app.GetFirmwareVersion(), app.GetDeviceFirmware(), hw.GetSwVersion(), s.speaker.FirmwareVersion)
+		s.speaker.SerialNumber = cmp.Or(hw.GetSerialNumber(), s.speaker.SerialNumber)
+	}
+}
+
 func (s *subscriptionSession) bindDevice(id string) {
 	s.monitor.mu.Lock()
 	defer s.monitor.mu.Unlock()
 	if id == "" || id != s.deviceID {
 		s.deviceID = id
+		s.speaker = SpeakerInfo{}
 		s.setDeviceSubscription("unknown")
 		s.setAliceProSubscription("unknown")
 	}

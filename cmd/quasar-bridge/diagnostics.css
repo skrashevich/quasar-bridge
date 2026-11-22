@@ -243,6 +243,9 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 .channel-head,.channel-meters { display:flex; justify-content:space-between; align-items:baseline; gap:16px; }
 .channel-head h2 { font-size:16px; font-weight:600; color:#e1f4f8; }
 .channel-head>span { color:#b5d9e3; font-size:13px; }
+.station-identity { display:grid; grid-template-columns:1fr 1fr 1.25fr; gap:16px; margin:16px 0 0; }
+.station-identity dt { color:#c6dfe6; }
+.station-identity dd { margin:4px 0 0; color:#fff; font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .channel-meters { border-top:1px solid #497181; margin-top:16px; padding-top:15px; }
 .channel-meters>div { flex:1; }
 .channel-meters span,.channel-meters strong { display:block; }
@@ -307,6 +310,9 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
   .channel { padding:19px 17px; }
   .channel-head { gap:8px; }
   .channel-head>span { font-size:11px; }
+  .station-identity { grid-template-columns:1fr; gap:8px; }
+  .station-identity>div { display:grid; grid-template-columns:7.5rem minmax(0,1fr); align-items:baseline; gap:8px; }
+  .station-identity dd { margin:0; text-align:right; }
   .channel-meters { gap:8px; }
   .channel-meters span { font-size:11px; }
   .channel-meters strong { font-size:17px; }
