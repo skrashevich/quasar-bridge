@@ -11,9 +11,10 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/skrashevich/quasar-bridge/internal/wire"
 	alice "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/endpoint/capabilities/alice"
 	ipc "github.com/skrashevich/quasar-go-genproto/proto/yandex_io/protos"
+	"github.com/skrashevich/quasarc/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
 // An offline stand-in for the guest's aliced, with the same native RPC frames.
@@ -67,16 +68,21 @@ func startSpeakerFixture(ctx context.Context, dir string) error {
 var commandUtterance = regexp.MustCompile(`^Код подтверждения команды — ([1-9][0-9]{2})\. Повторяю, ([1-9][0-9]{2})\.$`)
 
 func mockVocalize(c net.Conn, dir string) error {
+	bus := protocol.NewBus(c, protocol.Envelope, protocol.Envelope)
 	read := func() (*ipc.Remoting, error) {
-		frame, err := wire.ReadQuasarMessage(c, 4096)
+		raw, err := bus.ReadMessageLimit(4096)
 		if err != nil {
 			return nil, err
 		}
-		call := wire.UnwrapRemoting(frame)
-		if frame.GetType() != ipc.QuasarMessage_TYPE_REMOTING || frame.GetRemoting() != nil || call.GetRemoteObjectId() != "AliceCapability" {
+		var frame ipc.QuasarMessage
+		if proto.Unmarshal(raw, &frame) != nil || frame.GetType() != ipc.QuasarMessage_TYPE_REMOTING || frame.GetRemoting() != nil {
+			return nil, errors.New("expected Station 2 remoting envelope")
+		}
+		var call ipc.Remoting
+		if proto.Unmarshal(frame.GetPayload(), &call) != nil || call.GetRemoteObjectId() != "AliceCapability" {
 			return nil, errors.New("expected AliceCapability RPC")
 		}
-		return call, nil
+		return &call, nil
 	}
 	sub, err := read()
 	if err != nil || sub.GetCapabilityAddListenerMethod().GetCapabilityId() != "AliceCapability" {
@@ -104,7 +110,11 @@ func mockVocalize(c net.Conn, dir string) error {
 			RemoteObjectId: new("AliceCapability"),
 			Method:         &ipc.Remoting_AliceCapabilityListenerMethod_{AliceCapabilityListenerMethod: callback},
 		}
-		if err := wire.WriteRemoting(c, reply, false); err != nil {
+		payload, err := proto.Marshal(reply)
+		if err != nil {
+			return err
+		}
+		if err := bus.WriteFrame(protocol.Frame{ID: uint64(ipc.QuasarMessage_TYPE_REMOTING), WT: 2, Payload: payload}); err != nil {
 			return err
 		}
 	}
