@@ -506,19 +506,26 @@ async function copyChatText(text, button) {
     button.textContent = "Скопировано";
   } catch (_) { button.textContent = "Выделите текст для копирования"; }
 }
-function chatMessageNode(record) {
-  const entry = element("article", "chat-message from-" + record.role + (record.status ? " is-" + record.status : ""));
+function messageBubble(role, author, text, timestamp) {
+  const entry = element("article", "chat-message from-" + role);
   const meta = element("div", "chat-message-meta");
-  const author = record.role === "user" ? "Вы" : record.route === "yandex" ? "Алиса" : record.route === "llm" ? "Нейросеть" : "Bridge";
   meta.append(element("strong", "", author));
-  if (record.time) {
-    const time = element("time", "", new Date(record.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }));
-    time.dateTime = record.time; meta.append(time);
+  if (timestamp) {
+    const time = element("time", "", new Date(timestamp).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }));
+    time.dateTime = timestamp;
+    time.title = timeText(timestamp);
+    meta.append(time);
   }
   const bubble = element("div", "chat-bubble");
-  bubble.append(element("p", "chat-text", record.text));
-  if (Array.isArray(record.playback) && record.playback.length) bubble.append(renderQueryPlayback(record));
+  bubble.append(element("p", "chat-text", text));
   entry.append(meta, bubble);
+  return entry;
+}
+function chatMessageNode(record) {
+  const author = record.role === "user" ? "Вы" : record.route === "yandex" ? "Алиса" : record.route === "llm" ? "Нейросеть" : "Bridge";
+  const entry = messageBubble(record.role, author, record.text, record.time);
+  if (record.status) entry.classList.add("is-" + record.status);
+  if (Array.isArray(record.playback) && record.playback.length) entry.querySelector(".chat-bubble").append(renderQueryPlayback(record));
   if (record.role === "assistant" && !record.status) {
     const tools = element("div", "chat-message-tools");
     const timing = typeof record.elapsed_ms === "number" ? (record.elapsed_ms / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " с" : "";
@@ -606,6 +613,38 @@ async function airPlayAction(action) {
   } catch (error) { message("airplay-message", error.message, true); }
   finally { state.airplayBusy = false; renderAirPlay(state.status?.airplay); }
 }
+function renderHistory(items) {
+  const list = byId("history-items");
+  if (!items.length) {
+    list.replaceChildren(element("p", "empty-state", "Записей не найдено. Измените текст поиска или период."));
+    return;
+  }
+  const days = document.createDocumentFragment();
+  const dateLabel = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  let day, previousDate;
+  // SearchHistory returns the most recent matches first. Read each exchange from top to bottom.
+  for (const item of items.slice().reverse()) {
+    const date = dateLabel.format(new Date(item.time));
+    if (date !== previousDate) {
+      day = element("section", "history-day");
+      day.append(element("h4", "history-date", date));
+      days.append(day);
+      previousDate = date;
+    }
+    const turn = element("div", "history-turn");
+    turn.append(messageBubble("user", "Пользователь", item.query, item.time));
+    const author = item.route === "llm" ? "Нейросеть" : item.route ? routeName(item.route) : "Колонка";
+    if (item.answer) turn.append(messageBubble("assistant", author, item.answer));
+    const status = { interrupted: "Запрос прерван", incomplete: "Запись неполная", no_answer: "Текст ответа не записан" }[item.status];
+    if (status || !item.answer) {
+      const note = status || "Текст ответа не записан";
+      turn.append(element("p", "history-note", !item.answer && item.route ? author + " · " + note : note));
+    }
+    day.append(turn);
+  }
+  list.replaceChildren(days);
+  list.scrollTop = list.scrollHeight;
+}
 async function loadHistory(event) {
   if (event) event.preventDefault();
   if (state.historyBusy) return;
@@ -619,19 +658,12 @@ async function loadHistory(event) {
   try {
     const result = await request("api/history?" + params);
     const items = result.items || [];
-    byId("history-summary").textContent = "Записей: " + items.length + ". Время и даты фильтра: " + Intl.DateTimeFormat().resolvedOptions().timeZone + " (часовой пояс браузера)." + (result.partial ? " Показана часть истории: достигнут предел чтения." : "");
-    byId("history-items").replaceChildren(...items.map(item => {
-      const entry = element("article", "history-item"); const meta = element("div", "history-meta");
-      const time = element("time", "", timeText(item.time)); time.dateTime = item.time; meta.append(time);
-      if (item.route) meta.append(element("span", "badge", routeName(item.route)));
-      const status = { interrupted: "Запрос прерван", incomplete: "Неполная запись", no_answer: "Без текста ответа" }[item.status];
-      if (status) meta.append(element("span", "badge", status));
-      const missing = item.status === "interrupted" ? "Запрос прерван. Текст ответа в журнале отсутствует." : "Текст ответа отсутствует в журнале. Это не означает, что колонка не ответила.";
-      entry.append(meta, element("h3", "history-query", item.query), element("p", "history-answer", item.answer || missing));
-      return entry;
-    }));
-    if (!items.length) byId("history-items").append(element("p", "empty-state", "Записей не найдено. Измените текст поиска или период."));
-    message("history-message", result.recording ? "" : "Запись новых диалогов отключена. Сохранённая ранее история остаётся доступна. Включить запись можно в настройках.");
+    const filtered = params.get("query") || since || until || params.get("limit") !== "20";
+    byId("history-filter-toggle").textContent = filtered ? "Изменить фильтры" : "Поиск и фильтры";
+    const noun = { one: "запрос", few: "запроса", many: "запросов" }[new Intl.PluralRules("ru-RU").select(items.length)];
+    byId("history-summary").textContent = items.length + " " + noun + " · " + Intl.DateTimeFormat().resolvedOptions().timeZone;
+    renderHistory(items);
+    message("history-message", [result.partial && "Показана часть истории.", !result.recording && "Запись новых диалогов отключена в настройках."].filter(Boolean).join(" "));
   } catch (error) { message("history-message", error.message, true); if (!byId("history-items").querySelector("article")) byId("history-items").replaceChildren(element("p", "empty-state", "История недоступна. Повторите поиск после восстановления связи.")); }
   finally { state.historyBusy = false; byId("search-history").disabled = false; }
 }
@@ -795,6 +827,10 @@ document.querySelectorAll("[data-airplay]").forEach(button => button.addEventLis
 byId("volume-level").addEventListener("input", () => { byId("volume-value").value = byId("volume-level").value + "%"; });
 byId("set-volume").addEventListener("click", () => airPlayAction("volume:" + byId("volume-level").value));
 byId("history-form").addEventListener("submit", loadHistory);
+byId("history-filter-toggle").addEventListener("click", event => {
+  const toggle = event.currentTarget;
+  toggle.setAttribute("aria-expanded", String(toggle.getAttribute("aria-expanded") !== "true"));
+});
 byId("pause").addEventListener("click", () => { logState.paused = !logState.paused; byId("pause").textContent = logState.paused ? "Продолжить обновление" : "Приостановить обновление"; byId("pause").setAttribute("aria-pressed", String(logState.paused)); if (logState.paused) byId("connection").textContent = "Обновление страницы приостановлено. Bridge продолжает записывать события."; else loadLogs(); });
 byId("log-search").addEventListener("input", filterLogs);
 byId("log-level").addEventListener("change", filterLogs);

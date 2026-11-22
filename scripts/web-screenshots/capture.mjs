@@ -218,6 +218,60 @@ async function checkModelPicker(page) {
   assert.equal(loads, 3);
 }
 
+async function seedHistory(file) {
+  const events = [];
+  function turn(time, query, route, answer, end = "response") {
+    const fields = { time, session: "demo-speaker", request: String(events.length), route };
+    events.push({ ...fields, event: "request", text: query });
+    if (answer || end === "response") events.push({ ...fields, event: end === "cancel" ? "progress" : "response", text: answer, delivered: true });
+    if (end === "cancel") events.push({ ...fields, event: "cancel" });
+  }
+  turn("2026-11-20T18:20:00Z", "Как выглядит длинная ссылка?", "llm", "https://example.com/" + "abcdef".repeat(90));
+  turn("2026-11-20T18:32:00Z", "Расскажи про спутники", "llm", "У Земли один естественный спутник.", "cancel");
+  turn("2026-11-20T18:35:00Z", "А у Марса?", "llm", "", "unfinished");
+  turn("2026-11-20T18:36:00Z", "Стоп", "yandex", "");
+  turn("2026-11-21T09:12:00Z", "Что взять в поход?", "llm", "Для короткой прогулки пригодятся:\n• Вода и лёгкий перекус\n• Дождевик\n• Заряженный телефон");
+  turn("2026-11-21T09:14:00Z", "Добавь дождевик в список покупок", "yandex", "Добавила дождевик в список покупок.");
+  turn("2026-11-21T09:15:00Z", "Что теперь в списке?", "yandex", "В списке покупок один пункт — дождевик.");
+  await writeFile(file, events.map(event => JSON.stringify(event)).join("\n") + "\n", { mode: 0o600 });
+}
+
+async function checkHistory(page, output) {
+  await page.getByRole("link", { name: "История", exact: true }).click();
+  const thread = page.getByRole("region", { name: "Реплики по времени" });
+  const turns = thread.locator(".history-turn");
+  await thread.getByText("Что теперь в списке?", { exact: true }).waitFor();
+  assert.equal(await turns.count(), 7);
+  assert.equal(await thread.locator(".history-date").count(), 2);
+  assert.equal(await turns.first().locator(".from-user .chat-text").textContent(), "Как выглядит длинная ссылка?");
+  assert.equal(await turns.nth(1).locator(".from-assistant .chat-text").textContent(), "У Земли один естественный спутник.");
+  assert.deepEqual(await thread.locator(".history-note").allTextContents(), ["Запрос прерван", "Нейросеть · Запись неполная", "Алиса · Текст ответа не записан"]);
+  assert.equal(await turns.nth(2).locator(".from-assistant").count(), 0);
+  assert.equal(await turns.nth(3).locator(".from-assistant").count(), 0);
+  assert.ok(await thread.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop < 2));
+
+  const search = page.getByRole("searchbox", { name: "Поиск по тексту" });
+  await search.fill("дождевик");
+  await search.press("Enter");
+  await page.locator("#history-summary").filter({ hasText: "3 запроса" }).waitFor();
+  assert.match(await turns.first().locator(".from-assistant .chat-text").textContent(), /\n• Вода/);
+  const user = await turns.last().locator(".from-user").boundingBox();
+  const reply = await turns.last().locator(".from-assistant").boundingBox();
+  assert.ok(user.x > reply.x && user.y < reply.y);
+  await page.getByRole("heading", { name: "Разговоры с колонкой" }).click();
+  await page.screenshot({ path: path.join(output, "web-panel-history.png"), animations: "disabled" });
+  await search.fill("несуществующаяфраза");
+  await search.press("Enter");
+  await thread.getByText("Записей не найдено.", { exact: false }).waitFor();
+  await search.fill("");
+  const until = page.getByLabel("По дату");
+  await until.fill("2026-11-20");
+  await page.getByRole("button", { name: "Найти", exact: true }).click();
+  await page.locator("#history-summary").filter({ hasText: "4 запроса" }).waitFor();
+  assert.equal(await thread.locator(".history-date").count(), 1);
+  await until.fill("");
+}
+
 async function capture(binary, output) {
   const temp = await mkdtemp(path.join(tmpdir(), "quasar-web-screenshots-"));
   const conversations = [];
@@ -259,6 +313,8 @@ async function capture(binary, output) {
     const speakerConfig = path.join(temp, "quasar.cfg");
     await writeFile(speakerConfig, JSON.stringify({ common: { deviceType: "yandexmidi", softwareVersion: "1.2.3.4" } }));
     const credentials = path.join(temp, "account.json");
+    const journal = path.join(temp, "conversations.jsonl");
+    await seedHistory(journal);
     await writeFile(config, JSON.stringify({
       listen: `${HOST}:${bridgePort}`,
       upstream: `ws://${HOST}:${mockPort}/uni.ws`,
@@ -268,7 +324,7 @@ async function capture(binary, output) {
       llm_model: MODEL,
       airplay: { disabled: true },
       assistant_tools: { enabled: false },
-      conversation_log: { enabled: false },
+      conversation_log: { enabled: true, path: journal },
       routing: { default_route: "llm" },
     }), { mode: 0o600 });
     bridge = spawn(binary, ["-config", config, "-speaker-config", speakerConfig], { cwd: temp, env: { ...process.env, QUASAR_LLM_CHATGPT_AUTH_FILE: credentials }, stdio: ["ignore", "inherit", "inherit"] });
@@ -308,13 +364,28 @@ async function capture(binary, output) {
     await page.screenshot({ path: path.join(output, "web-panel-overview.png"), animations: "disabled" });
 
     await checkTheme(page, output);
+    await checkHistory(page, output);
     await checkRouting(page, output);
     await checkAccount(page);
     await checkModelPicker(page);
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const section of ["overview", "routing", "account"]) {
+    for (const section of ["overview", "routing", "account", "history"]) {
       await page.goto(url + "#" + section);
       await page.locator("#" + section).waitFor();
+      if (section === "history") {
+        await page.locator("#history-summary").filter({ hasText: "7 запросов" }).waitFor();
+        assert.ok(await page.locator("#history-items").evaluate(el => el.scrollWidth <= el.clientWidth));
+        const filters = page.getByRole("button", { name: "Поиск и фильтры" });
+        assert.ok(await page.locator("#history-form").isHidden());
+        await filters.click();
+        assert.ok(await page.getByRole("searchbox").isVisible());
+        await filters.click();
+        assert.equal(await filters.getAttribute("aria-expanded"), "false");
+        const picker = page.getByRole("combobox", { name: "Тема", exact: true });
+        await picker.selectOption("light");
+        await page.screenshot({ path: path.join(output, "web-panel-history-mobile.png"), animations: "disabled" });
+        await picker.selectOption("dark");
+      }
       assert.equal(await page.getByRole("combobox", { name: "Тема", exact: true }).inputValue(), "dark");
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), section + " exceeds mobile width");
     }
