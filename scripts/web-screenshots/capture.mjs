@@ -100,13 +100,14 @@ async function capture(binary, output) {
 
     await mkdir(output, { recursive: true });
     browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage({ viewport: { width: 1040, height: 820 }, deviceScaleFactor: 1, locale: "ru-RU", timezoneId: "UTC" });
+    const page = await browser.newPage({ viewport: { width: 1040, height: 925 }, deviceScaleFactor: 1, locale: "ru-RU", timezoneId: "UTC" });
     const pageErrors = [];
     page.on("pageerror", error => pageErrors.push(error.message));
     await page.goto(url);
     await page.locator("#overview-model").filter({ hasText: MODEL }).waitFor();
     await page.screenshot({ path: path.join(output, "web-panel-overview.png"), animations: "disabled" });
 
+    await page.setViewportSize({ width: 1040, height: 1150 });
     await page.getByRole("link", { name: "Чат", exact: true }).click();
     const input = page.getByRole("textbox", { name: "Сообщение" });
     for (const [index, prompt] of [FIRST, SECOND].entries()) {
@@ -120,9 +121,17 @@ async function capture(binary, output) {
       await page.getByText(ANSWERS[index], { exact: true }).waitFor();
     }
     assert.equal(conversations.length, 2);
-    assert.equal(await page.locator("#chat-messages .chat-message").count(), 4);
-    await page.locator("#chat-scroll").hover();
-    await page.mouse.wheel(0, -1000);
+    const messages = page.locator("#chat-messages .chat-message");
+    assert.equal(await messages.count(), 4);
+    await page.getByRole("heading", { name: "Чат", exact: true }).click();
+    const insideViewport = await messages.evaluateAll(items => {
+      const viewport = document.querySelector("#chat-scroll").getBoundingClientRect();
+      return items.every(item => {
+        const bounds = item.getBoundingClientRect();
+        return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
+      });
+    });
+    assert.ok(insideViewport, "capture would crop a chat message");
     await page.mouse.move(5, 5);
     await page.screenshot({ path: path.join(output, "web-panel-chat.png"), animations: "disabled" });
     assert.deepEqual(pageErrors, []);
