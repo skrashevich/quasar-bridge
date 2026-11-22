@@ -24,9 +24,15 @@ type Planner interface {
 	Complete(context.Context, []llm.Message, bool) (string, error)
 }
 type Controller struct {
-	Tools        ToolCaller
-	Planner      Planner
-	Domains      []string
+	Tools   ToolCaller
+	Planner Planner
+	Domains []string
+	// DelayScript is the Home Assistant script that runs deferred actions. The
+	// bridge starts it with script.turn_on and the variables service, entity_id,
+	// data and either after_minutes or at; with cancel=true, entity_id and
+	// service it cancels the matching pending runs, and script.turn_off cancels
+	// every pending run. Empty disables deferred actions.
+	DelayScript  string
 	exposureMu   sync.Mutex
 	guideMu      sync.Mutex
 	guidesLoaded bool
@@ -50,7 +56,26 @@ type Action struct {
 	Service  string         `json:"service"`
 	EntityID string         `json:"entity_id"`
 	Data     map[string]any `json:"data"`
+	// AfterMinutes or At defer the action to the Controller's DelayScript.
+	AfterMinutes float64 `json:"after_minutes,omitzero"`
+	At           string  `json:"at,omitzero"`
+	// Cancel withdraws pending deferred runs of this service on this device.
+	Cancel bool `json:"cancel,omitzero"`
 }
+
+// timing tells deferred actions apart; it is empty for an immediate action.
+func (a Action) timing() string {
+	switch {
+	case a.Cancel:
+		return "Отменяю отложенное"
+	case a.At != "":
+		return "В " + a.At
+	case a.AfterMinutes != 0:
+		return "Через " + spokenMinutes(int(a.AfterMinutes))
+	}
+	return ""
+}
+
 type Plan struct {
 	Answer  string   `json:"answer"`
 	Actions []Action `json:"actions"`
@@ -135,6 +160,14 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	if err != nil {
 		return "", err
 	}
+	// Every pending run is cancelled only when nothing narrows the request;
+	// a device or a room goes to the planner for a targeted cancel.
+	if c.DelayScript != "" && cancelDelayed(text) && len(controlDomains(text)) == 0 && !mentionsArea(text, entities) {
+		if _, err := c.Tools.Call(ctx, "ha_call_service", map[string]any{"domain": "script", "service": "turn_off", "entity_id": c.DelayScript, "wait": false}); err != nil {
+			return "", fmt.Errorf("home action failed; no cloud retry: %w", err)
+		}
+		return "Отложенные команды отменены.", nil
+	}
 	scoped, roomSpecified := scopeRoomEntities(text, entities)
 	// Prefer a room in the current request; otherwise retain the latest user-specified room.
 	for i := len(history) - 1; !roomSpecified && i >= 0; i-- {
@@ -205,6 +238,9 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	}
 	slices.Sort(services)
 	prompt += strings.Join(services, ", ") + ". История нужна для понимания последнего уточнения. Ответ «да» подтверждает только последнее заданное уточнение, «нет» отменяет его. Не повторяй уже выполненные действия из истории и не трактуй «да» как разрешение на новое действие без ожидающего подтверждения. Состояния и доступность бери только из текущего списка устройств."
+	if c.DelayScript != "" {
+		prompt += ` Для отложенной команды («через 30 минут», «через час», «в 23:00») добавь в действие "after_minutes" — целое число минут от 1 до 1440 — или "at" — время "ЧЧ:ММ" в 24-часовом формате; у немедленного действия этих полей нет. «Включи на 10 минут» — немедленное включение и отложенное выключение того же устройства. Отмена отложенной команды («отмени включение света», «не выключай телевизор через час») — действие с отменяемым сервисом и полем "cancel": true рядом с "service", а не внутри "data"; "service" без домена, как в немедленном действии; без after_minutes и at.`
+	}
 	messages := []llm.Message{{Role: "system", Content: prompt}}
 	messages = append(messages, history...)
 	messages = append(messages, llm.Message{Role: "user", Content: "Устройства: " + string(data) + "\nЗапрос: " + text})
@@ -224,7 +260,7 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 		known[e.ID] = e
 	}
 	// Validate the entire plan before the first physical action.
-	for _, a := range plan.Actions {
+	for i, a := range plan.Actions {
 		e, ok := known[a.EntityID]
 		if !ok || e.State == "unavailable" || e.State == "unknown" || !strings.HasPrefix(a.EntityID, a.Domain+".") || strings.ContainsAny(a.EntityID, ", \n\r") {
 			return "", errors.New("unknown or unavailable home target")
@@ -236,6 +272,24 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 		for key := range a.Data {
 			if !slices.Contains(fields, key) {
 				return "", errors.New("home service parameter not allowed")
+			}
+		}
+		if a.Cancel && (c.DelayScript == "" || a.AfterMinutes != 0 || a.At != "") {
+			return "", errors.New("home delay not allowed")
+		}
+		if a.AfterMinutes != 0 || a.At != "" {
+			// Models write "2.0" as readily as "2"; whole minutes are enough.
+			minutes := math.Round(a.AfterMinutes)
+			if c.DelayScript == "" || (a.AfterMinutes != 0 && a.At != "") || (a.At == "" && (minutes < 1 || minutes > 1440)) {
+				return "", errors.New("home delay not allowed")
+			}
+			plan.Actions[i].AfterMinutes = minutes
+			if a.At != "" {
+				at, err := time.Parse("15:04", a.At)
+				if err != nil {
+					return "", errors.New("home delay not allowed")
+				}
+				plan.Actions[i].At = at.Format("15:04")
 			}
 		}
 	}
@@ -253,11 +307,13 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 			}
 		}
 		visit(a.EntityID)
+		// The same device may change at different times: "включи свет на 10 минут".
 		for id := range affected {
-			if previous, exists := claimed[id]; exists && !climateStartup(previous, a, known[a.EntityID]) {
+			key := id + "\x00" + a.timing()
+			if previous, exists := claimed[key]; exists && !climateStartup(previous, a, known[a.EntityID]) {
 				return "", errors.New("home actions overlap")
 			}
-			claimed[id] = a
+			claimed[key] = a
 		}
 	}
 	if len(plan.Actions) == 0 {
@@ -272,12 +328,17 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	// Exposure is cached for discovery, but always checked fresh before actions.
 	var targets []string
 	var names []string
+	named := map[string]bool{}
 	for _, a := range plan.Actions {
+		// Deferred actions are reported apart, by when they run.
+		if a.timing() == "" && !named[a.EntityID] {
+			named[a.EntityID] = true
+			names = append(names, known[a.EntityID].Name)
+		}
 		if slices.Contains(targets, a.EntityID) {
 			continue
 		}
 		targets = append(targets, a.EntityID)
-		names = append(names, known[a.EntityID].Name)
 		visible, err := c.exposed(ctx, a.EntityID, false)
 		if err != nil {
 			return "", err
@@ -286,8 +347,35 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 			return "", errors.New("home target is not exposed to Assist")
 		}
 	}
+	var later []string
+	deferred := map[string][]string{}
 	allConfirmed := true
 	for _, a := range plan.Actions {
+		if when := a.timing(); when != "" {
+			variables := map[string]any{"service": a.Domain + "." + a.Service, "entity_id": a.EntityID}
+			switch {
+			case a.Cancel:
+				variables["cancel"] = true
+			case a.At != "":
+				variables["at"] = a.At
+			default:
+				variables["after_minutes"] = int(a.AfterMinutes)
+			}
+			if !a.Cancel {
+				variables["data"] = a.Data
+				if a.Data == nil {
+					variables["data"] = map[string]any{}
+				}
+			}
+			if _, err := c.Tools.Call(ctx, "ha_call_service", map[string]any{"domain": "script", "service": "turn_on", "entity_id": c.DelayScript, "data": map[string]any{"variables": variables}, "wait": false}); err != nil {
+				return "", fmt.Errorf("home action failed; no cloud retry: %w", err)
+			}
+			if deferred[when] == nil {
+				later = append(later, when)
+			}
+			deferred[when] = append(deferred[when], known[a.EntityID].Name)
+			continue
+		}
 		_, err := c.Tools.Call(ctx, "ha_call_service", map[string]any{"domain": a.Domain, "service": a.Service, "entity_id": a.EntityID, "data": a.Data, "wait": true})
 		if err != nil {
 			return "", fmt.Errorf("home action failed; no cloud retry: %w", err)
@@ -331,10 +419,82 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 			allConfirmed = false
 		}
 	}
-	if allConfirmed {
-		return "Готово: " + strings.Join(names, ", ") + ".", nil
+	var parts []string
+	switch {
+	case len(names) == 0:
+	case allConfirmed:
+		parts = append(parts, "Готово: "+strings.Join(names, ", ")+".")
+	default:
+		parts = append(parts, "Команда отправлена: "+strings.Join(names, ", ")+".")
 	}
-	return "Команда отправлена: " + strings.Join(names, ", ") + ".", nil
+	for _, when := range later {
+		parts = append(parts, when+": "+strings.Join(deferred[when], ", ")+".")
+	}
+	return strings.Join(parts, " "), nil
+}
+
+// cancelDelayed reports a request to cancel pending deferred actions:
+// "отмени отложенные команды", "сбрось отложенное выключение". A negated
+// request ("не отменяй отложенные") is not one.
+func cancelDelayed(text string) bool {
+	s := strings.ToLower(text)
+	if !strings.Contains(s, "отложенн") {
+		return false
+	}
+	words := strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) })
+	if slices.Contains(words, "не") || slices.Contains(words, "нельзя") {
+		return false
+	}
+	for _, verb := range []string{"отмен", "сбрось", "удали"} {
+		if strings.Contains(s, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+// mentionsArea reports whether the text names an HA area of the entities:
+// "в спальне", "на кухне". Unlike scopeRoomEntities it also drops the ending
+// of short names, since a false match only costs a planner call.
+func mentionsArea(text string, entities []Entity) bool {
+	text = strings.ToLower(text)
+	for _, e := range entities {
+		for _, word := range strings.FieldsFunc(strings.ToLower(e.Area), func(r rune) bool { return !unicode.IsLetter(r) }) {
+			runes := []rune(word)
+			if word == "этаж" || word == "floor" || len(runes) < 3 {
+				continue
+			}
+			switch {
+			case len(runes) >= 6:
+				runes = runes[:len(runes)-2]
+			case len(runes) >= 4:
+				runes = runes[:len(runes)-1]
+			}
+			if strings.Contains(text, string(runes)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// spokenMinutes renders a delay for the spoken reply: "30 минут", "2 часа".
+func spokenMinutes(minutes int) string {
+	if minutes%60 == 0 {
+		hours := minutes / 60
+		return fmt.Sprintf("%d %s", hours, russianPlural(hours, "час", "часа", "часов"))
+	}
+	return fmt.Sprintf("%d %s", minutes, russianPlural(minutes, "минуту", "минуты", "минут"))
+}
+
+func russianPlural(n int, one, few, many string) string {
+	switch {
+	case n%10 == 1 && n%100 != 11:
+		return one
+	case n%10 >= 2 && n%10 <= 4 && (n%100 < 12 || n%100 > 14):
+		return few
+	}
+	return many
 }
 
 // climateStartup permits a setpoint after power-on for one individual device.
