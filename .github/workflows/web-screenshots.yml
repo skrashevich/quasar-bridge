@@ -3,10 +3,6 @@ name: web panel screenshots
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - '.github/workflows/web-screenshots.yml'
-      - 'scripts/web-screenshots/**'
-      - 'cmd/quasar-bridge/diagnostics*'
 
 permissions:
   contents: read

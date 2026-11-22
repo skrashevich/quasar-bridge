@@ -1,7 +1,8 @@
 # Снимки веб-панели
 
-Workflow **web panel screenshots** собирает Bridge и публикует в артефакте
-`web-panel-screenshots` иллюстрации для раздела «Веб-панель» основного README.
+При открытии pull request и каждом новом коммите в нём workflow **web panel screenshots**
+собирает Bridge, проверяет панель в Chromium и публикует снимки в артефакте
+`web-panel-screenshots`. Проверка запускается при изменениях в любых файлах.
 
 | Экран | Файлы PNG |
 | --- | --- |
