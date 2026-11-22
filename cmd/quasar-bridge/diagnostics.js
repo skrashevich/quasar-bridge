@@ -15,6 +15,7 @@ function saveQueryDialog(id) {
 }
 const logState = { cursor: 0, run: "", rows: [], paused: false, busy: false };
 const settingLabels = {
+  "routing.classifier.commands": "Внешние команды для классификатора",
   mode: "Режим Bridge", listen: "Адрес HTTP-сервера", upstream: "Сервер Алисы", allowed_ips: "Разрешённые адреса",
   llm_base_url: "Адрес сервера модели", llm_model: "Модель", llm_api: "Формат API", llm_reasoning_effort: "Усилие рассуждения", llm_max_output_tokens: "Максимум токенов ответа", llm_hosted_tools: "Серверные инструменты", llm_chat_parameters: "Параметры генерации", llm_strip_prefixes: "Обращения к модели", llm_tts_markup: "Голоса и звуковые эффекты", home_warm_area: "Область Home Assistant", listen_after_reply: "Слушать после ответа",
   "dialogue_context.enabled": "Контекст диалога", "dialogue_context.ttl_seconds": "Время жизни контекста, с", "dialogue_context.max_turns": "Пар вопрос / ответ", "dialogue_context.max_chars": "Максимум символов контекста",
@@ -45,7 +46,8 @@ function message(id, text = "", error = false) {
   node.classList.toggle("error", error);
   node.hidden = !text;
 }
-function routeName(route) {
+function routeName(route, command) {
+  if (route === "command") return command ? "Вызов команды · " + command : "Вызов команды";
   return ({ yandex: "Алиса", llm: "Модель", home: "Умный дом", music: "Музыка", playback: "Управление воспроизведением", airplay: "AirPlay", diagnostics: "Веб-интерфейс", classify: "Классификатор", proxy: "Прокси", observe: "Наблюдение" })[route] || route || "Не определён";
 }
 function timeText(value) {
@@ -445,7 +447,7 @@ async function decideQuery(event) {
   message("query-message", "Bridge выбирает маршрут. При необходимости вызывается классификатор модели…");
   try {
     const result = await post("api/decide", { text }, 80000);
-    byId("decision-route").textContent = routeName(result.route);
+    byId("decision-route").textContent = routeName(result.route, result.command);
     byId("decision-source").textContent = (sourceNames[result.source] || "Источник: " + (result.source || "не определён")) + (result.rule ? ". Правило: " + result.rule : "");
     byId("decision-meta").textContent = typeof result.elapsed_ms === "number" ? (result.elapsed_ms / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " с" : "";
     byId("decision-json").textContent = JSON.stringify(result, null, 2);

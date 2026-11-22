@@ -77,6 +77,12 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
+	if len(cfg.Routing.Commands) == 0 {
+		cfg.Routing.Commands = nil
+	}
+	if len(cfg.Routing.Classifier.Commands) == 0 {
+		cfg.Routing.Classifier.Commands = nil
+	}
 	for name, target := range map[string]*string{
 		"QUASAR_LISTEN": &cfg.Listen, "QUASAR_UPSTREAM": &cfg.Upstream,
 		"QUASAR_TLS_CERT": &cfg.TLSCert, "QUASAR_TLS_KEY": &cfg.TLSKey,

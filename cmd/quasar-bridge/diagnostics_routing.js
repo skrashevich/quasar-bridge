@@ -17,8 +17,8 @@ const ruleFields = [
   ["regex", "Регулярное выражение Go"]
 ];
 
-function routeOptions(select) {
-  select.replaceChildren(...["yandex", "llm", "home"].map(route => new Option(routeName(route), route)));
+function routeOptions(select, routes) {
+  select.replaceChildren(...routes.map(route => new Option(routeName(route), route)));
 }
 
 function showRouting() {
@@ -35,6 +35,18 @@ function showRouting() {
   }
   byId("classifier-enabled").checked = data.active_behavior.classifier_enabled;
   byId("default-route").value = data.active_behavior.default_route;
+  const commandIDs = data.active.command_ids || [];
+  const descriptions = data.active.classifier.commands || {};
+  byId("classifier-commands").hidden = commandIDs.length === 0;
+  byId("classifier-command-fields").replaceChildren(...commandIDs.map(id => {
+    const label = element("label", "", id);
+    const field = element("textarea");
+    field.rows = 2;
+    field.dataset.command = id;
+    field.value = Object.hasOwn(descriptions, id) ? descriptions[id] : "";
+    label.append(field);
+    return label;
+  }));
   showClassifierHelp();
   const rules = data.active.rules;
   const list = byId("rule-list");
@@ -52,7 +64,7 @@ function showRouting() {
     const title = element("strong", "", ruleLabel(rule.name));
     if (defaultRuleLabels.has(rule.name)) title.append(element("small", "rule-id", rule.name));
     copy.append(title, element("span", "small muted", summary.join(" · ")));
-    const target = element("span", "rule-target", routeName(rule.route));
+    const target = element("span", "rule-target", routeName(rule.route, rule.command));
     if (rule.disabled) target.append(element("small", "", "Выключено"));
     const edit = element("button", "quiet", "Изменить");
     edit.type = "button";
@@ -122,13 +134,13 @@ async function testLiveRoute() {
     const result = await post("api/decide", { text: byId("routing-phrase").value.trim(), wake_word: byId("routing-wake").value.trim() }, 80000);
     if (version !== routingView.testVersion) return;
     const source = sourceNames[result.source] || result.source;
-    message("routing-live-result", [routeName(result.route), source, result.rule && ruleLabel(result.rule)].filter(Boolean).join(" · "));
+    message("routing-live-result", [routeName(result.route, result.command), source, result.rule && ruleLabel(result.rule)].filter(Boolean).join(" · "));
   } catch (error) { if (version === routingView.testVersion) message("routing-live-result", error.message, true); }
   finally { button.disabled = false; }
 }
 
 function renderRouteComparison(id, { active, saved }) {
-  const same = active.route === saved.route && active.rule === saved.rule && active.source === saved.source;
+  const same = active.route === saved.route && active.command === saved.command && active.rule === saved.rule && active.source === saved.source;
   const versions = same ? [["Действующие и сохранённые правила", active]] : [["Действующие правила", active], ["Сохранённые правила", saved]];
   const output = byId(id);
   output.replaceChildren(...versions.map(([title, decision]) => {
@@ -136,7 +148,7 @@ function renderRouteComparison(id, { active, saved }) {
     let reason = sourceNames[decision.source] || decision.source;
     if (decision.rule) reason = "Совпало правило «" + ruleLabel(decision.rule) + "».";
     else if (decision.route === "classify") reason = "В реальном запросе обработчика выберет модель.";
-    section.append(element("h3", "", title), element("strong", "", routeName(decision.route)), element("p", "small muted", reason));
+    section.append(element("h3", "", title), element("strong", "", routeName(decision.route, decision.command)), element("p", "small muted", reason));
     return section;
   }));
   output.hidden = false;
@@ -160,6 +172,12 @@ function addRuleGroup(values = []) {
   return input;
 }
 
+function showCommandField() {
+  const chosen = byId("rule-route").value === "command";
+  byId("rule-command-fields").hidden = !chosen;
+  byId("rule-command").required = chosen;
+}
+
 function openRule(rule) {
   const data = routingView.data;
   routingView.editing = rule;
@@ -170,6 +188,9 @@ function openRule(rule) {
   byId("rule-name").value = rule?.name || "";
   byId("rule-name").readOnly = Boolean(rule);
   byId("rule-route").value = rule?.route || "llm";
+  byId("rule-command").replaceChildren(new Option("Выберите команду", ""), ...(data.saved.command_ids || []).map(id => new Option(id, id)));
+  byId("rule-command").value = rule?.command || "";
+  showCommandField();
   byId("rule-before").replaceChildren(...rules.filter(item => item.name !== rule?.name).map(item => new Option("Перед «" + ruleLabel(item.name) + "»", item.name)), new Option("В конце списка", ""));
   byId("rule-before").value = rules[index + 1]?.name || "";
   byId("rule-enabled").checked = !rule?.disabled;
@@ -209,7 +230,12 @@ function readRuleDraft() {
   if (!Object.keys(match).some(key => key !== "contains_none")) {
     throw new Error("Добавьте фразу, начало фразы, группу, слово активации или регулярное выражение.");
   }
-  return { name, route: byId("rule-route").value, disabled: !byId("rule-enabled").checked, match };
+  const rule = { name, route: byId("rule-route").value, disabled: !byId("rule-enabled").checked, match };
+  if (rule.route === "command") {
+    rule.command = byId("rule-command").value;
+    if (!rule.command) throw new Error("Выберите зарегистрированную команду.");
+  }
+  return rule;
 }
 
 function resetRulePreview() {
@@ -227,7 +253,7 @@ async function previewRule(event) {
     message("rule-preview-result", "Проверяем условия…");
     const { matched } = await post("api/routing/preview", { rule, text, wake_word: byId("rule-wake").value.trim() });
     if (version !== routingView.previewVersion) return;
-    let result = matched ? "Условия совпали. Обработчик — " + routeName(rule.route) + "." : "Фраза не подходит под условия правила.";
+    let result = matched ? "Условия совпали. Обработчик — " + routeName(rule.route, rule.command) + "." : "Фраза не подходит под условия правила.";
     if (rule.disabled) result += " Правило выключено и пропускается при маршрутизации.";
     message("rule-preview-result", result);
   } catch (error) {
@@ -287,8 +313,9 @@ async function changeRouting(endpoint, body) {
 }
 
 function setupRouting() {
-  routeOptions(byId("default-route"));
-  routeOptions(byId("rule-route"));
+  routeOptions(byId("default-route"), ["yandex", "llm", "home"]);
+  routeOptions(byId("rule-route"), ["yandex", "llm", "home", "command"]);
+  byId("rule-route").addEventListener("change", showCommandField);
   for (const [key, title] of ruleFields) {
     const label = element("label", "", title);
     const field = element("textarea"); field.id = "condition-" + key; field.rows = 2;
@@ -316,6 +343,9 @@ function setupRouting() {
   byId("classifier-enabled").addEventListener("change", showClassifierHelp);
   byId("routing-options").addEventListener("submit", event => {
     event.preventDefault();
-    changeRouting("options", { expected_revision: routingView.data.saved_revision, classifier_enabled: byId("classifier-enabled").checked, default_route: byId("default-route").value });
+    const options = { expected_revision: routingView.data.saved_revision, classifier_enabled: byId("classifier-enabled").checked, default_route: byId("default-route").value };
+    const fields = [...byId("classifier-command-fields").querySelectorAll("textarea")];
+    if (fields.length) options.classifier_commands = Object.fromEntries(fields.filter(field => field.value.trim()).map(field => [field.dataset.command, field.value]));
+    changeRouting("options", options);
   });
 }

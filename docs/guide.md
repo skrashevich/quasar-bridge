@@ -5,6 +5,7 @@
 
 - [Установка на колонку](https://github.com/skrashevich/quasar-bridge/wiki/Установка-на-колонку).
 - [Сборка и первый запуск на сервере](https://github.com/skrashevich/quasar-bridge/wiki/Установка-на-сервер).
+- [Вызов внешней команды по правилу или решению классификатора](routing-commands.md).
 - [Все разделы](https://github.com/skrashevich/quasar-bridge/wiki).
 - [Проверка полноты переноса](https://github.com/skrashevich/quasar-bridge/wiki/Проверка-переноса).
 

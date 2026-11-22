@@ -107,6 +107,16 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "command":
+		if decision.handler == nil {
+			return result, errors.New("routing command is unavailable")
+		}
+		answer, err := decision.handler.run(ctx, text, decision)
+		if !e.dialogue().Current(ctx, ticket) {
+			return result, context.Canceled
+		}
+		result.Answer = answer
+		return result, err
 	case "diagnostics":
 		enabled, ok := configvoice.DiagnosticsCommand(text)
 		if !ok || e.Diagnostics == nil {
@@ -296,6 +306,7 @@ func (e *Engine) DecideWithWakeWord(ctx context.Context, text, word string) Rout
 
 func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecision) {
 	ctx, snapshot, ticket := e.dialogue().Start(ctx)
+	p := e.policy()
 	defer func() {
 		// Choose the cloud path before Native can start local progress/TTS.
 		if decision.Route == "home" && e.Home == nil {
@@ -304,9 +315,11 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		}
 		decision.ticket = ticket
 		decision.prepared = true
+		if decision.Route == "command" {
+			decision.handler = p.commands[decision.Command]
+		}
 	}()
 	awaitingHomeReply := snapshot.Route == "home" && e.dialogue().TakeHomeQuestion(ctx, ticket)
-	p := e.policy()
 	if configvoice.RecoveryAction(text) != "" {
 		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
 	}
@@ -360,8 +373,19 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	var choice struct {
 		Route string `json:"route"`
 	}
-	if json.Unmarshal([]byte(answer), &choice) != nil || !directRoute(choice.Route) {
+	data := []byte(answer)
+	if json.Unmarshal(data, &choice) != nil {
 		return failed
 	}
-	return RouteDecision{Route: choice.Route, Source: "classifier"}
+	if directRoute(choice.Route) {
+		return RouteDecision{Route: choice.Route, Source: "classifier"}
+	}
+	var command struct {
+		Route   string `json:"route"`
+		Command string `json:"command"`
+	}
+	if choice.Route != "command" || json.Unmarshal(data, &command, json.RejectUnknownMembers(true)) != nil || p.classifier.Commands[command.Command] == "" {
+		return failed
+	}
+	return RouteDecision{Route: "command", Command: command.Command, Source: "classifier"}
 }

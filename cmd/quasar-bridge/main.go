@@ -36,10 +36,10 @@ import (
 func main() {
 	version := flag.Bool("v", false, "print version and exit")
 	path := flag.String("config", "config.json", "configuration file")
-	query := flag.String("query", "", "run one text query for diagnostics with simulated speaker audio playback")
+	query := flag.String("query", "", "execute the selected handler for one text query with simulated speaker audio playback")
 	check := flag.Bool("check-backends", false, "check LLM and configured Home Assistant connectivity")
 	checkMCP := flag.Bool("check-mcp", false, "connect to configured MCP servers and list tools without executing them")
-	route := flag.String("route", "", "explain a route without executing home actions or generating an answer")
+	route := flag.String("route", "", "explain a route without executing its handler")
 	validate := flag.Bool("check-config", false, "validate configuration without contacting backends")
 	listModels := flag.Bool("list-models", false, "list available LLM models as ID and quoted label (tab-separated); no model selection required")
 	probeCompat := flag.Bool("probe-llm-compat", false, "probe Chat Completions parameter compatibility and print a JSON override object without changing configuration")

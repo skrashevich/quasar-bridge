@@ -24,6 +24,17 @@ func effectiveRoutingBehavior(cfg bridge.RoutingConfig) routingBehavior {
 	return routingBehavior{cfg.ClassifierEnabled(), cfg.DefaultDestination()}
 }
 
+type routingView struct {
+	bridge.RoutingConfig
+	CommandIDs []string `json:"command_ids,omitempty"`
+}
+
+func publicRouting(cfg bridge.RoutingConfig) routingView {
+	ids := slices.Sorted(maps.Keys(cfg.Commands))
+	cfg.Commands = nil // Deployment paths and argv stay out of the panel and LLM tools.
+	return routingView{cfg, ids}
+}
+
 func (c *configurationControl) GetRouting(ctx context.Context) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -43,15 +54,15 @@ func (c *configurationControl) GetRouting(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	return struct {
-		Active         bridge.RoutingConfig `json:"active"`
-		Saved          bridge.RoutingConfig `json:"saved"`
-		ActiveRevision string               `json:"active_revision"`
-		SavedRevision  string               `json:"saved_revision"`
-		Pending        bool                 `json:"pending"`
-		Order          string               `json:"order"`
-		ActiveBehavior routingBehavior      `json:"active_behavior"`
-		SavedBehavior  routingBehavior      `json:"saved_behavior"`
-	}{c.active.Routing, next.Routing, active.Revision(), saved.Revision(), !reflect.DeepEqual(c.active.Routing, next.Routing), "first enabled matching rule wins; Bridge configuration administration has priority over these rules", effectiveRoutingBehavior(c.active.Routing), effectiveRoutingBehavior(next.Routing)}, nil
+		Active         routingView     `json:"active"`
+		Saved          routingView     `json:"saved"`
+		ActiveRevision string          `json:"active_revision"`
+		SavedRevision  string          `json:"saved_revision"`
+		Pending        bool            `json:"pending"`
+		Order          string          `json:"order"`
+		ActiveBehavior routingBehavior `json:"active_behavior"`
+		SavedBehavior  routingBehavior `json:"saved_behavior"`
+	}{publicRouting(c.active.Routing), publicRouting(next.Routing), active.Revision(), saved.Revision(), !reflect.DeepEqual(c.active.Routing, next.Routing), "first enabled matching rule wins; Bridge configuration administration has priority over these rules", effectiveRoutingBehavior(c.active.Routing), effectiveRoutingBehavior(next.Routing)}, nil
 }
 
 func (c *configurationControl) MutateRouting(ctx context.Context, mutation assistant.RoutingMutation) (any, error) {
@@ -173,7 +184,7 @@ func (c *configurationControl) ConfigureRouting(ctx context.Context, options ass
 	if c.restartPending() {
 		return nil, errors.New("restart already scheduled; wait for the new process")
 	}
-	if options.ClassifierEnabled == nil && options.DefaultRoute == nil {
+	if options.ClassifierEnabled == nil && options.DefaultRoute == nil && options.ClassifierCommands == nil {
 		return nil, errors.New("at least one routing option is required")
 	}
 	if options.DefaultRoute != nil && !slices.Contains([]string{"llm", "yandex", "home"}, *options.DefaultRoute) {
@@ -197,20 +208,33 @@ func (c *configurationControl) ConfigureRouting(ctx context.Context, options ass
 	if !reflect.DeepEqual(cfg.Routing, c.active.Routing) {
 		return nil, errors.New("routing has unapplied saved changes; explicitly apply or discard them first")
 	}
-	// Materialize legacy inference before changing either option, so choosing a
-	// new default cannot accidentally toggle classification and vice versa.
-	enabled, route := cfg.Routing.ClassifierEnabled(), cfg.Routing.DefaultDestination()
-	if options.ClassifierEnabled != nil {
-		enabled = *options.ClassifierEnabled
+	changes := map[string]jsontext.Value{}
+	if options.ClassifierEnabled != nil || options.DefaultRoute != nil {
+		// Resolve legacy defaults before changing either independent option.
+		enabled, route := cfg.Routing.ClassifierEnabled(), cfg.Routing.DefaultDestination()
+		if options.ClassifierEnabled != nil {
+			enabled = *options.ClassifierEnabled
+		}
+		if options.DefaultRoute != nil {
+			route = *options.DefaultRoute
+		}
+		cfg.Routing.Classifier.Enabled = new(enabled)
+		cfg.Routing.DefaultRoute = route
+		changes["routing.classifier.enabled"], _ = json.Marshal(enabled)
+		changes["routing.default_route"], _ = json.Marshal(route)
 	}
-	if options.DefaultRoute != nil {
-		route = *options.DefaultRoute
+	if options.ClassifierCommands != nil {
+		cfg.Routing.Classifier.Commands = options.ClassifierCommands
+		if len(options.ClassifierCommands) == 0 {
+			cfg.Routing.Classifier.Commands = nil
+		}
+		commands, err := json.Marshal(options.ClassifierCommands, json.Deterministic(true))
+		if err != nil {
+			return nil, err
+		}
+		changes["routing.classifier.commands"] = commands
 	}
-	cfg.Routing.Classifier.Enabled = new(enabled)
-	cfg.Routing.DefaultRoute = route
-	enabledJSON, _ := json.Marshal(enabled)
-	routeJSON, _ := json.Marshal(route)
-	result, err := c.applyRoutingChangesLocked(ctx, cfg, raw, map[string]jsontext.Value{"routing.classifier.enabled": enabledJSON, "routing.default_route": routeJSON})
+	result, err := c.applyRoutingChangesLocked(ctx, cfg, raw, changes)
 	if err != nil {
 		return nil, err
 	}

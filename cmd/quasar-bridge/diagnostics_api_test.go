@@ -430,3 +430,63 @@ func TestPanelRoutingOptionsAndConflicts(t *testing.T) {
 		t.Fatalf("unapplied changes overwritten: %d", r.Code)
 	}
 }
+
+func TestPanelRoutesToRegisteredCommandWithoutExecutingPreviews(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "requests")
+	cfg := fmt.Sprintf(`{"routing":{"rules":[],"commands":{"note":{"path":"/bin/sh","args":["-c","cat >> \"$1\" && echo записано","note",%q]}}}}`, logPath)
+	c := configurationFixture(t, cfg)
+	c.engine.LLM = diagnosticCompleter(func(context.Context, []llm.Message, bool) (string, error) {
+		return `{"route":"command","command":"note"}`, nil
+	})
+	mux := http.NewServeMux()
+	registerDiagnosticsAPI(mux, diagnosticControl{Configuration: c, Engine: c.engine})
+	post := func(endpoint, body string) *httptest.ResponseRecorder {
+		return diagnosticAPIRequest(mux, "POST", endpoint, body, "application/json")
+	}
+	revision := func() string {
+		t.Helper()
+		r := diagnosticAPIRequest(mux, "GET", "routing", "", "")
+		var view struct {
+			SavedRevision string `json:"saved_revision"`
+		}
+		if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &view) != nil || view.SavedRevision == "" ||
+			!strings.Contains(r.Body.String(), `"command_ids":["note"]`) || strings.Contains(r.Body.String(), logPath) || strings.Contains(r.Body.String(), "/bin/sh") {
+			t.Fatalf("unexpected routing view: %d %s", r.Code, r.Body)
+		}
+		return view.SavedRevision
+	}
+	for _, body := range []string{
+		`{"changes":{"routing.commands":{"new":{"path":"/bin/false"}}}}`,
+		`{"changes":{"routing.classifier.commands":{"unregistered":"example"}}}`,
+	} {
+		if r := post("config", body); r.Code < 400 {
+			t.Fatalf("invalid configuration saved: %d %s", r.Code, r.Body)
+		}
+	}
+	rule := `{"name":"notes","route":"command","command":"note","match":{"starts_with_any":["запиши"]}}`
+	if r := post("routing/preview", `{"rule":`+rule+`,"text":"запиши тест"}`); r.Code != 200 || !strings.Contains(r.Body.String(), `"matched":true`) {
+		t.Fatalf("draft preview: %d %s", r.Code, r.Body)
+	}
+	if r := post("routing/rule", `{"action":"upsert","expected_revision":"`+revision()+`","rule":`+rule+`}`); r.Code != 200 {
+		t.Fatal(r.Body)
+	}
+	if r := post("routing/options", `{"expected_revision":"`+revision()+`","classifier_commands":{"note":"добавить заметку"}}`); r.Code != 200 {
+		t.Fatal(r.Body)
+	}
+	for _, tc := range []struct{ endpoint, phrase, source string }{
+		{"route", "запиши тест", "rule"}, {"decide", "добавь в блокнот", "classifier"},
+	} {
+		r := post(tc.endpoint, `{"text":"`+tc.phrase+`"}`)
+		if r.Code != 200 || !strings.Contains(r.Body.String(), `"command":"note"`) || !strings.Contains(r.Body.String(), `"source":"`+tc.source+`"`) {
+			t.Fatalf("%s: %d %s", tc.endpoint, r.Code, r.Body)
+		}
+	}
+	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("configuration or preview executed the command", err)
+	}
+	r := post("query", `{"text":"добавь в блокнот"}`)
+	raw, err := os.ReadFile(logPath)
+	if r.Code != 200 || !strings.Contains(r.Body.String(), `"answer":"записано"`) || err != nil || !strings.Contains(string(raw), `"source":"classifier"`) {
+		t.Fatalf("query: %d %s, stdin=%s err=%v", r.Code, r.Body, raw, err)
+	}
+}

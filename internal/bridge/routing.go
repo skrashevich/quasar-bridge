@@ -17,14 +17,16 @@ import (
 )
 
 type RoutingConfig struct {
-	Rules        []RoutingRule    `json:"rules"`
-	DefaultRoute string           `json:"default_route"`
-	Classifier   ClassifierConfig `json:"classifier"`
-	Refusal      RefusalConfig    `json:"refusal"`
+	Commands     map[string]RoutingCommand `json:"commands,omitempty"`
+	Rules        []RoutingRule             `json:"rules"`
+	DefaultRoute string                    `json:"default_route"`
+	Classifier   ClassifierConfig          `json:"classifier"`
+	Refusal      RefusalConfig             `json:"refusal"`
 }
 type RoutingRule struct {
 	Name     string       `json:"name"`
 	Route    string       `json:"route"`
+	Command  string       `json:"command,omitempty"`
 	Disabled bool         `json:"disabled,omitzero"`
 	Match    RoutingMatch `json:"match"`
 }
@@ -38,10 +40,11 @@ type RoutingMatch struct {
 }
 type ClassifierConfig struct {
 	// Nil preserves legacy default_route=classify / direct-route semantics.
-	Enabled   *bool  `json:"enabled,omitempty"`
-	Prompt    string `json:"prompt"`
-	TimeoutMS int    `json:"timeout_ms"`
-	OnError   string `json:"on_error"`
+	Enabled   *bool             `json:"enabled,omitempty"`
+	Prompt    string            `json:"prompt"`
+	TimeoutMS int               `json:"timeout_ms"`
+	OnError   string            `json:"on_error"`
+	Commands  map[string]string `json:"commands,omitempty"`
 }
 type RefusalConfig struct {
 	Enabled     bool     `json:"enabled"`
@@ -51,17 +54,19 @@ type RefusalConfig struct {
 type RouteDecision struct {
 	ticket   dialogue.Ticket
 	prepared bool
+	handler  *RoutingCommand
 	Route    string `json:"route"`
+	Command  string `json:"command,omitempty"`
 	Rule     string `json:"rule,omitempty"`
 	Source   string `json:"source"`
 }
 type compiledRule struct {
-	musicFromSite     bool // Only the unchanged shipped rule uses semantic music negation.
-	name, route       string
-	wakewordTags      []string
-	any, none, prefix []string
-	groups            [][]string
-	regex             *regexp.Regexp
+	musicFromSite        bool // Only the unchanged shipped rule uses semantic music negation.
+	name, route, command string
+	wakewordTags         []string
+	any, none, prefix    []string
+	groups               [][]string
+	regex                *regexp.Regexp
 }
 
 type wakewordTagKey struct{}
@@ -77,6 +82,7 @@ func stationWakewordTag(word string) string {
 // to share across requests and existing WebSocket sessions.
 type RoutingPolicy struct {
 	rules                           []compiledRule
+	commands                        map[string]*RoutingCommand
 	defaultRoute                    string
 	classifier                      ClassifierConfig
 	classifierEnabled               bool
@@ -197,6 +203,9 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 		return nil, errors.New("classifier prompt must not be empty")
 	}
 	p := &RoutingPolicy{defaultRoute: cfg.DefaultDestination(), classifier: cfg.Classifier, classifierEnabled: cfg.ClassifierEnabled(), refusalEnabled: cfg.Refusal.Enabled}
+	if err := p.compileCommands(cfg); err != nil {
+		return nil, err
+	}
 	names := map[string]bool{}
 	defaultMusic := defaultMusicFromSiteRule()
 	for i, rule := range cfg.Rules {
@@ -205,14 +214,18 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 			return fail("name must be nonempty and unique")
 		}
 		names[rule.Name] = true
-		if !directRoute(rule.Route) {
+		if rule.Route == "command" {
+			if p.commands[rule.Command] == nil {
+				return fail("command must name a registered routing command")
+			}
+		} else if rule.Command != "" || !directRoute(rule.Route) {
 			return fail("invalid route")
 		}
 		m := rule.Match
 		if len(m.WakeWords) == 0 && len(m.ContainsAny) == 0 && len(m.ContainsAllGroups) == 0 && len(m.StartsWithAny) == 0 && m.Regex == "" {
 			return fail("at least one positive condition is required")
 		}
-		r := compiledRule{name: rule.Name, route: rule.Route}
+		r := compiledRule{name: rule.Name, route: rule.Route, command: rule.Command}
 		for _, word := range m.WakeWords {
 			if strings.TrimSpace(word) == "" {
 				return fail("wake_words has an empty ID")
@@ -260,7 +273,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	if p.refusalEnabled && (len(p.refusalPrefixes) == 0 || len(p.refusalPhrases) == 0) {
 		return nil, errors.New("enabled refusal matcher requires prefixes and contains_any")
 	}
-	data, err := json.Marshal(cfg)
+	data, err := json.Marshal(cfg, json.Deterministic(true))
 	if err != nil {
 		return nil, errors.New("cannot encode routing configuration")
 	}
@@ -309,7 +322,7 @@ func (p *RoutingPolicy) match(text, wakewordTag string) (RouteDecision, bool) {
 		if r.regex != nil && !r.regex.MatchString(text) {
 			continue
 		}
-		return RouteDecision{Route: r.route, Rule: r.name, Source: "rule"}, true
+		return RouteDecision{Route: r.route, Command: r.command, Rule: r.name, Source: "rule"}, true
 	}
 	return RouteDecision{}, false
 }

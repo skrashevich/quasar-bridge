@@ -126,6 +126,11 @@ func registerDiagnosticsAPI(mux *http.ServeMux, control diagnosticControl) {
 		}
 		draft.Rule.Disabled = false
 		cfg := bridge.DefaultRoutingConfig()
+		if c := control.Configuration; c != nil {
+			c.mu.Lock()
+			cfg.Commands = c.active.Routing.Commands
+			c.mu.Unlock()
+		}
 		cfg.Rules = []bridge.RoutingRule{draft.Rule}
 		policy, err := bridge.CompileRouting(cfg)
 		if err != nil {

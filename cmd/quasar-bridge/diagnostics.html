@@ -75,11 +75,18 @@
       <p id="routing-pending" class="notice" hidden>В файле есть неприменённые изменения маршрутизации. Проверка сравнит обе версии. <a href="#settings" data-settings-filter="routing">Открыть сохранённые настройки</a></p>
       <ol id="rule-list" class="rules"></ol>
       <form id="routing-options" class="surface"><h2>Если правила не подошли</h2><fieldset disabled><label class="switch-label"><input id="classifier-enabled" type="checkbox"> Поручить выбор обработчика модели</label>
-        <label>Маршрут при выключенном классификаторе<select id="default-route"></select></label><p id="classifier-help" class="muted small"></p><button type="submit">Применить настройки маршрута</button></fieldset></form>
+        <label>Маршрут при выключенном классификаторе<select id="default-route"></select></label><p id="classifier-help" class="muted small"></p>
+        <div id="classifier-commands" hidden><h3>Внешние команды для классификатора</h3>
+          <p class="muted small">Опишите, при каких запросах модель должна выбирать каждую команду. Оставьте поле пустым, если команду должны вызывать только правила.</p>
+          <div id="classifier-command-fields" class="rule-grid"></div>
+        </div><button type="submit">Применить настройки маршрута</button></fieldset></form>
       <dialog id="rule-dialog" aria-labelledby="rule-dialog-title">
         <header class="section-heading"><h2 id="rule-dialog-title">Новое правило</h2><button type="button" class="quiet" id="rule-close" aria-label="Закрыть редактор">Закрыть</button></header>
         <form id="rule-editor">
         <div class="rule-grid"><label>Название<input id="rule-name" required></label><label>Обработчик<select id="rule-route"></select></label></div>
+        <div id="rule-command-fields" hidden><label>Внешняя команда<select id="rule-command" aria-describedby="rule-command-help"></select></label>
+          <p class="muted small" id="rule-command-help">Зарегистрируйте программу в <code>routing.commands</code> файла <code>config.json</code> и примените настройки. Bridge передаст запрос в stdin и озвучит текст из stdout.</p>
+        </div>
         <div class="rule-grid"><label>Место в списке<select id="rule-before"></select></label><label class="switch-label"><input type="checkbox" id="rule-enabled" checked> Правило включено</label></div>
         <h3>Условия совпадения</h3><p class="muted small">Заполните хотя бы одно условие для совпадения. Разные условия должны выполняться одновременно. В списках пишите каждую фразу с новой строки.</p>
         <div id="rule-conditions" class="rule-grid"></div>
@@ -137,7 +144,7 @@
         </div>
         <form id="query-form" class="chat-composer"><label for="query-text" class="visually-hidden">Сообщение</label><div class="chat-input-row"><textarea id="query-text" rows="1" maxlength="8000" placeholder="Напишите сообщение…" aria-describedby="chat-input-help execute-help" required></textarea><button id="execute-query" type="submit" class="primary">Отправить <span aria-hidden="true">↑</span></button></div><div class="chat-composer-meta"><span id="chat-input-help">Enter — отправить, Shift+Enter — новая строка</span><span id="chat-count" hidden></span></div><p id="chat-feedback" class="field-error" role="status" hidden></p></form>
       </section>
-      <p id="execute-help" class="chat-footnote">Ответы приходят без озвучивания. Воспроизведение имитируется; команды умного дома и изменения настроек выполняются.</p>
+      <p id="execute-help" class="chat-footnote">Ответы приходят без озвучивания. Воспроизведение имитируется. Внешние команды, команды умного дома и изменения настроек выполняются.</p>
       <details id="query-diagnostics" class="surface technical-details query-diagnostics"><summary>Проверка маршрутизации</summary><p class="muted small">Введите фразу в поле чата и проверьте, кто её обработает. Эти проверки не отправляют сообщение и не выполняют команду.</p><div class="query-actions"><button id="decide-query" type="button">Проверить маршрут</button><button id="preview-query" type="button">Сравнить правила</button></div><p id="query-message" class="notice" role="status" hidden></p><div id="route-result" class="route-result" hidden></div><section id="decision-section" aria-labelledby="decision-title" hidden><div class="section-heading"><h3 id="decision-title">Выбранный маршрут</h3><span id="decision-meta" class="muted small"></span></div><p id="decision-route" class="route-name"></p><p id="decision-source" class="route-explanation"></p><details class="raw-state"><summary>Результат в JSON</summary><pre id="decision-json" tabindex="0" aria-label="Результат проверки маршрута в JSON"></pre></details></section></details>
     </section>
     <section id="airplay" class="page" aria-labelledby="airplay-title" hidden>

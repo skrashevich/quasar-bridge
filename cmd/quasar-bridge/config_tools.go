@@ -56,7 +56,8 @@ var voiceSettings = []voiceSetting{
 	{"conversation_log.max_text_chars", "Лимит символов записи: целое число 1..64000.", "", false},
 	{"routing.default_route", "Маршрут по умолчанию: classify, yandex, llm или home.", "", false},
 	{"routing.classifier.enabled", "Логическое: включить LLM-классификатор запросов без совпавшего правила. При false используется маршрут по умолчанию. Если поле отсутствует, действует прежнее поведение default_route.", "", false},
-	{"routing.rules", "Массив правил по порядку: name, route (yandex/llm/home), disabled, match с contains_any, contains_all_groups, contains_none, starts_with_any, regex, wake_words (ID слов из station-wakeword). Перед изменением прочитай текущие правила и сохрани остальные.", "", false},
+	{"routing.rules", "Массив правил по порядку. Для route доступны yandex, llm, home и command. Для command укажите в поле command ID зарегистрированной команды. Правило содержит name, необязательный disabled и условия match (contains_any, contains_all_groups, contains_none, starts_with_any, regex, wake_words). При изменении сохраняйте остальные правила.", "", false},
+	{"routing.classifier.commands", "Объект с описаниями зарегистрированных команд для классификатора. Ключ — ID команды, значение — когда её вызывать. Пустой объект отключает выбор команд моделью.", "", false},
 	{"routing.classifier.prompt", "Непустая строка: инструкция классификатора маршрута.", "", false},
 	{"routing.classifier.timeout_ms", "Тайм-аут классификации в миллисекундах: целое число 1..60000.", "", false},
 	{"routing.classifier.on_error", "Маршрут при ошибке классификатора: yandex, llm или home.", "", false},
@@ -109,6 +110,9 @@ func requiresRestart(active, next config) bool {
 
 func (c *configurationControl) result(status string, next config) configurationResult {
 	result := configurationResult{Status: status, Pending: []string{}, RestartRequired: requiresRestart(c.active, next), RestartScheduled: c.restartPending()}
+	if !reflect.DeepEqual(c.active.Routing.Commands, next.Routing.Commands) {
+		result.Pending = append(result.Pending, "routing.commands")
+	}
 	for _, setting := range voiceSettings {
 		if !bytes.Equal(configValue(c.active, setting.Path), configValue(next, setting.Path)) {
 			result.Pending = append(result.Pending, setting.Path)
@@ -336,6 +340,9 @@ func (c *configurationControl) SetDiagnosticsNetworkAccess(ctx context.Context, 
 }
 
 func configValue(cfg config, path string) jsontext.Value {
+	if path == "routing.classifier.commands" && len(cfg.Routing.Classifier.Commands) == 0 {
+		return jsontext.Value("{}")
+	}
 	if path == "routing.classifier.enabled" {
 		raw, _ := json.Marshal(cfg.Routing.ClassifierEnabled())
 		return raw

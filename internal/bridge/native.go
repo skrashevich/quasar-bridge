@@ -169,6 +169,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			scope = "uuid:" + id
 		}
 		pctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
+		pctx = context.WithValue(pctx, commandOriginKey{}, commandOrigin{RequestID: cmp.Or(req.GetHeader().GetRequestId(), id), InputType: f.Kind()})
 		if tag := req.GetEventSource().GetId(); e.GetVoiceInput() != nil && tag != "" {
 			pctx = context.WithValue(pctx, wakewordTagKey{}, tag)
 		}
@@ -616,6 +617,9 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				result.Answer = "Не удалось изменить сетевой доступ к веб-интерфейсу. Проверьте журнал Quasar Bridge."
 			} else if result.Route == "home" {
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
+			} else if result.Route == "command" {
+				slog.Warn("native_command_failed", "request", requestTag(p.id), "error", err)
+				result.Answer = "Не удалось получить ответ от внешней команды."
 			} else if result.Route == "airplay" {
 				result.Answer = "Не удалось изменить состояние AirPlay. Проверьте журнал Quasar Bridge."
 			} else if result.Route == "music" {
