@@ -428,9 +428,7 @@ func main() {
 	panel = newDiagnosticsListener(cfg.Diagnostics.Port, panelMux)
 	configuration.applyDiagnostics = panel.SetNetworkAccess
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		data, _ := json.Marshal(status())
-		_, _ = w.Write(data)
+		writeDiagnosticJSON(w, http.StatusOK, status())
 	})
 	mux.Handle("/uni.ws", proxy)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -387,12 +388,14 @@ func writeDiagnosticError(w http.ResponseWriter, status int, message string) {
 }
 
 func writeDiagnosticJSON(w http.ResponseWriter, status int, value any) {
-	data, err := json.Marshal(value)
-	if err != nil {
+	var body bytes.Buffer
+	if err := json.MarshalWrite(&body, value, jsontext.EscapeForHTML(true)); err != nil {
 		status = http.StatusInternalServerError
-		data = []byte(`{"error":"Cannot encode response"}`)
+		body.Reset()
+		body.WriteString(`{"error":"Cannot encode response"}`)
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
-	_, _ = w.Write(data)
+	_, _ = body.WriteTo(w)
 }

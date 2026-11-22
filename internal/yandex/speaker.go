@@ -4,11 +4,10 @@ import (
 	"cmp"
 	"encoding/json/v2"
 	"errors"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/skrashevich/quasar-bridge/internal/localfile"
 	account "github.com/skrashevich/quasar-go-genproto/proto/yandex_io/protos"
 	"google.golang.org/protobuf/proto"
 )
@@ -16,7 +15,7 @@ import (
 // NewSpeaker reads the native account without refreshing or rewriting it.
 // Credentials remain in memory and go only to the official Yandex host.
 func NewSpeaker(configPath, timezone string) (*Client, error) {
-	data, err := readNativeFile(configPath)
+	data, _, err := localfile.Read(configPath, localfile.Follow, 1<<20)
 	if err != nil {
 		return nil, errors.New("Yandex text queries require the native speaker configuration; run -query on the speaker")
 	}
@@ -33,11 +32,17 @@ func NewSpeaker(configPath, timezone string) (*Client, error) {
 	if json.Unmarshal(data, &cfg) != nil || cfg.Aliced.APIKey == "" || cfg.Aliced.AppID == "" {
 		return nil, errors.New("invalid native speaker configuration for Yandex text queries")
 	}
-	path := strings.ReplaceAll(cmp.Or(cfg.Auth.Storage, "account_storage.dat"), "${DATA}", "/data/quasar")
-	if !filepath.IsAbs(path) {
+	// Absolute locations come from firmware or an operator-supplied config.
+	// Relative names and the firmware's DATA placeholder use the speaker data directory.
+	path := cmp.Or(cfg.Auth.Storage, "account_storage.dat")
+	if rel, prefixed := strings.CutPrefix(path, "${DATA}/"); prefixed || !filepath.IsAbs(path) {
+		path = rel
+		if !filepath.IsLocal(path) {
+			return nil, errors.New("invalid relative Yandex account storage path")
+		}
 		path = filepath.Join("/data/quasar", path)
 	}
-	data, err = readNativeFile(path)
+	data, _, err = localfile.Read(path, localfile.Follow, 1<<20)
 	if err != nil {
 		return nil, errors.New("Yandex speaker account storage is unavailable")
 	}
@@ -64,17 +69,4 @@ func NewSpeaker(configPath, timezone string) (*Client, error) {
 		return nil, errors.New("Yandex speaker current account has no authorization token")
 	}
 	return &Client{endpoint: "wss://uniproxy.alice.yandex.net/uni.ws", token: token, apiKey: cfg.Aliced.APIKey, appID: cfg.Aliced.AppID, appVersion: cfg.Aliced.AppVersion, timezone: timezone, source: configPath, accountID: selected.GetId()}, nil
-}
-
-func readNativeFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
-	if err != nil || len(data) > 1<<20 {
-		return nil, errors.New("invalid native file size or read failure")
-	}
-	return data, nil
 }

@@ -187,3 +187,24 @@ func TestDiagnosticsRequireLoopbackAndLocalBrowserHost(t *testing.T) {
 		}
 	}
 }
+
+func TestDiagnosticsPreserveMarkupAsLogText(t *testing.T) {
+	const entry = "<example> & details"
+	logs := newDiagnosticLog(256)
+	_, _ = io.WriteString(logs, entry)
+	mux := http.NewServeMux()
+	registerDiagnostics(mux, logs, func() map[string]any { return nil })
+
+	response := diagnosticRequest(mux, "/diagnostics/logs")
+	var snapshot diagnosticSnapshot
+	if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil || snapshot.Text != entry {
+		t.Fatalf("log text = %q, %v", snapshot.Text, err)
+	}
+	if strings.Contains(response.Body.String(), "<") || response.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("expected HTML-escaped JSON and nosniff")
+	}
+	response = diagnosticRequest(mux, "/diagnostics/download")
+	if response.Header().Get("Content-Type") != "text/plain; charset=utf-8" || !strings.HasPrefix(response.Header().Get("Content-Disposition"), "attachment;") || !strings.HasSuffix(response.Body.String(), entry) {
+		t.Fatal("download must preserve original log text as a plain text attachment")
+	}
+}
