@@ -64,6 +64,7 @@ func TestReloadListenAfterReplyRequiresRestart(t *testing.T) {
 }
 
 func TestReloadRoutingKeepsLastGoodSnapshot(t *testing.T) {
+	t.Setenv("QUASAR_HOME_ASSISTANT_TOKEN", "token")
 	path := configFile(t, `{"routing":{"rules":[],"default_route":"yandex"}}`)
 	initial, err := readConfig(path)
 	if err != nil {
@@ -92,6 +93,8 @@ func TestReloadRoutingKeepsLastGoodSnapshot(t *testing.T) {
 		`{"routing":{"rules":[],"default_route":"invalid"}}`,
 		`{"routing":{"rules":[{"name":"bad","route":"home","match":{"regex":"["}}]}}`,
 		`{"listen":"localhost:9999","routing":{"rules":[],"default_route":"home"}}`,
+		`{"llm_system_prompt":"Комната «Зал».","routing":{"rules":[],"default_route":"home"}}`,
+		`{"home_assistant":{"url":"http://ha.example.invalid"},"routing":{"rules":[],"default_route":"home"}}`,
 		`{"routing":`,
 	} {
 		write(bad)

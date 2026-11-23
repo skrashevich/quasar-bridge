@@ -117,7 +117,7 @@ func (n *Native) deferredPart(p *nativeRequest, text, voice string, last bool) e
 	base := &deferred.TDeferedAliceResponseProto_TBaseResponse{}
 	if last {
 		silentPlayback := n.hasSilentPlayback(p)
-		base.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
+		base.ShouldListen = n.wantListen(p, silentPlayback)
 		if silentPlayback {
 			voice = ""
 		}
