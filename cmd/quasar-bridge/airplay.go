@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
 	airplay "github.com/skrashevich/station-airplay"
-	"quasarbridge/internal/assistant"
 )
 
 type airPlayConfig struct {

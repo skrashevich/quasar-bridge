@@ -15,7 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"quasarbridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 
 	"github.com/coder/websocket"
 )
@@ -704,6 +705,16 @@ func (g *Gateway) Handle(ctx context.Context, text string) (string, error) {
 // pipeline answer: false closes the speaker microphone. A nil bool leaves
 // the caller's listen-after-reply policy unchanged, including planner fallback.
 func (g *Gateway) Turn(ctx context.Context, text string) (string, *bool, error) {
+	return g.answer(ctx, text, nil)
+}
+
+// TurnDialogue is Turn with the planner's clarification history. An Assist
+// answer still reports whether the microphone stays open.
+func (g *Gateway) TurnDialogue(ctx context.Context, text string, history []llm.Message) (string, *bool, error) {
+	return g.answer(ctx, text, history)
+}
+
+func (g *Gateway) answer(ctx context.Context, text string, history []llm.Message) (string, *bool, error) {
 	if g.Assist != nil {
 		reply, err := g.Assist.Process(ctx, text)
 		if err == nil && reply.Type != "error" {
@@ -726,6 +737,12 @@ func (g *Gateway) Turn(ctx context.Context, text string) (string, *bool, error) 
 	}
 	if g.Devices == nil {
 		return "", nil, errors.New("home assistant is not configured")
+	}
+	if dialogue, ok := g.Devices.(interface {
+		HandleDialogue(context.Context, string, []llm.Message) (string, error)
+	}); ok {
+		answer, err := dialogue.HandleDialogue(ctx, text, history)
+		return answer, nil, err
 	}
 	answer, err := g.Devices.Handle(ctx, text)
 	return answer, nil, err

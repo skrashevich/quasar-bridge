@@ -1,0 +1,4 @@
+---
+exclude_paths:
+  - "**/*_test.go"
+  - "scripts/**/*.py"

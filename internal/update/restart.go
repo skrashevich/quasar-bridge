@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"syscall"
 
-	"quasarbridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
 )
 
 type RestartResult struct {
@@ -92,6 +92,20 @@ func (u *Updater) scheduleServiceAction(ctx context.Context, action string) (Res
 	return RestartResult{Status: "scheduled", Message: message, Done: done}, nil
 }
 
+// Publish a new private log without truncating an existing link or device.
+func openOperationLog(state, name string) (*os.File, error) {
+	f, err := os.CreateTemp(state, ".operation-*.log")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Rename(f.Name(), filepath.Join(state, name)); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return nil, err
+	}
+	return f, nil
+}
+
 func launchServiceAction(ctx context.Context, state, lock, action string) (<-chan struct{}, error) {
 	if action != "restart" && action != "rollback" {
 		return nil, errors.New("invalid service action")
@@ -103,7 +117,7 @@ func launchServiceAction(ctx context.Context, state, lock, action string) (<-cha
 	if action == "rollback" {
 		logName = "recovery.log"
 	}
-	log, err := os.OpenFile(filepath.Join(state, logName), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	log, err := openOperationLog(state, logName)
 	if err != nil {
 		return nil, errors.New("cannot open service operation log")
 	}

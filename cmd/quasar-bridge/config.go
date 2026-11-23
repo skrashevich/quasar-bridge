@@ -11,13 +11,13 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/chatgpt"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/home"
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/chatgpt"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/home"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type progressConfig struct {
@@ -26,8 +26,14 @@ type progressConfig struct {
 	IntervalMS int  `json:"interval_ms"`
 }
 
+type diagnosticsConfig struct {
+	NetworkAccess bool `json:"network_access"`
+	Port          int  `json:"port"`
+}
+
 type config struct {
 	AirPlay            airPlayConfig        `json:"airplay"`
+	Diagnostics        diagnosticsConfig    `json:"diagnostics"`
 	DialogueContext    dialogue.Config      `json:"dialogue_context"`
 	LocalProgress      progressConfig       `json:"local_progress"`
 	AssistantTools     assistant.Config     `json:"assistant_tools"`
@@ -39,6 +45,7 @@ type config struct {
 	AllowedIPs         []string             `json:"allowed_ips"`
 	Mode               string               `json:"mode"`
 	LLMBaseURL         string               `json:"llm_base_url"`
+	LLMSystemPrompt    string               `json:"llm_system_prompt,omitempty"`
 	LLMModel           string               `json:"llm_model"`
 	LLMAPI             string               `json:"llm_api"`
 	LLMChatGPTAuthFile string               `json:"llm_chatgpt_auth_file"`
@@ -46,7 +53,6 @@ type config struct {
 	LLMMaxOutputTokens int                  `json:"llm_max_output_tokens"`
 	LLMHostedTools     []string             `json:"llm_hosted_tools"`
 	LLMChatParameters  map[string]any       `json:"llm_chat_parameters"`
-	LLMSystemPrompt    string               `json:"llm_system_prompt"`
 	LLMStripPrefixes   []string             `json:"llm_strip_prefixes"`
 	LLMTTSMarkup       bool                 `json:"llm_tts_markup"`
 	HomeWarmArea       string               `json:"home_warm_area"`
@@ -71,7 +77,7 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 }
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, SpotterWaitMS: 1500, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
+	cfg := config{Diagnostics: diagnosticsConfig{Port: 2704}, DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, SpotterWaitMS: 1500, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
@@ -224,6 +230,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	}
 	if cfg.SpotterWaitMS < 0 || cfg.SpotterWaitMS > 5000 {
 		return cfg, errors.New("spotter_wait_ms must be from 0 to 5000")
+	}
+	if cfg.Diagnostics.Port < 1 || cfg.Diagnostics.Port > 65535 {
+		return cfg, errors.New("diagnostics.port must be in 1..65535")
 	}
 	if err := cfg.DialogueContext.Validate(); err != nil {
 		return cfg, err

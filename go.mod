@@ -1,13 +1,15 @@
-module quasarbridge
+module github.com/skrashevich/quasar-bridge
 
 go 1.27.3
 
 require (
 	github.com/coder/websocket v1.8.15
+	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/skrashevich/go-opus v0.1.1
 	github.com/skrashevich/quasar-go-genproto v0.3.0
-	github.com/skrashevich/station-airplay v0.2.2
-	golang.org/x/net v0.62.0
+	github.com/skrashevich/station-airplay v0.3.0
+	golang.org/x/net v0.63.0
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -17,7 +19,6 @@ require (
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/ebitengine/purego v0.11.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/miekg/dns v1.1.59 // indirect
 	github.com/mycophonic/saprobe-alac v1.0.0-rc3.0.20261101182127-4825eef7cbab // indirect
@@ -27,14 +28,14 @@ require (
 	github.com/tadglines/go-pkgs v0.0.0-20210623144937-b983b20f54f9 // indirect
 	github.com/xiam/to v0.0.0-20200126224905-d60d31e03561 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.51.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	howett.net/plist v1.0.1 // indirect
 )

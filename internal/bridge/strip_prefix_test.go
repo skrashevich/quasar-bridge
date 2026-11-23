@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // Модель не должна видеть обращение «спроси у нейросети»: иначе она отвечает,

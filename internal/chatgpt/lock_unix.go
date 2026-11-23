@@ -17,7 +17,8 @@ func openPrivate(path string, create bool) (*os.File, error) {
 	if create {
 		flags = os.O_RDWR | os.O_CREATE | syscall.O_NOFOLLOW
 	}
-	return os.OpenFile(path, flags, 0600)
+	// The operator selects this credential path; both callers verify the open descriptor.
+	return os.OpenFile(path, flags|syscall.O_NONBLOCK, 0600) // nosemgrep: go_filesystem_rule-fileread
 }
 
 func (s *Store) lock(ctx context.Context) (func(), error) {

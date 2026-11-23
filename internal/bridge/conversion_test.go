@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 func TestUnitConversionReachesYandex(t *testing.T) {

@@ -7,6 +7,55 @@ import (
 	"time"
 )
 
+func TestHomeRouteSharesContextExpiryAndLimits(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxTurns = 1
+	s := New(cfg)
+	now := time.Unix(1000, 0)
+	s.now = func() time.Time { return now }
+	for _, text := range []string{"Включи свет в кабинете", "да"} {
+		_, ticket := s.Begin(t.Context())
+		if !s.CommitRoute(t.Context(), ticket, "home", text, "Уточнение", false) {
+			t.Fatal("home turn not committed")
+		}
+	}
+	if got := s.View(t.Context()); got.Route != "home" || len(got.Messages) != 2 || got.Messages[0].Content != "да" {
+		t.Fatalf("home context ignored limits: %+v", got)
+	}
+	now = now.Add(301 * time.Second)
+	if got := s.View(t.Context()); got.Route != "" || len(got.Messages) != 0 {
+		t.Fatal("expired home confirmation remained active", got)
+	}
+	_, ticket := s.Begin(t.Context())
+	s.Commit(t.Context(), ticket, "новый вопрос", "ответ", false)
+	if got := s.View(t.Context()); got.Route != "llm" {
+		t.Fatal("ordinary model turns lost route", got)
+	}
+}
+
+func TestHomeQuestionIsConsumedOnceByCurrentTurn(t *testing.T) {
+	s := New(DefaultConfig())
+	now := time.Unix(1000, 0)
+	s.now = func() time.Time { return now }
+	ctx := t.Context()
+	for _, elapsed := range []time.Duration{44 * time.Second, 45 * time.Second} {
+		_, question := s.Begin(ctx)
+		s.CommitRoute(ctx, question, "home", "Выключи свет", "Уточните комнату.", false)
+		_, older := s.Begin(ctx)
+		now = now.Add(elapsed)
+		_, current := s.Begin(ctx)
+		if s.TakeHomeQuestion(ctx, older) {
+			t.Fatal("superseded request consumed the question")
+		}
+		if got := s.TakeHomeQuestion(ctx, current); got != (elapsed < 45*time.Second) {
+			t.Fatalf("question available after %s: %t", elapsed, got)
+		}
+		if s.TakeHomeQuestion(ctx, current) {
+			t.Fatal("question was available twice")
+		}
+	}
+}
+
 func TestStoreIsolationExpiryAndReset(t *testing.T) {
 	s := New(DefaultConfig())
 	now := time.Unix(1000, 0)

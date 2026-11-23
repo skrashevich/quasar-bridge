@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type Config struct {
@@ -44,8 +44,10 @@ func key(ctx context.Context) string { s, _ := ctx.Value(speakerKey{}).(string);
 func SpeakerKey(ctx context.Context) string { return key(ctx) }
 
 type turn struct {
-	user, answer string
-	private      bool
+	user, answer      string
+	route             string
+	private           bool
+	homeQuestionUntil time.Time
 }
 type entry struct {
 	turns         []turn
@@ -61,6 +63,7 @@ type entry struct {
 type Snapshot struct {
 	Messages       []llm.Message
 	PrivateHistory bool
+	Route          string
 }
 type Ticket struct {
 	key        string
@@ -90,7 +93,11 @@ func snapshot(e *entry) Snapshot {
 		for _, t := range e.turns {
 			v.Messages = append(v.Messages, llm.Message{Role: "user", Content: t.user}, llm.Message{Role: "assistant", Content: t.answer})
 			v.PrivateHistory = v.PrivateHistory || t.private
+			v.Route = t.route
 		}
+	}
+	if len(v.Messages) > 0 && v.Route == "" {
+		v.Route = "llm"
 	}
 	return v
 }
@@ -164,6 +171,11 @@ func (s *Store) Begin(ctx context.Context) (Snapshot, Ticket) {
 	return snapshot(e), Ticket{key: k, generation: e.generation, replay: replay}
 }
 func (s *Store) Commit(ctx context.Context, ticket Ticket, user, answer string, private bool) bool {
+	return s.CommitRoute(ctx, ticket, "llm", user, answer, private)
+}
+
+// CommitRoute keeps the handler that owns the next elliptical reply with its history.
+func (s *Store) CommitRoute(ctx context.Context, ticket Ticket, route, user, answer string, private bool) bool {
 	if s == nil || !s.cfg.Enabled {
 		return ctx.Err() == nil
 	}
@@ -185,8 +197,14 @@ func (s *Store) Commit(ctx context.Context, ticket Ticket, user, answer string, 
 		e.turns = nil
 		return true
 	}
-	e.turns = append(e.turns, turn{user: user, answer: answer, private: private})
-	e.at = s.now()
+	completed := turn{user: user, answer: answer, route: route, private: private}
+	if route == "home" {
+		reply := strings.TrimSpace(answer)
+		if strings.HasSuffix(reply, "?") || strings.HasPrefix(strings.ToLower(reply), "уточните") {
+			completed.homeQuestionUntil = e.at.Add(45 * time.Second)
+		}
+	}
+	e.turns = append(e.turns, completed)
 	chars := 0
 	for _, t := range e.turns {
 		chars += utf8.RuneCountInString(t.user) + utf8.RuneCountInString(t.answer)
@@ -201,6 +219,25 @@ func (s *Store) Commit(ctx context.Context, ticket Ticket, user, answer string, 
 	}
 	return true
 }
+
+// TakeHomeQuestion consumes the last clarification when this speaker supplies
+// text. Preparing an audio stream (which may end in silence) does not consume it.
+func (s *Store) TakeHomeQuestion(ctx context.Context, ticket Ticket) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.current(ctx, ticket) {
+		return false
+	}
+	turns := s.entries[ticket.key].turns
+	if len(turns) == 0 {
+		return false
+	}
+	last := &turns[len(turns)-1]
+	open := s.now().Before(last.homeQuestionUntil)
+	last.homeQuestionUntil = time.Time{}
+	return open
+}
+
 func (s *Store) Reset(ctx context.Context) {
 	if s == nil {
 		return

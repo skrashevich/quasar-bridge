@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 func TestLLMTTSMarkupDisabled(t *testing.T) {

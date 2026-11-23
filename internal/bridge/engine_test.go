@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type completionFunc func(context.Context, []llm.Message, bool) (string, error)
@@ -165,7 +165,7 @@ func TestAssistantToolsAreIsolatedFromRoutingAndHomePlanning(t *testing.T) {
 	}
 }
 
-func TestSystemPromptIsAppendedOnlyToDialogue(t *testing.T) {
+func TestConfiguredSystemPromptSkipsClassifier(t *testing.T) {
 	note := "Ты находишься в комнате «Зал» в городе «Москва». Если пользователь не указал комнату, считай, что речь идёт о Зале."
 	var dialogue, classifier string
 	e := &Engine{SystemPrompt: note, LLM: completionFunc(func(_ context.Context, m []llm.Message, structured bool) (string, error) {
@@ -198,7 +198,7 @@ func TestSystemPromptIsAppendedOnlyToDialogue(t *testing.T) {
 	if err != nil || got.Route != "llm" {
 		t.Fatalf("result=%+v err=%v", got, err)
 	}
-	if !strings.Contains(dialogue, "голосовой помощник") || !strings.Contains(dialogue, "комнате «Зал»") {
+	if !strings.Contains(dialogue, "комнате «Зал»") || strings.Contains(dialogue, "Дополнительные указания") {
 		t.Fatalf("dialogue prompt=%q", dialogue)
 	}
 	if strings.Contains(classifier, "Зал") || strings.Contains(classifier, "Дополнительные указания") {

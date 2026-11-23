@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // Explicit setup diagnostics show the provider response in full. Normal runtime

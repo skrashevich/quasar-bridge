@@ -6,6 +6,7 @@ import (
 
 	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
+	deferred "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -49,26 +50,7 @@ func (n *Native) captureCloud(p *nativeRequest, e *server.TServerMessage_TEvent)
 		}
 		text := base.GetText()
 		if text == "" {
-			unknown := base.ProtoReflect().GetUnknown()
-			for len(unknown) > 0 {
-				num, typ, size := protowire.ConsumeTag(unknown)
-				if size < 0 {
-					break
-				}
-				unknown = unknown[size:]
-				if num == 2 && typ == protowire.BytesType {
-					value, n := protowire.ConsumeString(unknown)
-					if n > 0 {
-						text = value
-					}
-					break
-				}
-				size = protowire.ConsumeFieldValue(num, typ, unknown)
-				if size < 0 {
-					break
-				}
-				unknown = unknown[size:]
-			}
+			text = deferredResponseSpeech(base)
 		}
 		action := false
 		for _, d := range base.GetDirectives() {
@@ -78,4 +60,32 @@ func (n *Native) captureCloud(p *nativeRequest, e *server.TServerMessage_TEvent)
 		}
 		n.captureDelivered(p, text, r.GetIsLast(), action, false)
 	}
+}
+
+// Older Station SDKs carry spoken deltas in reserved field 2 (Voice).
+func deferredResponseSpeech(base *deferred.TDeferedAliceResponseProto_TBaseResponse) string {
+	if base == nil {
+		return ""
+	}
+	unknown := base.ProtoReflect().GetUnknown()
+	for len(unknown) > 0 {
+		num, typ, size := protowire.ConsumeTag(unknown)
+		if size < 0 {
+			break
+		}
+		unknown = unknown[size:]
+		if num == 2 && typ == protowire.BytesType {
+			value, n := protowire.ConsumeString(unknown)
+			if n > 0 {
+				return value
+			}
+			break
+		}
+		size = protowire.ConsumeFieldValue(num, typ, unknown)
+		if size < 0 {
+			break
+		}
+		unknown = unknown[size:]
+	}
+	return ""
 }

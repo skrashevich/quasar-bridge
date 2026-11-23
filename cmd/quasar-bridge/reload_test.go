@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"encoding/json/v2"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
 	"path/filepath"
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/journal"
 )
 
 func TestReloadLLMSettingsRequiresRestart(t *testing.T) {

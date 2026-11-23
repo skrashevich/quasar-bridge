@@ -18,21 +18,19 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
 	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
-	asr "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result"
-	recognition "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
 	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
-	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
-	"quasarbridge/internal/wire"
 )
 
 func main() {
-	mode := flag.String("mode", "command", "upstream or command")
+	mode := flag.String("mode", "command", "upstream, catalog, or command")
 	listen := flag.String("listen", "127.0.0.1:18444", "Loopback mock upstream address")
 	bridge := flag.String("bridge", "http://127.0.0.1:8443", "Loopback Bridge HTTP URL")
-	action := flag.String("action", "start", "start or stop")
+	action := flag.String("action", "start", "start, stop, or an E2E scenario")
+	fixtureURL := flag.String("fixtures", "http://127.0.0.1:18444", "Loopback fixtures URL")
 	timeout := flag.Duration("timeout", 45*time.Second, "Command deadline")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -54,10 +52,31 @@ func main() {
 				err = nil
 			}
 		}
+	case "catalog":
+		// The isolated VM maps only the provider catalog name to this loopback fixture.
+		catalog := http.NewServeMux()
+		catalog.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
+			if r.Host != "api.openai.com" || r.Header.Get("Authorization") != "Bearer kuyase-subscription" {
+				http.Error(w, "invalid fixture credentials", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"models":[{"slug":"kuyase-fast","display_name":"Быстрая","visibility":"list"},{"slug":"kuyase-deep","display_name":"Рассуждения","visibility":"list"},{"slug":"kuyase-hidden","visibility":"hidden"}]}`)
+		})
+		srv := &http.Server{Addr: "127.0.0.1:443", Handler: catalog, ReadHeaderTimeout: 5 * time.Second}
+		context.AfterFunc(ctx, func() { srv.Close() })
+		err = srv.ListenAndServeTLS("catalog.crt", "catalog.key")
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
 	case "command":
 		ctx, stop := context.WithTimeout(ctx, *timeout)
 		defer stop()
-		err = command(ctx, *bridge, *action)
+		if *action == "start" || *action == "stop" {
+			err = command(ctx, *bridge, *action)
+		} else {
+			err = scenario(ctx, *bridge, *fixtureURL, *action)
+		}
 	default:
 		err = fmt.Errorf("unknown mode %q", *mode)
 	}
@@ -71,65 +90,6 @@ func loopback(host string) error {
 		return nil
 	}
 	return errors.New("verification control accepts loopback endpoints only")
-}
-
-func mockUpstream() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/uni.ws" {
-			log.Printf("UNEXPECTED_BACKEND_CALL method=%s path=%s", r.Method, r.URL.Path)
-			http.Error(w, "No LLM or cloud backend exists in this test", http.StatusServiceUnavailable)
-			return
-		}
-		ws, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer ws.CloseNow()
-		ws.SetReadLimit(1 << 20)
-		for {
-			_, data, err := ws.Read(r.Context())
-			if err != nil {
-				return
-			}
-			frame := wire.Decode(data, wire.ClientToServer)
-			event := frame.Client.GetEvent()
-			id := event.GetHeader().GetMessageId()
-			switch frame.Kind() {
-			case "VoiceInput":
-				if !event.GetVoiceInput().GetRequest().GetUniproxyOptions().GetWaitClientApproval() {
-					log.Print("FAIL voice input was not gated")
-					return
-				}
-				phrase := ""
-				switch {
-				case strings.HasPrefix(id, "kuyase-start-"):
-					phrase = "включи эйрплей"
-				case strings.HasPrefix(id, "kuyase-stop-"):
-					phrase = "выключи эйрплей"
-				default:
-					log.Print("FAIL unexpected verification request ID")
-					return
-				}
-				response := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
-					Header: &header.TEventHeader{MessageId: "mock-asr-" + id, RefMessageId: id},
-					Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{
-						EndOfUtt: new(true), ResponseCode: recognition.EAsrResponseCode_OK.Enum(),
-						Recognition: []*recognition.TAsrRecognition{{Normalized: new(phrase)}},
-					}},
-				}}}
-				encoded, err := (wire.Frame{Server: response, Prefix: []byte("AAPI")}).Marshal()
-				if err != nil || ws.Write(r.Context(), websocket.MessageBinary, encoded) != nil {
-					return
-				}
-				log.Printf("ASR_FINAL_SENT action=%s approval=true", strings.Split(id, "-")[1])
-			case "CancelRequest", "TtsGenerate":
-				// TTS is observed but deliberately not synthesized. No cloud call.
-				log.Printf("LOCAL_FOLLOWUP event=%s", frame.Kind())
-			default:
-				log.Printf("UNEXPECTED_UPSTREAM_EVENT event=%s", frame.Kind())
-			}
-		}
-	})
 }
 
 type health struct {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
 )
 
 func TestReadConfigLLMAPISettings(t *testing.T) {

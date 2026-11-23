@@ -4,18 +4,20 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
-	"quasarbridge/internal/configvoice"
-	"quasarbridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/configvoice"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/playback"
-	"quasarbridge/internal/reply"
-	"quasarbridge/internal/webaddress"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/playback"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/webaddress"
 )
+
+const defaultSystemPrompt = "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."
 
 type Completer interface {
 	Complete(context.Context, []llm.Message, bool) (string, error)
@@ -34,6 +36,7 @@ type MusicStarter interface {
 type Engine struct {
 	Configuration bool
 	Recovery      func(context.Context, string) (string, error)
+	Diagnostics   func(context.Context, bool) (string, error)
 	AirPlay       AirPlayController
 	LLM           Completer
 	Assistant     Completer
@@ -78,7 +81,7 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 	} else {
 		ctx = e.Prepare(ctx)
 	}
-	_, _, ticket := e.dialogue().Start(ctx)
+	ctx, snapshot, ticket := e.dialogue().Start(ctx)
 	if ctx.Err() != nil {
 		return Resolution{Route: route}, ctx.Err()
 	}
@@ -102,11 +105,22 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		}
 		return Resolution{Route: "llm", Answer: "Начинаем новый разговор."}, nil
 	}
-	if route != "llm" && !e.dialogue().Clear(ctx, ticket) {
-		return Resolution{Route: route}, context.Canceled
+	if (route != "llm" && route != "home") || (snapshot.Route != "" && snapshot.Route != route) {
+		if !e.dialogue().Clear(ctx, ticket) {
+			return Resolution{Route: route}, context.Canceled
+		}
+		snapshot = dialogue.Snapshot{}
 	}
 	result := Resolution{Route: route}
 	switch route {
+	case "diagnostics":
+		enabled, ok := configvoice.DiagnosticsCommand(text)
+		if !ok || e.Diagnostics == nil {
+			return result, errors.New("live diagnostics control is unavailable")
+		}
+		answer, err := e.Diagnostics(ctx, enabled)
+		result.Answer = answer
+		return result, err
 	case "recovery":
 		action := configvoice.RecoveryAction(text)
 		if action == "" || e.Recovery == nil {
@@ -173,16 +187,12 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
-		text = e.stripModelPrefix(text)
-		if turn, ok := e.Home.(interface {
-			Turn(context.Context, string) (string, *bool, error)
-		}); ok {
-			answer, listen, err := turn.Turn(ctx, text)
-			result.Answer = answer
-			result.Listen = listen
-			return result, err
+		question := e.stripModelPrefix(text)
+		answer, listen, err := e.homeAnswer(ctx, question, snapshot.Messages)
+		result.Listen = listen
+		if !e.dialogue().Current(ctx, ticket) || (err == nil && !e.dialogue().CommitRoute(ctx, ticket, "home", question, answer, false)) {
+			return result, context.Canceled
 		}
-		answer, err := e.Home.Handle(ctx, text)
 		result.Answer = answer
 		return result, err
 	case "llm":
@@ -191,6 +201,30 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		return Resolution{Route: "yandex"}, nil
 	}
 }
+
+// homeAnswer prefers an Assist turn, which reports whether the microphone
+// stays open. The planner still receives clarification history.
+func (e *Engine) homeAnswer(ctx context.Context, question string, history []llm.Message) (string, *bool, error) {
+	if dialogueTurn, ok := e.Home.(interface {
+		TurnDialogue(context.Context, string, []llm.Message) (string, *bool, error)
+	}); ok {
+		return dialogueTurn.TurnDialogue(ctx, question, history)
+	}
+	if turn, ok := e.Home.(interface {
+		Turn(context.Context, string) (string, *bool, error)
+	}); ok {
+		return turn.Turn(ctx, question)
+	}
+	if contextual, ok := e.Home.(interface {
+		HandleDialogue(context.Context, string, []llm.Message) (string, error)
+	}); ok {
+		answer, err := contextual.HandleDialogue(ctx, question, history)
+		return answer, nil, err
+	}
+	answer, err := e.Home.Handle(ctx, question)
+	return answer, nil, err
+}
+
 func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) {
 	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
 		text = webaddress.Normalize(text)
@@ -207,8 +241,11 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	if !e.dialogue().Current(ctx, ticket) {
 		return r, context.Canceled
 	}
-	system := llm.AppendOperatorNote("Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."+e.ttsInstructions(), e.SystemPrompt)
-	messages := []llm.Message{{Role: "system", Content: system}}
+	system := e.SystemPrompt
+	if strings.TrimSpace(system) == "" {
+		system = defaultSystemPrompt
+	}
+	messages := []llm.Message{{Role: "system", Content: system + e.ttsInstructions()}}
 	messages = append(messages, snapshot.Messages...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	messages = e.modelMessages(messages)
@@ -276,9 +313,12 @@ func (e *Engine) RoutingStatus() RoutingStatus {
 }
 func (e *Engine) IsRefusal(text string) bool { return e.policy().isRefusal(text) }
 
+func IsRefusal(text string) bool { return builtInRouting.isRefusal(text) }
+
 // directPlayback reports a whole-utterance player command. An active local
 // queue wins; otherwise the built-in speaker_playback rule sends it to Yandex.
-// Matching does not reserve a dialogue turn.
+// Matching does not reserve a dialogue turn. An empty wakeword tag still
+// matches rules that do not name a word.
 func (e *Engine) directPlayback(ctx context.Context, text string) (RouteDecision, bool) {
 	if e == nil {
 		return RouteDecision{}, false
@@ -286,7 +326,7 @@ func (e *Engine) directPlayback(ctx context.Context, text string) (RouteDecision
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}, true
 	}
-	if d, ok := e.policy().match(text); ok && d.Rule == "speaker_playback" {
+	if d, ok := e.policy().match(text, ""); ok && d.Rule == "speaker_playback" {
 		return d, true
 	}
 	return RouteDecision{}, false
@@ -296,7 +336,15 @@ func homeActive(h HomeHandler, ctx context.Context) bool {
 	active, ok := h.(interface{ Active(context.Context) bool })
 	return ok && active.Active(ctx)
 }
-func IsRefusal(text string) bool { return builtInRouting.isRefusal(text) }
+
+// DecideWithWakeWord supplies the same activation tag as a speaker session.
+func (e *Engine) DecideWithWakeWord(ctx context.Context, text, word string) RouteDecision {
+	if word != "" {
+		ctx = context.WithValue(ctx, wakewordTagKey{}, stationWakewordTag(word))
+	}
+	return e.Decide(ctx, text)
+}
+
 func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecision) {
 	ctx, snapshot, ticket := e.dialogue().Start(ctx)
 	defer func() {
@@ -308,9 +356,13 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		decision.ticket = ticket
 		decision.prepared = true
 	}()
+	awaitingHomeReply := snapshot.Route == "home" && e.dialogue().TakeHomeQuestion(ctx, ticket)
 	p := e.policy()
 	if configvoice.RecoveryAction(text) != "" {
 		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
+	}
+	if _, ok := configvoice.DiagnosticsCommand(text); ok {
+		return RouteDecision{Route: "diagnostics", Source: "bridge_diagnostics"}
 	}
 	// Bridge configuration and an explicit AirPlay command stay ahead of the
 	// stop phrase. An active AirPlay sender also owns a whole playback
@@ -338,7 +390,8 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if dialogue.IsReset(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue_reset"}
 	}
-	if d, ok := p.match(text); ok {
+	wakewordTag, _ := ctx.Value(wakewordTagKey{}).(string)
+	if d, ok := p.match(text, wakewordTag); ok {
 		if redirected, yes := p.unknownHome(text, d); yes {
 			return redirected
 		}
@@ -350,8 +403,8 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if homeActive(e.Home, ctx) && dialogue.IsFollowup(text) {
 		return RouteDecision{Route: "home", Source: "home_assistant"}
 	}
-	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
-		return RouteDecision{Route: "llm", Source: "dialogue"}
+	if len(snapshot.Messages) > 0 && (awaitingHomeReply || dialogue.IsFollowup(text)) {
+		return RouteDecision{Route: snapshot.Route, Source: "dialogue"}
 	}
 	if p.unknownToHome {
 		return RouteDecision{Route: "home", Source: "unknown"}

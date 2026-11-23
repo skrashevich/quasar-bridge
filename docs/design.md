@@ -49,8 +49,11 @@ A nonempty invalid URL is rejected; configured HA failures never retry in Yandex
 Ruling: HA calls use the configured local MCP capability URL in runtime.env,
 not a new HA token. Honor Assist exposure; inventory states are fresh, exposure
 is briefly cached for discovery and rechecked before actions. A selected group
-covers its members, so those member actions are dropped; a remaining overlap is
-rejected before any call. At most eight actions run. Light, switch and fan
+covers its members, so the same member action is dropped; a contradictory
+service, payload, or partial overlap is rejected before any call. A single
+climate device can receive `turn_on` followed by `set_temperature` with a
+numeric setpoint. An explicit heating or cooling mode fits in one
+`set_temperature` call. At most eight actions run. Light, switch and fan
 on/off state is reread for about two seconds. A home failure never retries in
 Yandex because the service might already have acted.
 

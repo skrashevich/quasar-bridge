@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"quasarbridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
 
 	"github.com/coder/websocket"
 )

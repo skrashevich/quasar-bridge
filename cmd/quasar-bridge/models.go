@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // Model IDs are validated by the client; labels are quoted so model metadata

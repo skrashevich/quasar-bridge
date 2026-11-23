@@ -1,7 +1,7 @@
 package main
 
 import (
-	"quasarbridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
 	"testing"
 )
 

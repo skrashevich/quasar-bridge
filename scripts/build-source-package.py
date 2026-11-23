@@ -41,8 +41,8 @@ sources, including LGPL-3.0 go-aac, are in vendor/. You may modify them and
 relink a replacement executable. No module download is needed for the build:
 
 ```sh
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -trimpath -ldflags '-s -w -X quasarbridge/internal/update.Version={version}' -o quasar-bridge-arm64 ./cmd/quasar-bridge
-CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -mod=vendor -trimpath -ldflags '-s -w -X quasarbridge/internal/update.Version={version}' -o quasar-bridge-armv7 ./cmd/quasar-bridge
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -trimpath -ldflags '-s -w -X github.com/skrashevich/quasar-bridge/internal/update.Version={version}' -o quasar-bridge-arm64 ./cmd/quasar-bridge
+CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -mod=vendor -trimpath -ldflags '-s -w -X github.com/skrashevich/quasar-bridge/internal/update.Version={version}' -o quasar-bridge-armv7 ./cmd/quasar-bridge
 CGO_ENABLED=0 go run -mod=vendor github.com/skrashevich/station-airplay/cmd/station-pcm-package -arch arm64 -binary ./quasar-bridge-arm64
 CGO_ENABLED=0 go run -mod=vendor github.com/skrashevich/station-airplay/cmd/station-pcm-package -arch armv7 -binary ./quasar-bridge-armv7
 ```

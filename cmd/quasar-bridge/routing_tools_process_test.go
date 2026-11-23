@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 func TestRoutingToolsProcess(t *testing.T) {

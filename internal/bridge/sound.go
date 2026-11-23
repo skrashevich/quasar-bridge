@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 type soundDirective = directives.TDirective
