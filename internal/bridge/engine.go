@@ -4,17 +4,17 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
-	"quasarbridge/internal/configvoice"
-	"quasarbridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/configvoice"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/playback"
-	"quasarbridge/internal/reply"
-	"quasarbridge/internal/webaddress"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/playback"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/webaddress"
 )
 
 const defaultSystemPrompt = "Ты голосовой помощник пользователя. Отвечай по-русски, кратко и по существу, обычно до трёх предложений. Ответ будет прочитан вслух: без Markdown и служебных рассуждений. Выполняй внешние действия только доступными инструментами по явному запросу пользователя. Не заявляй о выполнении действий без успешного результата инструмента; если инструмента нет, прямо скажи об этом. Для Home Assistant есть отдельный обработчик умного дома."

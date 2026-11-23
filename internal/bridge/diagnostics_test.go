@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
 	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	asr "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result"
@@ -14,7 +15,6 @@ import (
 	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
 	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
-	"quasarbridge/internal/llm"
 )
 
 func TestDiagnosticsCommandsHaveDedicatedRoute(t *testing.T) {

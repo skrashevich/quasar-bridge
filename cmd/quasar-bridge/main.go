@@ -21,17 +21,17 @@ import (
 
 	"github.com/coder/websocket"
 
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/chatgpt"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/home"
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/mcpoauth"
-	"quasarbridge/internal/update"
-	"quasarbridge/internal/wire"
-	"quasarbridge/internal/yandex"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/chatgpt"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/home"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
+	"github.com/skrashevich/quasar-bridge/internal/update"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/yandex"
 )
 
 func main() {
@@ -459,9 +459,7 @@ func main() {
 	panel = newDiagnosticsListener(cfg.Diagnostics.Port, panelMux)
 	configuration.applyDiagnostics = panel.SetNetworkAccess
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		data, _ := json.Marshal(status())
-		_, _ = w.Write(data)
+		writeDiagnosticJSON(w, http.StatusOK, status())
 	})
 	mux.Handle("/uni.ws", proxy)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

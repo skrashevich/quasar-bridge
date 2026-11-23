@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"quasarbridge/internal/chatgpt"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/chatgpt"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 func newLLMClient(cfg config, apiKey string) *llm.Client {

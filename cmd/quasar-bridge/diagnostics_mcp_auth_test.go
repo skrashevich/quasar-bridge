@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/mcpoauth"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 )
 
 type panelOAuthTransport struct {

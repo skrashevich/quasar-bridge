@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	"quasarbridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
 )
 
 func TestNativeReplyDeliveryWaitsForSpeechStreamClose(t *testing.T) {

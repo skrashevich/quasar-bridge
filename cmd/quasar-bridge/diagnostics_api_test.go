@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/yandex"
 	airplay "github.com/skrashevich/station-airplay"
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/yandex"
 )
 
 type diagnosticCompleter func(context.Context, []llm.Message, bool) (string, error)

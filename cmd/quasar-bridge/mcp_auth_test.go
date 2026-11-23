@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"quasarbridge/internal/mcpoauth"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 )
 
 func TestMCPAuthChild(t *testing.T) {

@@ -16,8 +16,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/mcpoauth"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 )
 
 type MCPStatus struct {

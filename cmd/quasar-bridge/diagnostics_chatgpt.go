@@ -9,12 +9,13 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"quasarbridge/internal/chatgpt"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/chatgpt"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // Both panel listeners share pending attempts. Only the browser that received
@@ -171,7 +172,8 @@ func (p *panelChatGPT) register(mux *http.ServeMux, register func(string, http.H
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(callbackHTML))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		http.ServeContent(w, r, "callback.html", time.Time{}, strings.NewReader(callbackHTML))
 	})
 }
 

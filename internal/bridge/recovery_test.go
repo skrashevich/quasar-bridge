@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/reply"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/reply"
 )
 
 // Recovery must run before configuration routing, user rules and classification,

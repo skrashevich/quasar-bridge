@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 func soundTools(t *testing.T) *Tools {

@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 // A query must preserve custom prompts and real tool results while keeping

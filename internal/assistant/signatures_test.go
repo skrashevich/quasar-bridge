@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 // Decode requests independently of llm.Message so a field dropped by the client

@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type ToolCaller interface {

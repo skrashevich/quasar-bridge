@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"quasarbridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
 )
 
 func TestReadSpeakerInfo(t *testing.T) {

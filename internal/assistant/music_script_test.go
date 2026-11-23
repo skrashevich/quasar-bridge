@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/sound"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/sound"
 )
 
 func musicScriptResponse(t *testing.T, r *http.Request, typ, body string) *http.Response {

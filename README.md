@@ -1,6 +1,7 @@
 [![Лицензия: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27.3-00ADD8.svg)](go.mod)
 [![Платформа](https://img.shields.io/badge/platform-Yandex%20Station%20ARM64%20%7C%20ARMv7-ffcc00.svg)](#что-понадобится)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/e5ad8986b5494b988064a1170ad75e30)](https://app.codacy.com/gh/skrashevich/quasar-bridge/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 
 # Quasar Bridge
 

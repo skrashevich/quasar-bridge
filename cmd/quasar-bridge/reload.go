@@ -4,8 +4,8 @@ import (
 	"errors"
 	"reflect"
 
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
 )
 
 func reloadRouting(path string, initial config, engine *bridge.Engine, logs ...*journal.Writer) error {

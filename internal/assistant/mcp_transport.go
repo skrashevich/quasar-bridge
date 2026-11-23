@@ -14,7 +14,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"quasarbridge/internal/mcpoauth"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 )
 
 // Configured MCP origins can be private LAN services. Credentials and legacy
@@ -102,7 +102,9 @@ func openMCPSessionWithOAuth(ctx context.Context, c MCPServerConfig, handler aut
 	ctx, cancel := context.WithCancel(ctx)
 	var transport mcp.Transport
 	if c.transport() == "stdio" {
-		command := exec.CommandContext(ctx, c.Command, c.Args...)
+		// Only the local deployment config can select the executable and argv.
+		// Tool-call arguments travel over MCP after the child starts.
+		command := exec.CommandContext(ctx, c.Command, c.Args...) // nosemgrep: go_subproc_rule-subproc, go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		command.WaitDelay = 200 * time.Millisecond
 		// Server stderr can contain credentials; do not copy it to runtime logs.
 		command.Stderr = io.Discard

@@ -25,9 +25,9 @@ import (
 	eventsource "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/data/event_source"
 	"google.golang.org/protobuf/proto"
 
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 // The real assistant, page/script reader and Native deliver media on the same

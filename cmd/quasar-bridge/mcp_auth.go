@@ -5,8 +5,8 @@ import (
 	"io"
 	"log/slog"
 
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/mcpoauth"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 )
 
 func runMCPAuth(ctx context.Context, cfg config, path, action, name, listen string, out io.Writer) error {

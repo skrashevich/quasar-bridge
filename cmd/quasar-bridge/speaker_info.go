@@ -6,7 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"quasarbridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/localfile"
 )
 
 // The Quasar firmware stores its full build and the bootloader's serial
@@ -19,11 +20,11 @@ func readSpeakerInfo(configPath, cmdlinePath string) bridge.SpeakerInfo {
 		} `json:"common"`
 	}
 	var info bridge.SpeakerInfo
-	if raw, err := os.ReadFile(configPath); err == nil && json.Unmarshal(raw, &cfg) == nil {
+	if raw, _, err := localfile.Read(configPath, localfile.Follow, 1<<20); err == nil && json.Unmarshal(raw, &cfg) == nil {
 		info.Model = strings.TrimSpace(cfg.Common.DeviceType)
 		info.FirmwareVersion = strings.TrimSpace(cfg.Common.SoftwareVersion)
 	}
-	if raw, err := os.ReadFile(filepath.Join(filepath.Dir(configPath), "version_full")); err == nil {
+	if raw, _, err := localfile.Read(filepath.Join(filepath.Dir(configPath), "version_full"), localfile.Follow, 4096); err == nil {
 		if version := strings.TrimSpace(string(raw)); version != "" {
 			info.FirmwareVersion = version
 		}

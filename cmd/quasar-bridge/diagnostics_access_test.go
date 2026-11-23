@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"quasarbridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
 )
 
 func TestDiagnosticsNetworkAccessAppliesThroughVoiceTools(t *testing.T) {

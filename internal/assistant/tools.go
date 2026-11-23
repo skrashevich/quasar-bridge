@@ -8,13 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"quasarbridge/internal/configvoice"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/journal"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/mcpoauth"
-	"quasarbridge/internal/update"
-	"quasarbridge/internal/webaddress"
+	"github.com/skrashevich/quasar-bridge/internal/configvoice"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
+	"github.com/skrashevich/quasar-bridge/internal/update"
+	"github.com/skrashevich/quasar-bridge/internal/webaddress"
 )
 
 type BridgeUpdater interface {

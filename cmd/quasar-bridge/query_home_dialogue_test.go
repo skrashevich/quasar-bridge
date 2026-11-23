@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/dialogue"
-	"quasarbridge/internal/home"
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/home"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type homeDialogueTools func(context.Context, string, map[string]any) (jsontext.Value, error)

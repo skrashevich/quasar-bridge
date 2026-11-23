@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"quasarbridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
 )
 
 type Config struct {

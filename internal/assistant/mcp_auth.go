@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
-	"quasarbridge/internal/mcpoauth"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 )
 
 func (c MCPServerConfig) oauthBinding() mcpoauth.Binding {

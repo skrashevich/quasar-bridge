@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"quasarbridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/journal"
+	"github.com/skrashevich/quasar-bridge/internal/localfile"
 )
 
 type HistoryQuery struct {
@@ -87,25 +88,17 @@ func SearchHistory(ctx context.Context, c journal.Config, q HistoryQuery, maxSca
 		if i > 0 {
 			path = fmt.Sprintf("%s.%d", c.Path, i)
 		}
-		info, err := os.Lstat(path)
+		f, info, err := localfile.Open(path, localfile.NoFollow)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		if err != nil || !info.Mode().IsRegular() {
-			return result, errors.New("cannot read history file")
-		}
-		if budget <= 0 {
-			result.Partial = true
-			break
-		}
-		f, err := os.Open(path)
 		if err != nil {
 			return result, errors.New("cannot open history file")
 		}
-		info, err = f.Stat()
-		if err != nil || !info.Mode().IsRegular() {
+		if budget <= 0 {
 			f.Close()
-			return result, errors.New("cannot read history file")
+			result.Partial = true
+			break
 		}
 		size := min(info.Size(), budget)
 		offset := info.Size() - size

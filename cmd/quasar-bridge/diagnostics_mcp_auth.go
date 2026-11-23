@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"quasarbridge/internal/assistant"
-	"quasarbridge/internal/mcpoauth"
+	"github.com/skrashevich/quasar-bridge/internal/assistant"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 )
 
 var errPanelMCPAttemptGone = errors.New("MCP OAuth attempt is no longer current")

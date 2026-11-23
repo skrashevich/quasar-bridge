@@ -17,9 +17,9 @@ import (
 	"github.com/coder/websocket"
 	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 
-	"quasarbridge/internal/bridge"
-	"quasarbridge/internal/llm"
-	"quasarbridge/internal/wire"
+	"github.com/skrashevich/quasar-bridge/internal/bridge"
+	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/wire"
 )
 
 // Choosing a named track must preserve Flight boundaries and the current
