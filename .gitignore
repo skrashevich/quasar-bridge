@@ -6,6 +6,7 @@
 !/config*.example.json
 /runtime.env
 chatgpt-auth*.json
+.mcp-oauth/
 *.env
 !*.env.example
 *.key

@@ -10,6 +10,7 @@ require (
 	github.com/skrashevich/quasar-go-genproto v0.3.0
 	github.com/skrashevich/station-airplay v0.3.0
 	golang.org/x/net v0.63.0
+	golang.org/x/oauth2 v0.35.0
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -30,7 +31,6 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/crypto v0.59.0 // indirect
 	golang.org/x/mod v0.42.0 // indirect
-	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect

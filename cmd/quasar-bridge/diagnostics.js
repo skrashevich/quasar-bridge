@@ -1,7 +1,7 @@
 "use strict";
 
 const byId = id => document.getElementById(id);
-const pageNames = { overview: "Обзор", routing: "Маршрутизация", account: "ChatGPT", settings: "Настройки", query: "Чат", airplay: "AirPlay", history: "История", logs: "Журнал событий" };
+const pageNames = { overview: "Обзор", routing: "Маршрутизация", account: "Аккаунт", settings: "Настройки", query: "Чат", airplay: "AirPlay", history: "История", logs: "Журнал событий" };
 const state = { page: "overview", status: null, config: null, restartRun: "", settings: new Map(), drafts: new Map(), configBusy: false, statusBusy: false, historyBusy: false, airplayBusy: false, queryBusy: false, queryDialog: storedQueryDialog(), queryMessages: [], queryExpired: false };
 function storedQueryDialog() {
   try { return sessionStorage.getItem("quasarBridge.queryDialog") || ""; } catch (_) { return ""; }
@@ -786,7 +786,8 @@ function navigate() {
   byId("page-title").textContent = pageNames[page]; document.title = pageNames[page] + " — Quasar Bridge";
   if (page === "settings") loadConfig();
   if (page === "routing") loadRouting();
-  if (page === "account") loadAccount();
+  if (page === "account") { loadAccount(); loadMCPAccounts(); }
+  else byId("mcp-account-callback").value = "";
   if (page === "history") loadHistory();
   if (page === "logs") loadLogs();
   if (page === "query") {
@@ -840,6 +841,7 @@ window.addEventListener("beforeunload", event => { if (dirtySettings().length) {
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadStatus(); loadLogs(); } });
 setupRouting();
 setupAccount();
+setupMCPAccounts();
 restoreChat();
 loadStatus();
 if (location.hash !== "#settings") loadConfig();

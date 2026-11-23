@@ -17,6 +17,7 @@ LogsDirectory=quasar-bridge
 LogsDirectoryMode=0700
 NoNewPrivileges=true
 ProtectSystem=strict
+ReadWritePaths=-/etc/quasar-bridge/.mcp-oauth
 ProtectHome=true
 PrivateTmp=true
 

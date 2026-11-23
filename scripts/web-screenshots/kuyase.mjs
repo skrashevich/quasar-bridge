@@ -205,16 +205,17 @@ async function logs(page) {
 }
 
 async function account(page) {
-  await nav(page, "ChatGPT");
-  await page.getByText("Вход не выполнен", { exact: true }).waitFor();
+  await page.locator('nav a[href="#account"]').click();
+  const signedOut = page.locator("#account-state").getByText("Вход не выполнен", { exact: true });
+  await signedOut.waitFor();
   await declineAccountLogin(page);
   await page.getByRole("link", { name: "Вернуться в панель" }).click();
-  await page.getByText("Вход не выполнен", { exact: true }).waitFor();
+  await signedOut.waitFor();
 }
 
 async function models(page) {
-  await nav(page, "ChatGPT");
-  await page.getByText("Аккаунт подключён", { exact: true }).waitFor();
+  await page.locator('nav a[href="#account"]').click();
+  await page.locator("#account-state").getByText("Аккаунт подключён", { exact: true }).waitFor();
   const picker = page.getByRole("combobox", { name: "Модель подписки ChatGPT" });
   await page.getByText("Список ещё не загружен", { exact: true }).waitFor({ state: "attached" });
   await page.getByRole("button", { name: "Обновить список" }).click();

@@ -281,8 +281,8 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 .route-test { border-top:3px solid var(--accent); }
 .route-test h2,#routing-options h2,.account-surface h2 { margin-bottom:8px; }
 .test-inputs { display:grid; gap:12px; align-items:end; grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) auto; }
-#routing label,#account-finish label { display:block; font-size:13px; font-weight:600; min-width:0; }
-#routing :is(label>input:not([type=checkbox]),label>textarea,label>select),#account-finish input { margin-top:5px; }
+#routing label,#account-finish label,.account-finish label { display:block; font-size:13px; font-weight:600; min-width:0; }
+#routing :is(label>input:not([type=checkbox]),label>textarea,label>select),#account-finish input,.account-finish input { margin-top:5px; }
 .optional { font-weight:400; color:var(--muted); }
 .route-test .notice,.route-test .route-result { margin:16px 0 0; }
 .test-decision { border-left:3px solid var(--accent); padding:2px 10px 2px 14px; }
@@ -316,9 +316,9 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
 .dialog-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:12px; align-items:center; padding:16px 0 0; border-top:1px solid var(--line); margin-top:20px; }
 .dialog-actions .delete-button { margin-right:auto; color:var(--danger); }
 #rule-error { margin-top:16px; }
-#account-manual { margin-top:20px; border-top:1px solid var(--line); padding-top:20px; }
-#account-manual p { max-width:74ch; }
-#account-finish { margin:16px 0 0; display:grid; align-items:end; gap:12px; grid-template-columns:minmax(0,1fr) auto; }
+#account-manual,.account-manual { margin-top:20px; border-top:1px solid var(--line); padding-top:20px; }
+#account-manual p,.account-manual p { max-width:74ch; }
+#account-finish,.account-finish { margin:16px 0 0; display:grid; align-items:end; gap:12px; grid-template-columns:minmax(0,1fr) auto; }
 .account-surface .detail-list { max-width:560px; }
 #account-model-form { max-width:560px; margin:0 0 18px; }
 #account-model-form label { display:block; margin-bottom:5px; font-weight:600; }
@@ -339,7 +339,7 @@ footer { display:flex; gap:12px; border-top:1px solid var(--line); padding:22px 
   .channel-meters { gap:8px; }
   .channel-meters span { font-size:11px; }
   .channel-meters strong { font-size:17px; }
-  .rule-grid,#account-finish { grid-template-columns:1fr; }
+  .rule-grid,#account-finish,.account-finish { grid-template-columns:1fr; }
   .rule-row { grid-template-columns:2ch minmax(0,1fr) auto; gap:4px 8px; padding:12px; }
   .rule-copy { grid-column:2; grid-row:1/3; }
   .rule-row button { grid-column:3; grid-row:2; font-size:12px; padding:6px 10px; }

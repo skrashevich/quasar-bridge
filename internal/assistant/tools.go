@@ -12,6 +12,7 @@ import (
 	"github.com/skrashevich/quasar-bridge/internal/dialogue"
 	"github.com/skrashevich/quasar-bridge/internal/journal"
 	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 	"github.com/skrashevich/quasar-bridge/internal/update"
 	"github.com/skrashevich/quasar-bridge/internal/webaddress"
 )
@@ -31,6 +32,7 @@ type Tools struct {
 	Configuration BridgeConfiguration
 	TTSMarkup     bool
 	Now           func() time.Time
+	MCPOAuth      *mcpoauth.Source
 }
 
 func definition(name, description string, properties map[string]any, required []string) llm.Tool {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 )
 
 type MCPStatus struct {
@@ -77,7 +78,7 @@ func (t *Tools) ForRequest(ctx context.Context) (Toolset, func()) {
 		if cfg.Disabled {
 			continue
 		}
-		wg.Go(func() { r.connections[i] = discoverMCP(ctx, cfg) })
+		wg.Go(func() { r.connections[i] = discoverMCP(ctx, cfg, t.MCPOAuth) })
 	}
 	wg.Wait()
 	for _, connection := range r.connections {
@@ -117,7 +118,7 @@ func (t *Tools) ForRequest(ctx context.Context) (Toolset, func()) {
 	}
 }
 
-func discoverMCP(ctx context.Context, cfg MCPServerConfig) *mcpConnection {
+func discoverMCP(ctx context.Context, cfg MCPServerConfig, source *mcpoauth.Source) *mcpConnection {
 	c := &mcpConnection{config: cfg, status: MCPStatus{Name: cfg.Name, Transport: cfg.transport()}}
 	if validateMCP([]MCPServerConfig{cfg}) != nil {
 		c.status.Error = "invalid MCP server configuration or missing environment"
@@ -131,10 +132,17 @@ func discoverMCP(ctx context.Context, cfg MCPServerConfig) *mcpConnection {
 	stopDeadline := context.AfterFunc(deadlineCtx, cancelSession)
 	defer stopDeadline()
 	var err error
-	c.session, c.cancel, err = openMCPSession(sessionCtx, cfg)
+	if cfg.OAuth != nil {
+		binding := cfg.oauthBinding()
+		c.session, c.cancel, err = openMCPSessionWithOAuth(sessionCtx, cfg, nil, func(ctx context.Context) (string, error) {
+			return source.AccessToken(ctx, binding)
+		})
+	} else {
+		c.session, c.cancel, err = openMCPSession(sessionCtx, cfg)
+	}
 	if err != nil {
 		cancelSession()
-		c.status.Error = "MCP connection or initialization failed"
+		c.status.Error = mcpFailure(err, "MCP connection or initialization failed").Error()
 		return c
 	}
 	innerCancel := c.cancel
@@ -152,7 +160,7 @@ func discoverMCP(ctx context.Context, cfg MCPServerConfig) *mcpConnection {
 	for page := 0; page < 8; page++ {
 		result, err := c.session.ListTools(deadlineCtx, &mcp.ListToolsParams{Cursor: cursor})
 		if err != nil || result == nil {
-			c.status.Error = "MCP tools/list failed"
+			c.status.Error = mcpFailure(err, "MCP tools/list failed").Error()
 			break
 		}
 		for _, tool := range result.Tools {
@@ -216,15 +224,23 @@ func (t *mcpRequestTools) AllowedAfterHistory(name string) bool {
 }
 func (t *mcpRequestTools) ToolStatus() string {
 	var failures []string
+	var signIn []string
 	for _, c := range t.connections {
 		if c != nil && c.status.Error != "" {
 			failures = append(failures, c.config.Name)
+			if c.status.Error == mcpoauth.ErrSignInRequired.Error() {
+				signIn = append(signIn, c.config.Name)
+			}
 		}
 	}
 	if len(failures) == 0 {
 		return ""
 	}
-	return "Недоступны MCP-серверы: " + strings.Join(failures, ", ") + ". Не утверждай, что выполнил их инструменты."
+	status := "Недоступны MCP-серверы: " + strings.Join(failures, ", ") + ". Не утверждай, что выполнил их инструменты."
+	if len(signIn) != 0 {
+		status += " Требуется повторный вход через CLI: " + strings.Join(signIn, ", ") + "."
+	}
+	return status
 }
 func (t *mcpRequestTools) Call(ctx context.Context, name, args string) (any, error) {
 	if err := ctx.Err(); err != nil {
@@ -253,7 +269,7 @@ func (t *mcpRequestTools) Call(ctx context.Context, name, args string) (any, err
 	result, err := tool.connection.session.CallTool(ctx, &mcp.CallToolParams{Name: tool.function.original, Arguments: jsonv1.RawMessage(args)})
 	var value any
 	if err != nil {
-		err = errors.New("MCP tool call failed or timed out; completion is unknown")
+		err = mcpFailure(err, "MCP tool call failed or timed out; completion is unknown")
 	} else if result == nil || result.NeedsInput() {
 		err = errors.New("MCP tool needs unsupported interactive input")
 	} else {
@@ -303,11 +319,11 @@ func validPrefix(s string, limit int) string {
 }
 
 // CheckMCP discovers tools, but never calls them or asks the LLM anything.
-func CheckMCP(ctx context.Context, configs []MCPServerConfig) ([]MCPStatus, error) {
+func CheckMCP(ctx context.Context, configs []MCPServerConfig, source *mcpoauth.Source) ([]MCPStatus, error) {
 	if err := validateMCP(configs); err != nil {
 		return nil, err
 	}
-	t := &Tools{Config: Config{MCPServers: configs}}
+	t := &Tools{Config: Config{MCPServers: configs}, MCPOAuth: source}
 	tools, close := t.ForRequest(ctx)
 	defer close()
 	statuses := []MCPStatus{}

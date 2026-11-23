@@ -122,7 +122,7 @@ func TestMCPCredentialsNeverFollowOtherOrigins(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			_, err := CheckMCP(t.Context(), []MCPServerConfig{{Name: "untrusted", URL: server.URL, Transport: transport, BearerTokenEnv: "FIXTURE_MCP_TOKEN", TimeoutMS: 1000}})
+			_, err := CheckMCP(t.Context(), []MCPServerConfig{{Name: "untrusted", URL: server.URL, Transport: transport, BearerTokenEnv: "FIXTURE_MCP_TOKEN", TimeoutMS: 1000}}, nil)
 			if err == nil || foreignCalls.Load() != 0 {
 				t.Fatal("credentials escaped configured origin", err)
 			}
@@ -258,7 +258,7 @@ func TestMCPFailureKeepsBuiltinToolsAndRedactsSecrets(t *testing.T) {
 	if defs := tools.Definitions(); len(defs) != 1 || defs[0].Function.Name != "current_time" {
 		t.Fatal("failed MCP removed builtin", defs)
 	}
-	status, err := CheckMCP(t.Context(), cfg.MCPServers)
+	status, err := CheckMCP(t.Context(), cfg.MCPServers, nil)
 	if err == nil {
 		t.Fatal("unavailable MCP diagnostic succeeded")
 	}

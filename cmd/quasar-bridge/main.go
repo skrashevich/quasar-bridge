@@ -28,6 +28,7 @@ import (
 	"github.com/skrashevich/quasar-bridge/internal/home"
 	"github.com/skrashevich/quasar-bridge/internal/journal"
 	"github.com/skrashevich/quasar-bridge/internal/llm"
+	"github.com/skrashevich/quasar-bridge/internal/mcpoauth"
 	"github.com/skrashevich/quasar-bridge/internal/update"
 	"github.com/skrashevich/quasar-bridge/internal/wire"
 	"github.com/skrashevich/quasar-bridge/internal/yandex"
@@ -39,6 +40,9 @@ func main() {
 	query := flag.String("query", "", "run one text query for diagnostics with simulated speaker audio playback")
 	check := flag.Bool("check-backends", false, "check LLM and configured Home Assistant connectivity")
 	checkMCP := flag.Bool("check-mcp", false, "connect to configured MCP servers and list tools without executing them")
+	mcpAuth := flag.String("mcp-auth", "", "manage MCP OAuth credentials: login, status or logout")
+	mcpServer := flag.String("mcp-server", "", "configured MCP server name for -mcp-auth")
+	mcpAuthListen := flag.String("mcp-auth-listen", mcpoauth.DefaultListen, "IPv4 loopback address for MCP OAuth browser sign-in")
 	route := flag.String("route", "", "explain a route without executing home actions or generating an answer")
 	validate := flag.Bool("check-config", false, "validate configuration without contacting backends")
 	listModels := flag.Bool("list-models", false, "list available LLM models as ID and quoted label (tab-separated); no model selection required")
@@ -50,6 +54,14 @@ func main() {
 	speakerBackup := flag.String("speaker-backup", "/data/opt/quasar-bridge/endpoint-backup.json", "persistent endpoint backup")
 	speakerURL := flag.String("speaker-url", "ws://127.0.0.1:8443/uni.ws", "on-device bridge URL")
 	flag.Parse()
+	if *mcpAuth != "" && (*speakerAction != "" || *version) {
+		fmt.Fprintln(os.Stderr, "diagnostic flags are mutually exclusive")
+		os.Exit(2)
+	}
+	if *mcpAuth == "" && (*mcpServer != "" || *mcpAuthListen != mcpoauth.DefaultListen) {
+		fmt.Fprintln(os.Stderr, "-mcp-server and -mcp-auth-listen require -mcp-auth")
+		os.Exit(2)
+	}
 	if *version {
 		fmt.Println(update.Version)
 		return
@@ -66,7 +78,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stderr, diagnosticLogs), nil))
 	slog.SetDefault(logger)
 	slog.Info("quasar-bridge starting", "version", update.Version)
-	cfg, err := readConfigForCommand(*path, *listModels || *chatGPTAuth != "")
+	cfg, err := readConfigForCommand(*path, *listModels || *chatGPTAuth != "" || *mcpAuth != "")
 	if err != nil {
 		slog.Error("configuration rejected", "error", err)
 		os.Exit(1)
@@ -83,6 +95,9 @@ func main() {
 		diagnostics++
 	}
 	if *checkMCP {
+		diagnostics++
+	}
+	if *mcpAuth != "" {
 		diagnostics++
 	}
 	if *validate {
@@ -108,7 +123,7 @@ func main() {
 	if *checkMCP {
 		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
-		status, err := assistant.CheckMCP(ctx, cfg.AssistantTools.MCPServers)
+		status, err := assistant.CheckMCP(ctx, cfg.AssistantTools.MCPServers, mcpOAuthSource(*path, cfg.AssistantTools.MCPServers))
 		data, _ := json.Marshal(status)
 		fmt.Println(string(data))
 		if err != nil {
@@ -119,6 +134,13 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *mcpAuth != "" {
+		if err := runMCPAuth(ctx, cfg, *path, *mcpAuth, *mcpServer, *mcpAuthListen, os.Stdout); err != nil {
+			slog.Error("MCP OAuth command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *probeCompat {
 		ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		defer cancel()
@@ -298,7 +320,7 @@ func main() {
 			musicPlayback = assistant.NewMusicPlayback(musicQueue)
 			engine.Playback = musicPlayback
 		}
-		tools := &assistant.Tools{Updater: update.New(*path), Configuration: configuration, Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback, TTSMarkup: cfg.LLMTTSMarkup}
+		tools := &assistant.Tools{Updater: update.New(*path), Configuration: configuration, Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback, TTSMarkup: cfg.LLMTTSMarkup, MCPOAuth: mcpOAuthSource(*path, cfg.AssistantTools.MCPServers)}
 		if airPlay != nil {
 			tools.AirPlay = airPlay
 		}
@@ -414,7 +436,16 @@ func main() {
 		result["diagnostics"] = map[string]any{"network_access": configuration.diagnosticsNetworkAccess(), "port": cfg.Diagnostics.Port, "address": panel.Address()}
 		return result
 	}
-	panelControl := diagnosticControl{ChatGPT: &panelChatGPT{store: chatgpt.Store{Path: cfg.LLMChatGPTAuthFile}}, Configuration: configuration, Engine: engine, Logs: logs, MusicQueue: musicQueue, Status: panelStatus, AirPlay: airPlay, Network: configuration.diagnosticsNetworkAccess, QueryBusy: new(atomic.Bool), YandexQuery: yandexQuery, Dialogs: newQueryDialogs(time.Duration(cfg.DialogueContext.TTLSeconds) * time.Second)}
+	var panelOAuthStore *mcpoauth.Store
+	for _, server := range cfg.AssistantTools.MCPServers {
+		if server.OAuth != nil {
+			panelOAuthStore, _ = mcpoauth.NewStore(*path)
+			break
+		}
+	}
+	panelOAuth := newPanelMCPAuth(ctx, cfg.AssistantTools.MCPServers, panelOAuthStore)
+	defer panelOAuth.close()
+	panelControl := diagnosticControl{ChatGPT: &panelChatGPT{store: chatgpt.Store{Path: cfg.LLMChatGPTAuthFile}}, MCPOAuth: panelOAuth, Configuration: configuration, Engine: engine, Logs: logs, MusicQueue: musicQueue, Status: panelStatus, AirPlay: airPlay, Network: configuration.diagnosticsNetworkAccess, QueryBusy: new(atomic.Bool), YandexQuery: yandexQuery, Dialogs: newQueryDialogs(time.Duration(cfg.DialogueContext.TTLSeconds) * time.Second)}
 	registerPanel := func(m *http.ServeMux) {
 		registerDiagnostics(m, diagnosticLogs, func() map[string]any { return airPlayHealth(airPlay) }, configuration.diagnosticsNetworkAccess)
 		registerDiagnosticsAPI(m, panelControl)

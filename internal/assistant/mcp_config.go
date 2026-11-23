@@ -29,6 +29,13 @@ type MCPServerConfig struct {
 	AllowPrivateHistory bool              `json:"allow_private_history,omitzero"`
 	TimeoutMS           int               `json:"timeout_ms,omitzero"`
 	MaxResultChars      int               `json:"max_result_chars,omitzero"`
+	OAuth               *MCPOAuthConfig   `json:"oauth,omitempty"`
+}
+
+type MCPOAuthConfig struct {
+	ClientID string   `json:"client_id"`
+	Issuer   string   `json:"issuer"`
+	Scopes   []string `json:"scopes"`
 }
 
 var mcpServerName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,19}$`)
@@ -73,6 +80,11 @@ func validateMCP(servers []MCPServerConfig) error {
 			return fail("name must be unique and match [a-z][a-z0-9_-]{0,19}")
 		}
 		names[c.Name] = true
+		if c.OAuth != nil {
+			if err := validateMCPOAuth(c); err != nil {
+				return fail(err.Error())
+			}
+		}
 		if c.Disabled {
 			continue
 		}
@@ -133,6 +145,55 @@ func validateMCP(servers []MCPServerConfig) error {
 				seen[name] = true
 			}
 		}
+	}
+	return nil
+}
+
+func validateMCPOAuth(c MCPServerConfig) error {
+	if c.transport() != "streamable_http" {
+		return errors.New("oauth requires streamable_http")
+	}
+	if c.BearerTokenEnv != "" {
+		return errors.New("oauth cannot be combined with bearer_token_env")
+	}
+	for header := range c.HeadersEnv {
+		if strings.EqualFold(header, "Authorization") {
+			return errors.New("oauth cannot be combined with an Authorization header")
+		}
+	}
+	httpsURL := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || strings.Contains(raw, "#") {
+			return nil
+		}
+		return u
+	}
+	endpoint := c.endpoint()
+	// An operator may disable a server and remove its endpoint before logging out.
+	disabledWithoutEnv := c.Disabled && c.URL == "" && mcpEnvName.MatchString(c.URLEnv) && endpoint == ""
+	if !disabledWithoutEnv && httpsURL(endpoint) == nil {
+		return errors.New("oauth requires a valid HTTPS MCP endpoint")
+	}
+	if u := httpsURL(c.OAuth.ClientID); u == nil || u.Path == "" || u.Path == "/" {
+		return errors.New("oauth client_id must be a HTTPS URL with a document path")
+	}
+	if u := httpsURL(c.OAuth.Issuer); u == nil || u.RawQuery != "" || u.ForceQuery {
+		return errors.New("oauth issuer must be a HTTPS URL without a query")
+	}
+	if len(c.OAuth.Scopes) == 0 {
+		return errors.New("oauth requires explicit scopes")
+	}
+	scopes := make(map[string]bool, len(c.OAuth.Scopes))
+	for _, scope := range c.OAuth.Scopes {
+		if scope == "" || scopes[scope] {
+			return errors.New("invalid or repeated oauth scope")
+		}
+		for _, r := range scope {
+			if r < '!' || r > '~' || r == '"' || r == '\\' {
+				return errors.New("invalid or repeated oauth scope")
+			}
+		}
+		scopes[scope] = true
 	}
 	return nil
 }
