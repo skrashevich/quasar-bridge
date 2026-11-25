@@ -44,13 +44,17 @@ func key(ctx context.Context) string { s, _ := ctx.Value(speakerKey{}).(string);
 func SpeakerKey(ctx context.Context) string { return key(ctx) }
 
 type turn struct {
-	user, answer      string
-	route             string
-	private           bool
-	homeQuestionUntil time.Time
+	user, answer string
+	route        string
+	private      bool
+}
+type homeQuestion struct {
+	history []llm.Message
+	until   time.Time
 }
 type entry struct {
 	turns         []turn
+	home          homeQuestion
 	replay        []turn
 	replayReady   bool
 	replayPartial string
@@ -112,7 +116,7 @@ func (s *Store) View(ctx context.Context) Snapshot {
 		e.turns = nil
 		e.replay = nil
 		e.replayReady = false
-		if !e.pending {
+		if !e.pending && !s.now().Before(e.home.until) {
 			delete(s.entries, key(ctx))
 			e = nil
 		}
@@ -120,7 +124,7 @@ func (s *Store) View(ctx context.Context) Snapshot {
 	return snapshot(e)
 }
 func (s *Store) Begin(ctx context.Context) (Snapshot, Ticket) {
-	if s == nil || !s.cfg.Enabled {
+	if s == nil {
 		return Snapshot{}, Ticket{}
 	}
 	s.mu.Lock()
@@ -130,7 +134,7 @@ func (s *Store) Begin(ctx context.Context) (Snapshot, Ticket) {
 			e.turns = nil
 			e.replay = nil
 			e.replayReady = false
-			if !e.pending {
+			if !e.pending && !s.now().Before(e.home.until) {
 				delete(s.entries, k)
 			}
 		}
@@ -176,7 +180,15 @@ func (s *Store) Commit(ctx context.Context, ticket Ticket, user, answer string, 
 
 // CommitRoute keeps the handler that owns the next elliptical reply with its history.
 func (s *Store) CommitRoute(ctx context.Context, ticket Ticket, route, user, answer string, private bool) bool {
-	if s == nil || !s.cfg.Enabled {
+	return s.commitRoute(ctx, ticket, route, user, answer, private, nil)
+}
+
+func (s *Store) CommitHome(ctx context.Context, ticket Ticket, user, answer string, history []llm.Message) bool {
+	return s.commitRoute(ctx, ticket, "home", user, answer, false, history)
+}
+
+func (s *Store) commitRoute(ctx context.Context, ticket Ticket, route, user, answer string, private bool, homeHistory []llm.Message) bool {
+	if s == nil || (!s.cfg.Enabled && route != "home") {
 		return ctx.Err() == nil
 	}
 	if ticket.generation == 0 || key(ctx) != ticket.key || ctx.Err() != nil {
@@ -190,6 +202,24 @@ func (s *Store) CommitRoute(ctx context.Context, ticket Ticket, route, user, ans
 	}
 	e.pending = false
 	e.at = s.now()
+	e.home = homeQuestion{}
+	if route == "home" && IsHomeQuestion(answer) {
+		history := append(slices.Clone(homeHistory), llm.Message{Role: "user", Content: user}, llm.Message{Role: "assistant", Content: answer})
+		// Keep the original request and the most recent answer when the chain grows.
+		if max := 2 * max(2, s.cfg.MaxTurns); len(history) > max {
+			history = append(history[:2], history[len(history)-max+2:]...)
+		}
+		chars := 0
+		for _, message := range history {
+			chars += utf8.RuneCountInString(message.Content)
+		}
+		if chars <= s.cfg.MaxChars {
+			e.home = homeQuestion{history: history, until: e.at.Add(45 * time.Second)}
+		}
+	}
+	if !s.cfg.Enabled {
+		return true
+	}
 	if strings.TrimSpace(answer) == "" {
 		return true
 	}
@@ -197,14 +227,7 @@ func (s *Store) CommitRoute(ctx context.Context, ticket Ticket, route, user, ans
 		e.turns = nil
 		return true
 	}
-	completed := turn{user: user, answer: answer, route: route, private: private}
-	if route == "home" {
-		reply := strings.TrimSpace(answer)
-		if strings.HasSuffix(reply, "?") || strings.HasPrefix(strings.ToLower(reply), "уточните") {
-			completed.homeQuestionUntil = e.at.Add(45 * time.Second)
-		}
-	}
-	e.turns = append(e.turns, completed)
+	e.turns = append(e.turns, turn{user: user, answer: answer, route: route, private: private})
 	chars := 0
 	for _, t := range e.turns {
 		chars += utf8.RuneCountInString(t.user) + utf8.RuneCountInString(t.answer)
@@ -220,22 +243,44 @@ func (s *Store) CommitRoute(ctx context.Context, ticket Ticket, route, user, ans
 	return true
 }
 
-// TakeHomeQuestion consumes the last clarification when this speaker supplies
-// text. Preparing an audio stream (which may end in silence) does not consume it.
+// IsHomeQuestion identifies answers that request a Home clarification.
+func IsHomeQuestion(answer string) bool {
+	return strings.Contains(answer, "?") || strings.Contains(strings.ToLower(answer), "уточни")
+}
+
+// TakeHomeQuestion discards a clarification when the speaker changes topics.
 func (s *Store) TakeHomeQuestion(ctx context.Context, ticket Ticket) bool {
+	return len(s.TakeHomeDialogue(ctx, ticket)) > 0
+}
+
+// PeekHomeQuestion leaves a clarification available until the route is executed.
+func (s *Store) PeekHomeQuestion(ctx context.Context, ticket Ticket) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.current(ctx, ticket) {
-		return false
+		return ""
 	}
-	turns := s.entries[ticket.key].turns
-	if len(turns) == 0 {
-		return false
+	q := s.entries[ticket.key].home
+	if !s.now().Before(q.until) {
+		return ""
 	}
-	last := &turns[len(turns)-1]
-	open := s.now().Before(last.homeQuestionUntil)
-	last.homeQuestionUntil = time.Time{}
-	return open
+	return q.history[len(q.history)-1].Content
+}
+
+// TakeHomeDialogue consumes the clarification and checks its deadline again.
+func (s *Store) TakeHomeDialogue(ctx context.Context, ticket Ticket) []llm.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.current(ctx, ticket) {
+		return nil
+	}
+	e := s.entries[ticket.key]
+	q := e.home
+	e.home = homeQuestion{}
+	if !s.now().Before(q.until) {
+		return nil
+	}
+	return q.history
 }
 
 func (s *Store) Reset(ctx context.Context) {
@@ -294,6 +339,11 @@ func (s *Store) Current(ctx context.Context, ticket Ticket) bool {
 	if !s.cfg.Enabled {
 		return true
 	}
+	return s.CurrentTurn(ctx, ticket)
+}
+
+// CurrentTurn checks ordering even when ordinary dialogue history is disabled.
+func (s *Store) CurrentTurn(ctx context.Context, ticket Ticket) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.current(ctx, ticket)
@@ -310,5 +360,6 @@ func (s *Store) Clear(ctx context.Context, ticket Ticket) bool {
 		return false
 	}
 	s.entries[ticket.key].turns = nil
+	s.entries[ticket.key].home = homeQuestion{}
 	return true
 }

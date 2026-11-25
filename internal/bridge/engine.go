@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
-	"github.com/skrashevich/quasar-bridge/internal/configvoice"
-	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/skrashevich/quasar-bridge/internal/configvoice"
+	"github.com/skrashevich/quasar-bridge/internal/dialogue"
+	"github.com/skrashevich/quasar-bridge/internal/home"
 	"github.com/skrashevich/quasar-bridge/internal/llm"
 	"github.com/skrashevich/quasar-bridge/internal/playback"
 	"github.com/skrashevich/quasar-bridge/internal/reply"
@@ -24,6 +28,11 @@ type Completer interface {
 }
 type HomeHandler interface {
 	Handle(context.Context, string) (string, error)
+}
+
+// HomeDialogueHandler is optional. It receives history only for an active clarification.
+type HomeDialogueHandler interface {
+	HandleDialogue(context.Context, string, []llm.Message) (string, error)
 }
 type PlaybackController interface {
 	Active(context.Context) bool
@@ -181,17 +190,33 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
+		var history []llm.Message
+		if decision.Source == "dialogue" {
+			history = e.dialogue().TakeHomeDialogue(ctx, ticket)
+			if len(history) == 0 {
+				if !e.dialogue().CurrentTurn(ctx, ticket) {
+					return result, context.Canceled
+				}
+				result.Answer = "Повтори команду целиком, чтобы я мог её выполнить."
+				return result, nil
+			}
+		} else if decision.Source == "home_state_dialogue" {
+			history = snapshot.Messages
+		} else if !e.dialogue().Clear(ctx, ticket) {
+			return result, context.Canceled
+		}
+		if !e.dialogue().CurrentTurn(ctx, ticket) {
+			return result, context.Canceled
+		}
 		question := e.stripModelPrefix(text)
 		var answer string
 		var err error
-		if contextual, ok := e.Home.(interface {
-			HandleDialogue(context.Context, string, []llm.Message) (string, error)
-		}); ok {
-			answer, err = contextual.HandleDialogue(ctx, question, snapshot.Messages)
+		if contextual, ok := e.Home.(HomeDialogueHandler); ok {
+			answer, err = contextual.HandleDialogue(ctx, question, history)
 		} else {
 			answer, err = e.Home.Handle(ctx, question)
 		}
-		if !e.dialogue().Current(ctx, ticket) || (err == nil && !e.dialogue().CommitRoute(ctx, ticket, "home", question, answer, false)) {
+		if !e.dialogue().CurrentTurn(ctx, ticket) || (err == nil && !e.dialogue().CommitHome(ctx, ticket, question, answer, history)) {
 			return result, context.Canceled
 		}
 		result.Answer = answer
@@ -249,6 +274,57 @@ func (e *Engine) Fallback(ctx context.Context, text string) (Resolution, error) 
 	}
 	return r, nil
 }
+
+var homeActionWords = regexp.MustCompile(`(?:^|[\s\p{P}])(?:` +
+	`включи(?:ть)?|выключи(?:ть)?|включай|выключай|погаси|погасить|зажги|зажечь|открой|открыть|закрой|закрыть|` +
+	`установи(?:ть)?|выставь|выставить|поставь|поставить|сделай|сделать|подними|поднять|опусти(?:ть)?|` +
+	`прибавь|убавь|запусти(?:ть)?|останови(?:ть)?|проиграй|проиграть|воспроизведи|воспроизвести|` +
+	`сыграй|проверь|проверить|покажи|найди|расскажи|объясни|напомни|закажи)(?:те)?(?:$|[\s\p{P}])`)
+var homeReplySelection = regexp.MustCompile(`^(?:(?:да|нет)[\s,]+)?(?:только|кроме|вместе с|в|во|на|у|без)\s+\p{L}`)
+var homeRoomReply = regexp.MustCompile(`^(?:в|во|на|у)\s+\p{L}`)
+var homeReplyNumber = regexp.MustCompile(`^[+-]?[0-9]+(?:[.,][0-9]+)?(?:\s*(?:градус[а-я]*|процент[а-я]*|%))?$`)
+
+// Only a selection, location, numeric value or an option in the question
+// may inherit an earlier command and its target.
+func isHomeClarificationReply(text, question string) bool {
+	answer := strings.TrimPrefix(dialogue.Normalize(text), "а ")
+	if answer == "" || homeActionWords.MatchString(answer) {
+		return false
+	}
+	switch answer {
+	case "да", "нет", "оба", "обе", "все", "все сразу", "везде", "первый", "второй", "первая", "вторая":
+		return true
+	}
+	const maxAnswerWords = 6
+	if len(strings.Fields(answer)) > maxAnswerWords {
+		return false
+	}
+	if homeReplyNumber.MatchString(answer) || homeReplySelection.MatchString(answer) {
+		return true
+	}
+	// Compare named choices across inflections such as «приставку» and «приставка».
+	words := func(text string) []string {
+		return strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	}
+	stem := func(word string) string {
+		if utf8.RuneCountInString(word) > 4 {
+			return strings.TrimRight(word, "аоуыеиюя")
+		}
+		return word
+	}
+	options := map[string]bool{}
+	for _, word := range words(dialogue.Normalize(question)) {
+		options[stem(word)] = true
+	}
+	answerWords := words(answer)
+	for _, word := range answerWords {
+		if !options[stem(word)] {
+			return false
+		}
+	}
+	return len(answerWords) > 0
+}
+
 func containsOne(text string, needles []string) bool {
 	for _, s := range needles {
 		if strings.Contains(text, s) {
@@ -302,10 +378,12 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 			decision.Route = "yandex"
 			decision.Source = "home_disabled"
 		}
+		if decision.Route != "home" || decision.Source != "dialogue" {
+			e.dialogue().TakeHomeQuestion(ctx, ticket)
+		}
 		decision.ticket = ticket
 		decision.prepared = true
 	}()
-	awaitingHomeReply := snapshot.Route == "home" && e.dialogue().TakeHomeQuestion(ctx, ticket)
 	p := e.policy()
 	if configvoice.RecoveryAction(text) != "" {
 		return RouteDecision{Route: "recovery", Source: "bridge_recovery"}
@@ -332,14 +410,26 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 		return RouteDecision{Route: "playback", Source: "playback"}
 	}
 	wakewordTag, _ := ctx.Value(wakewordTagKey{}).(string)
-	if d, ok := p.match(text, wakewordTag); ok {
+	d, matched := p.match(text, wakewordTag)
+	if !matched || d.Route == "home" {
+		if question := e.dialogue().PeekHomeQuestion(ctx, ticket); question != "" && isHomeClarificationReply(text, question) {
+			return RouteDecision{Route: "home", Source: "dialogue"}
+		}
+	}
+	if matched {
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
 			d.Route = "music"
 		}
 		return d
 	}
-	if len(snapshot.Messages) > 0 && (awaitingHomeReply || dialogue.IsFollowup(text)) {
-		return RouteDecision{Route: snapshot.Route, Source: "dialogue"}
+	if snapshot.Route == "llm" && len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
+		return RouteDecision{Route: "llm", Source: "dialogue"}
+	}
+	roomReply := strings.TrimPrefix(dialogue.Normalize(text), "а ")
+	if _, contextual := e.Home.(HomeDialogueHandler); contextual && snapshot.Route == "home" && len(snapshot.Messages) > 0 &&
+		home.IsStateQuestion(snapshot.Messages[0].Content) && !dialogue.IsHomeQuestion(snapshot.Messages[len(snapshot.Messages)-1].Content) &&
+		homeRoomReply.MatchString(roomReply) && isHomeClarificationReply(roomReply, "") {
+		return RouteDecision{Route: "home", Source: "home_state_dialogue"}
 	}
 	if !p.classifierEnabled {
 		return RouteDecision{Route: p.defaultRoute, Source: "default"}
@@ -351,7 +441,9 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	classCtx, cancel := context.WithTimeout(ctx, time.Duration(p.classifier.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	messages := []llm.Message{{Role: "system", Content: p.classifier.Prompt}}
-	messages = append(messages, snapshot.Messages...)
+	if snapshot.Route != "home" {
+		messages = append(messages, snapshot.Messages...)
+	}
 	messages = append(messages, llm.Message{Role: "user", Content: text})
 	answer, err := e.LLM.Complete(classCtx, messages, true)
 	if err != nil {

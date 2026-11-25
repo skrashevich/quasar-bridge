@@ -65,12 +65,15 @@ func TestHomeClarificationPrefersTheNewRoom(t *testing.T) {
 			t.Fatalf("read-only followup called %q", name)
 			return nil, nil
 		}
-	}), Planner: plannerFunc(func(_ context.Context, messages []llm.Message, _ bool) (string, error) {
+	}), Planner: plannerFunc(func(_ context.Context, messages []llm.Message, structured bool) (string, error) {
+		if structured {
+			t.Fatal("state follow-up used the action planner")
+		}
 		inventory := messages[len(messages)-1].Content
 		if strings.Contains(inventory, "light.office") || !strings.Contains(inventory, "light.bedroom") {
 			t.Error("new room was not used for inventory", inventory)
 		}
-		return `{"answer":"В спальне свет включён.","actions":[]}`, nil
+		return "В спальне свет включён.", nil
 	})}
 	answer, err := c.HandleDialogue(t.Context(), "а в спальне?", []llm.Message{{Role: "user", Content: "Горит ли свет в кабинете?"}, {Role: "assistant", Content: "В кабинете свет выключен."}})
 	if err != nil || answer != "В спальне свет включён." {
@@ -393,9 +396,11 @@ func TestStateQuestionCannotPlanPhysicalActions(t *testing.T) {
 		}
 		return "Свет выключен.", nil
 	})}
-	answer, err := c.Handle(t.Context(), "Горит ли свет в кабинете?")
-	if err != nil || answer != "Свет выключен." || f.actions != 0 {
-		t.Fatalf("answer=%q err=%v actions=%d", answer, err, f.actions)
+	for _, text := range []string{"Горит ли свет в кабинете?", "Какая сейчас температура на кухне?"} {
+		answer, err := c.Handle(t.Context(), text)
+		if err != nil || answer != "Свет выключен." || f.actions != 0 {
+			t.Fatalf("%q: answer=%q err=%v actions=%d", text, answer, err, f.actions)
+		}
 	}
 }
 
@@ -428,5 +433,186 @@ func TestHomeAnswerNamesDevicesWithoutEntityIDs(t *testing.T) {
 				t.Fatalf("answer=%q want=%q err=%v actions=%d", answer, tc.want, err, f.actions)
 			}
 		})
+	}
+}
+
+func TestDegreesScopeWaterHeaterNotSpeakers(t *testing.T) {
+	for text, want := range map[string][]string{
+		"Сделай колонку 40 градусов": {"climate"},
+		"Сделай колонку 37":          {"climate"},
+		"Выставь котёл на 40":        {"climate"},
+		"Сделай колонку погромче":    {"climate", "media_player"},
+		"Включи телевизор":           {"media_player"},
+		"Включи котёл в кухне":       {"climate", "switch"},
+		"Включи горячую воду":        {"climate", "switch"},
+		"Включи газовую колонку":     {"climate", "switch"},
+	} {
+		if got := controlDomains(text); !slices.Equal(got, want) {
+			t.Errorf("%q: %v", text, got)
+		}
+	}
+	if _, ok := serviceFields["media_player.turn_on"]; !ok {
+		t.Error("TV cannot be switched on")
+	}
+}
+
+func TestHeatSetpointSurvivesRoomAndDeviceClarifications(t *testing.T) {
+	for _, reply := range []string{"на кухне", "колонка слева"} {
+		if got := controlDomains(reply, "Сделай колонку 37", "на первом этаже"); !slices.Equal(got, []string{"climate"}) {
+			t.Errorf("%q: domains=%v", reply, got)
+		}
+	}
+	if got := controlDomains("котёл слева", "Выключи отопление"); !slices.Equal(got, []string{"climate", "switch"}) {
+		t.Errorf("alternate heating switch lost after clarification: domains=%v", got)
+	}
+}
+
+func TestHomeNumericRequestsKeepTheIntendedDeviceInInventory(t *testing.T) {
+	for _, tc := range []struct {
+		name, request, domain, service string
+		data                           map[string]any
+		wantSpeaker                    bool
+	}{
+		{"speaker_percent", "Сделай колонку на 20 процентов", "media_player", "volume_set", map[string]any{"volume_level": 0.2}, true},
+		{"speaker_percent_symbol", "Установи громкость колонки на 20%", "media_player", "volume_set", map[string]any{"volume_level": 0.2}, true},
+		{"speaker_number_in_name", "Включи колонку Станция 2", "media_player", "turn_on", nil, true},
+		{"heater_integer", "Сделай колонку 37", "climate", "set_temperature", map[string]any{"temperature": 37}, false},
+		{"heater_decimal_comma", "Установи колонку на 37,5", "climate", "set_temperature", map[string]any{"temperature": 37.5}, false},
+		{"heater_explicit_degrees", "Сделай колонку 37,5 градусов", "climate", "set_temperature", map[string]any{"temperature": 37.5}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			speaker := Entity{ID: "media_player.station_2", Name: "Колонка Станция 2", State: "off"}
+			heater := Entity{ID: "climate.water_heater", Name: "Газовая колонка", State: "heat"}
+			target := heater
+			if tc.wantSpeaker {
+				target = speaker
+			}
+			var searched []string
+			actions, plannerCalls := 0, 0
+			tools := toolFunc(func(_ context.Context, name string, args map[string]any) (jsontext.Value, error) {
+				var value any = map[string]any{"success": true}
+				switch name {
+				case "ha_get_skill_guide":
+				case "ha_search":
+					domain, _ := args["domain_filter"].(string)
+					searched = append(searched, domain)
+					var entities []Entity
+					if domain == "media_player" {
+						entities = append(entities, speaker)
+					}
+					if domain == "climate" {
+						entities = append(entities, heater)
+					}
+					value = map[string]any{"entities": entities}
+				case "ha_get_entity_exposure":
+					value = map[string]any{"exposed_to": map[string]any{"conversation": true}}
+				case "ha_call_service":
+					actions++
+					if args["entity_id"] != target.ID || args["domain"] != tc.domain || args["service"] != tc.service {
+						t.Fatalf("wrong service call: %v", args)
+					}
+					got, err := json.Marshal(args["data"])
+					if err != nil {
+						t.Fatal(err)
+					}
+					want, err := json.Marshal(tc.data)
+					if err != nil || string(got) != string(want) {
+						t.Fatalf("service data=%s want=%s error=%v", got, want, err)
+					}
+				case "ha_get_state":
+					value = map[string]any{"data": map[string]any{"entity_id": target.ID, "state": "on"}}
+				default:
+					t.Fatalf("unexpected tool: %s", name)
+				}
+				return json.Marshal(value)
+			})
+			c := Controller{Tools: tools, Planner: plannerFunc(func(_ context.Context, messages []llm.Message, structured bool) (string, error) {
+				plannerCalls++
+				if !structured || len(messages) != 2 {
+					t.Fatalf("invalid planning request: structured=%v messages=%v", structured, messages)
+				}
+				if !strings.Contains(messages[1].Content, target.ID) {
+					t.Fatalf("intended target missing from planner inventory: %s", messages[1].Content)
+				}
+				if strings.Contains(messages[1].Content, speaker.ID) != tc.wantSpeaker {
+					t.Fatalf("speaker presence does not match request: %s", messages[1].Content)
+				}
+				b, err := json.Marshal(Plan{Actions: []Action{{Domain: tc.domain, Service: tc.service, EntityID: target.ID, Data: tc.data}}})
+				return string(b), err
+			})}
+			answer, err := c.Handle(t.Context(), tc.request)
+			if err != nil || answer != "Команда отправлена: "+target.Name+"." || actions != 1 || plannerCalls != 1 {
+				t.Fatalf("answer=%q error=%v actions=%d planner calls=%d", answer, err, actions, plannerCalls)
+			}
+			if slices.Contains(searched, "media_player") != tc.wantSpeaker || !slices.Contains(searched, "climate") {
+				t.Fatalf("searched domains=%v", searched)
+			}
+		})
+	}
+}
+
+func TestHomeFollowupPreservesOriginalRequestAndRoomScope(t *testing.T) {
+	const request = "Включи свет в кабинете"
+	const question = "Люстру или торшер?"
+	const reply = "оба"
+	entities := []Entity{
+		{ID: "light.office_ceiling", Name: "Люстра", Area: "Кабинет", State: "off"},
+		{ID: "light.office_floor", Name: "Торшер", Area: "Кабинет", State: "off"},
+		{ID: "light.bedroom", Name: "Свет в спальне", Area: "Спальня", State: "off"},
+	}
+	var searched, acted []string
+	plannerCalls := 0
+	tools := toolFunc(func(_ context.Context, name string, args map[string]any) (jsontext.Value, error) {
+		var value any = map[string]any{"success": true}
+		switch name {
+		case "ha_get_skill_guide":
+		case "ha_search":
+			domain, _ := args["domain_filter"].(string)
+			searched = append(searched, domain)
+			if domain == "light" {
+				value = map[string]any{"entities": entities}
+			} else {
+				value = map[string]any{"entities": []Entity{}}
+			}
+		case "ha_get_entity_exposure":
+			value = map[string]any{"exposed_to": map[string]any{"conversation": true}}
+		case "ha_call_service":
+			id, _ := args["entity_id"].(string)
+			if args["domain"] != "light" || args["service"] != "turn_on" || (id != entities[0].ID && id != entities[1].ID) {
+				t.Fatalf("wrong followup service call: %v", args)
+			}
+			acted = append(acted, id)
+		case "ha_get_state":
+			value = map[string]any{"data": map[string]any{"entity_id": args["entity_id"], "state": "on"}}
+		default:
+			t.Fatalf("unexpected tool: %s", name)
+		}
+		return json.Marshal(value)
+	})
+	c := Controller{Tools: tools, Planner: plannerFunc(func(_ context.Context, messages []llm.Message, structured bool) (string, error) {
+		plannerCalls++
+		if !structured || len(messages) != 4 || messages[1].Content != request || messages[2].Content != question {
+			t.Fatalf("invalid followup planning request: structured=%v messages=%v", structured, messages)
+		}
+		for _, part := range []string{"Запрос: " + reply, entities[0].ID, entities[1].ID} {
+			if !strings.Contains(messages[3].Content, part) {
+				t.Fatalf("followup context missing %q: %s", part, messages[3].Content)
+			}
+		}
+		if strings.Contains(messages[3].Content, entities[2].ID) {
+			t.Fatalf("followup lost original room scope: %s", messages[3].Content)
+		}
+		b, err := json.Marshal(Plan{Actions: []Action{
+			{Domain: "light", Service: "turn_on", EntityID: entities[0].ID},
+			{Domain: "light", Service: "turn_on", EntityID: entities[1].ID},
+		}})
+		return string(b), err
+	})}
+	answer, err := c.HandleDialogue(t.Context(), reply, []llm.Message{{Role: "user", Content: request}, {Role: "assistant", Content: question}})
+	if err != nil || answer != "Готово: Люстра, Торшер." || plannerCalls != 1 {
+		t.Fatalf("answer=%q error=%v planner calls=%d", answer, err, plannerCalls)
+	}
+	if !slices.Equal(searched, []string{"light", "switch"}) || !slices.Equal(acted, []string{entities[0].ID, entities[1].ID}) {
+		t.Fatalf("searched domains=%v actions=%v", searched, acted)
 	}
 }
