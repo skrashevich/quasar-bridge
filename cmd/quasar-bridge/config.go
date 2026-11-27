@@ -54,6 +54,7 @@ type config struct {
 	LLMStripPrefixes   []string             `json:"llm_strip_prefixes"`
 	LLMTTSMarkup       bool                 `json:"llm_tts_markup"`
 	HomeWarmArea       string               `json:"home_warm_area"`
+	HomeDirectCommands bool                 `json:"home_direct_commands,omitempty"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
 	Routing            bridge.RoutingConfig `json:"routing"`
 }
