@@ -31,6 +31,7 @@ type Controller struct {
 	guideMu      sync.Mutex
 	guidesLoaded bool
 	exposures    map[string]exposureEntry
+	catalog      deviceCatalog
 }
 type exposureEntry struct {
 	value   bool
