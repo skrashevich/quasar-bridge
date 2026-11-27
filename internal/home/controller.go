@@ -24,13 +24,17 @@ type Planner interface {
 	Complete(context.Context, []llm.Message, bool) (string, error)
 }
 type Controller struct {
-	Tools        ToolCaller
-	Planner      Planner
-	Domains      []string
+	Tools   ToolCaller
+	Planner Planner
+	Domains []string
+	// Direct enables fast-path execution for unambiguous on/off and climate
+	// setpoint commands matched against the in-memory name/alias index.
+	Direct       bool
 	exposureMu   sync.Mutex
 	guideMu      sync.Mutex
 	guidesLoaded bool
 	exposures    map[string]exposureEntry
+	names        nameIndex
 }
 type exposureEntry struct {
 	value   bool
@@ -122,6 +126,16 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	if err := c.guides(ctx); err != nil {
 		return "", err
 	}
+	if c.Direct {
+		if plan, e, ok := c.directSetpointPlan(text); ok {
+			return c.execute(ctx, plan, map[string]Entity{e.ID: e})
+		}
+		if len(history) == 0 {
+			if plan, e, ok := c.directOnOffPlan(text); ok {
+				return c.execute(ctx, plan, map[string]Entity{e.ID: e})
+			}
+		}
+	}
 	inventory := Controller{Tools: c.Tools, Planner: c.Planner, Domains: c.Domains}
 	if len(inventory.Domains) == 0 {
 		inventory.Domains = controlDomains(text)
@@ -180,6 +194,11 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	if len(entities) == 0 {
 		return "Не нашлось подходящих устройств, разрешённых для голосового помощника в Home Assistant.", nil
 	}
+	if c.Direct {
+		if plan, e, ok := matchSetpointEntity(text, entities); ok {
+			return c.execute(ctx, plan, map[string]Entity{e.ID: e})
+		}
+	}
 
 	data, err := json.Marshal(entities)
 	if err != nil {
@@ -223,6 +242,12 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	for _, e := range entities {
 		known[e.ID] = e
 	}
+	return c.execute(ctx, plan, known)
+}
+
+var setpointPollInterval = 250 * time.Millisecond
+
+func (c *Controller) execute(ctx context.Context, plan Plan, known map[string]Entity) (string, error) {
 	// Validate the entire plan before the first physical action.
 	for _, a := range plan.Actions {
 		e, ok := known[a.EntityID]
@@ -267,7 +292,7 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 		if err := llm.ValidateAnswer(plan.Answer); err != nil {
 			return "", err
 		}
-		return spokenAnswer(plan.Answer, entities), nil
+		return spokenAnswer(plan.Answer, entityValues(known)), nil
 	}
 	// Exposure is cached for discovery, but always checked fresh before actions.
 	var targets []string
@@ -288,23 +313,49 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 	}
 	allConfirmed := true
 	for _, a := range plan.Actions {
-		_, err := c.Tools.Call(ctx, "ha_call_service", map[string]any{"domain": a.Domain, "service": a.Service, "entity_id": a.EntityID, "data": a.Data, "wait": true})
+		// ha-mcp's wait watches entity state; climate.set_temperature usually keeps
+		// state unchanged (e.g. "heat"), so waiting for state change would time out.
+		onOff := (a.Service == "turn_on" || a.Service == "turn_off") && (a.Domain == "light" || a.Domain == "switch" || a.Domain == "fan")
+		_, err := c.Tools.Call(ctx, "ha_call_service", map[string]any{"domain": a.Domain, "service": a.Service, "entity_id": a.EntityID, "data": a.Data, "wait": onOff})
 		if err != nil {
 			return "", fmt.Errorf("home action failed; no cloud retry: %w", err)
 		}
-		raw, err := c.Tools.Call(ctx, "ha_get_state", map[string]any{"entity_id": a.EntityID, "fields": []string{"entity_id", "state", "attributes"}})
-		if err != nil {
-			return "", err
-		}
 		var result struct {
 			Data struct {
-				State string `json:"state"`
+				State      string `json:"state"`
+				Attributes struct {
+					Temperature *float64 `json:"temperature"`
+				} `json:"attributes"`
 			} `json:"data"`
 		}
-		if err := json.Unmarshal(raw, &result); err != nil {
+		read := func() error {
+			raw, err := c.Tools.Call(ctx, "ha_get_state", map[string]any{"entity_id": a.EntityID, "fields": []string{"entity_id", "state", "attributes"}})
+			if err != nil {
+				return err
+			}
+			return json.Unmarshal(raw, &result)
+		}
+		if err := read(); err != nil {
 			return "", err
 		}
+		target, isTemp := a.Data["temperature"].(float64)
+		if a.Domain == "climate" && a.Service == "set_temperature" && isTemp {
+			for i := 0; i < 8 && (result.Data.Attributes.Temperature == nil || *result.Data.Attributes.Temperature != target); i++ {
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(setpointPollInterval):
+				}
+				if err := read(); err != nil {
+					return "", err
+				}
+			}
+		}
 		switch a.Service {
+		case "set_temperature":
+			if !isTemp || result.Data.Attributes.Temperature == nil || *result.Data.Attributes.Temperature != target {
+				allConfirmed = false
+			}
 		case "turn_on", "turn_off":
 			if a.Domain == "light" || a.Domain == "switch" || a.Domain == "fan" {
 				want := strings.TrimPrefix(a.Service, "turn_")
@@ -335,6 +386,14 @@ func (c *Controller) HandleDialogue(ctx context.Context, text string, history []
 		return "Готово: " + strings.Join(names, ", ") + ".", nil
 	}
 	return "Команда отправлена: " + strings.Join(names, ", ") + ".", nil
+}
+
+func entityValues(known map[string]Entity) []Entity {
+	entities := make([]Entity, 0, len(known))
+	for _, e := range known {
+		entities = append(entities, e)
+	}
+	return entities
 }
 
 // climateStartup permits a setpoint after power-on for one individual device.
@@ -384,6 +443,9 @@ func controlDomains(text string) []string {
 	}
 	if strings.Contains(s, "кондиционер") || strings.Contains(s, "термостат") || strings.Contains(s, "обогрев") {
 		add("climate", "switch")
+	}
+	if strings.Contains(s, "градус") || (strings.Contains(s, "колонк") && strings.ContainsAny(s, "0123456789")) || strings.Contains(s, "котел") || strings.Contains(s, "котёл") || strings.Contains(s, "отоплен") || strings.Contains(s, "горяч") {
+		add("climate")
 	}
 	if strings.Contains(s, "вентилятор") {
 		add("fan", "switch")
