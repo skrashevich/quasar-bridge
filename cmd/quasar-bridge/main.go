@@ -313,6 +313,9 @@ func main() {
 		ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
 		defer cancel()
 		if *route != "" {
+			if hc != nil {
+				_ = hc.RefreshCatalog(ctx)
+			}
 			data, _ := json.Marshal(engine.Decide(ctx, *route))
 			fmt.Println(string(data))
 			return
@@ -352,6 +355,23 @@ func main() {
 	defer logs.Close()
 	proxy.Journal = logs
 	if cfg.Mode == "hybrid" {
+		if hc != nil {
+			catalogCtx, catalogCancel := context.WithCancel(context.Background())
+			defer catalogCancel()
+			go func() {
+				for {
+					ctx, cancel := context.WithTimeout(catalogCtx, time.Minute)
+					err := hc.RefreshCatalog(ctx)
+					cancel()
+					slog.Info("home_catalog", "ready", err == nil)
+					select {
+					case <-catalogCtx.Done():
+						return
+					case <-time.After(home.CatalogTTL):
+					}
+				}
+			}()
+		}
 		if hc != nil && cfg.HomeWarmArea != "" {
 			warmCtx, warmCancel := context.WithCancel(context.Background())
 			defer warmCancel()
